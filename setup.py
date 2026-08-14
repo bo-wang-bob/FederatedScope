@@ -4,7 +4,7 @@ import setuptools
 
 __name__ = 'federatedscope'
 __version__ = '0.3.0'
-URL = 'https://github.com/alibaba/FederatedScope'
+URL = 'https://github.com/bo-wang-bob/FederatedScope'
 
 minimal_requires = [
     'numpy<1.23.0', 'scikit-learn==1.0.2', 'scipy==1.7.3', 'pandas',
@@ -42,7 +42,7 @@ setuptools.setup(
     version=__version__,
     author="Alibaba Damo Academy",
     author_email="jones.wz@alibaba-inc.com",
-    description="Federated learning package",
+    description="Standalone federated learning security research package",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url=URL,

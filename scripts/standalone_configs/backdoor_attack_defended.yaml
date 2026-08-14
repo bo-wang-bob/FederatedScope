@@ -1,0 +1,99 @@
+# Single-process backdoor experiment with anomaly filtering in both the
+# feature-statistics phase and the normal model-training phase.
+
+use_gpu: True
+device: 0
+seed: 42
+verbose: 1
+
+security:
+  mode: backdoor
+  standalone_only: True
+
+federate:
+  method: ggeur
+  mode: standalone
+  client_num: 4
+  sample_client_num: 4
+  total_round_num: 20
+  make_global_eval: False
+
+data:
+  type: office-home
+  root: /root/autodl-tmp/datasets/OfficeHomeDataset_10072016
+  splits: [0.7, 0.0, 0.3]
+
+dataloader:
+  batch_size: 8
+  num_workers: 0
+
+model:
+  type: ggeur_mlp
+  num_classes: 65
+
+train:
+  local_update_steps: 1
+  batch_or_epoch: epoch
+  optimizer:
+    type: Adam
+    lr: 0.001
+
+criterion:
+  type: CrossEntropyLoss
+
+trainer:
+  type: ggeur
+
+eval:
+  freq: 1
+  metrics: [acc, correct]
+  best_res_update_round_wise_key: test_acc
+
+attack:
+  attack_method: sabre
+  attacker_id: 1
+  target_label_ind: 0
+  poison_ratio: 0.2
+  modular_attacks: False
+  attack_plugins: []
+  aggregate_benign_only: False
+  sabre:
+    start_round: 0
+    poison_epochs: 10
+    poison_lr: 0.001
+    internal_poison_epochs: 1
+    max_poison_samples: 64
+    trigger_search_steps: 5
+    trigger_update_interval: 2
+    trigger_search_batches: 2
+    trigger_search_batch_size: 8
+
+dp:
+  enabled: False
+
+ggeur:
+  use: True
+  feature_extractor: clip
+  clip_model: ViT-B-16
+  clip_pretrained: openai
+  clip_model_path: /root/autodl-tmp/models/open_clip_vitb16.bin
+  embedding_dim: 512
+  use_feature_cache: True
+  num_generated_per_sample: 20
+  num_generated_per_prototype: 20
+  target_size_per_class: 50
+  mlp_hidden_dim: 0
+  mlp_dropout: 0.0
+  use_cross_client_prototypes: True
+  statistics_round: 0
+  defense_method: multi_metrics
+  multi_metrics_min_clients: 4
+  multi_metrics_keep_ratio: 0.75
+  multi_metrics_adaptive_threshold: False
+  multi_metrics_stats_defense: True
+  multi_metrics_stats_min_clients: 4
+  multi_metrics_stats_keep_ratio: 0.75
+  multi_metrics_stats_adaptive_threshold: False
+
+outdir: exp/standalone/backdoor_attack_defended
+expname: backdoor_attack_defended

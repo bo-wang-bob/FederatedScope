@@ -1,0 +1,71 @@
+# GGEUR_Clip (Gaussian Geometry-guided Feature Expansion with Unified Representation)
+# Configuration for Office-Home dataset with 4 domains
+
+# ========== Basic Settings ==========
+use_gpu: True
+device: 1
+seed: 42
+verbose: 1
+
+security:
+  mode: none
+  standalone_only: True
+
+# ========== Federated Learning Settings ==========
+federate:
+  method: 'ggeur'
+  mode: 'standalone'
+  client_num: 12  # One client per domain
+  total_round_num: 50  # Communication rounds after statistics collection
+  sample_client_num: 12  # All clients participate
+
+# ========== Data Settings ==========
+data:
+  type: 'office-home'
+  root: '/root/autodl-tmp/datasets/OfficeHomeDataset_10072016'  # Path to Office-Home dataset
+  splits: [0.7, 0.0, 0.3]  # train, val, test ratios
+
+dataloader:
+  batch_size: 16
+  num_workers: 0
+
+# ========== Model Settings ==========
+model:
+  type: 'ggeur_mlp'  # Placeholder, GGEUR_Clip uses its own MLP
+  num_classes: 65  # Office-Home has 65 classes
+
+# ========== Training Settings ==========
+train:
+  local_update_steps: 1  # Local epochs per round
+  optimizer:
+    type: 'Adam'
+    lr: 0.001
+
+# ========== GGEUR_Clip Specific Settings ==========
+ggeur:
+  use: True
+
+  # CLIP Feature Extraction
+  clip_model: 'ViT-B-16'
+  clip_pretrained: 'openai'
+  clip_model_path: '/root/autodl-tmp/models/open_clip_vitb16.bin'  # Optional: local path to CLIP weights
+  embedding_dim: 512
+
+  # Feature Augmentation
+  num_generated_per_sample: 50  # Samples generated per original sample
+  num_generated_per_prototype: 50  # Samples generated per cross-client prototype
+  target_size_per_class: 50  # Target samples per class after augmentation
+
+  # MLP Classifier
+  mlp_hidden_dim: 0  # 0 = no hidden layer (linear classifier)
+  mlp_dropout: 0.0
+
+  # Multi-domain Settings
+  use_cross_client_prototypes: True  # Use prototypes from other domains
+
+  # Training Settings
+  statistics_round: 0  # Round 0 for statistics collection
+
+# ========== Output Settings ==========
+outdir: 'exp/ggeur_officehome'
+expname: 'ggeur_officehome'
