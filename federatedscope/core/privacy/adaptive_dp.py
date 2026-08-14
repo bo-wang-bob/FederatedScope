@@ -1,14 +1,15 @@
-"""Client-local adaptive clipping for distributed GGEUR updates.
+"""Client-local adaptive clipping for standalone GGEUR updates.
 
-The implementation follows the editable branch's nested update clipping and
-Gaussian perturbation, but keeps the adaptive controller process-local. This
-is required by the real distributed path, where clients do not share memory.
+Each logical client owns its own ``LocalAdaptiveClipper`` instance. This keeps
+client norm histories isolated even though standalone simulation creates all
+clients in the same Python process.
 """
 
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 import numpy as np
@@ -112,7 +113,7 @@ def sanitize_update(update, clip_bound: float, noise_multiplier: float,
     }
 
 
-def is_ggeur_client_update_dp_enabled(cfg) -> bool:
+def _is_standard_ggeur_client_update_dp_enabled(cfg) -> bool:
     dp_cfg = _cfg_get(cfg, 'dp', None)
     clipping = _cfg_get(dp_cfg, 'clipping', None)
     return bool(_cfg_get(dp_cfg, 'enabled', False)) and \
@@ -121,9 +122,46 @@ def is_ggeur_client_update_dp_enabled(cfg) -> bool:
         str(_cfg_get(clipping, 'type', 'fixed')).lower() in ['fixed', 'adaptive']
 
 
+def is_ggeur_client_update_dp_enabled(cfg) -> bool:
+    return _is_standard_ggeur_client_update_dp_enabled(cfg) or bool(
+        _cfg_get(_cfg_get(cfg, 'adaptive_dp', None), 'use', False))
+
+
 def get_ggeur_client_update_dp_cfg(cfg):
-    return _cfg_get(cfg, 'dp', None) \
-        if is_ggeur_client_update_dp_enabled(cfg) else None
+    if _is_standard_ggeur_client_update_dp_enabled(cfg):
+        return _cfg_get(cfg, 'dp', None)
+
+    # Backward-compatible adapter for datapoison's ``adaptive_dp`` namespace.
+    legacy = _cfg_get(cfg, 'adaptive_dp', None)
+    if not bool(_cfg_get(legacy, 'use', False)):
+        return None
+    clipping = SimpleNamespace(
+        type='adaptive',
+        initial_clip=float(_cfg_get(legacy, 'initial_clip', 1.0)),
+        target_quantile=float(_cfg_get(legacy, 'target_quantile', 0.7)),
+        ema=float(_cfg_get(legacy, 'ema', 0.9)),
+        min_clip=float(_cfg_get(legacy, 'min_clip', 0.05)),
+        max_clip=float(_cfg_get(legacy, 'max_clip', 10.0)),
+    )
+    return SimpleNamespace(
+        enabled=True,
+        level='client_update',
+        mechanism='gaussian',
+        baseline='adaptive',
+        accountant='empirical',
+        epsilon=1.0,
+        delta=1e-5,
+        noise_multiplier=float(_cfg_get(legacy, 'noise_multiplier', 1.0)),
+        accountant_sample_rate=-1.0,
+        max_grad_norm=clipping.initial_clip,
+        protect_ggeur_update=True,
+        private_clip_update=True,
+        upload_private_stats=False,
+        log_private_stats=True,
+        eps=float(_cfg_get(legacy, 'eps', 1e-12)),
+        seed=int(_cfg_get(legacy, 'seed', 0)),
+        clipping=clipping,
+    )
 
 
 @dataclass
@@ -180,7 +218,7 @@ class LocalAdaptiveClipper:
             next_clip, self.min_clip, self.max_clip))
         stats.update({
             'enabled': True,
-            'mechanism': 'distributed_local_adaptive_client_update_dp',
+            'mechanism': 'standalone_local_adaptive_client_update_dp',
             'round': int(round_idx),
             'client_id': int(client_id),
             'target_quantile': float(self.target_quantile),

@@ -55,6 +55,12 @@ def extend_dp_cfg(cfg):
     cfg.dp.clipping.min_clip = 0.05
     cfg.dp.clipping.max_clip = 10.0
 
+    # Compatibility shim for an older privacy experiment YAML. The unified
+    # GGEUR path does not run FedSMP; keeping this disabled namespace lets the
+    # old config load while client-update DP is configured through ``dp``.
+    cfg.fed_smp = CN()
+    cfg.fed_smp.use = False
+
     # --------------- register corresponding check function ----------
     cfg.register_cfg_check_fun(assert_dp_cfg)
 

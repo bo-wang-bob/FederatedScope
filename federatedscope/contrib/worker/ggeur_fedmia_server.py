@@ -189,10 +189,10 @@ class GGEURFedMIAServer(GGEURServer):
     def _reconstruct_server_visible_state(self, round_num: int, content):
         payload = content[1] if isinstance(content, tuple) and len(content) >= 2 else content
         raw_state = self._extract_classifier_state(payload)
-        from federatedscope.core.privacy.adaptive_dp import is_ggeur_client_update_dp_enabled
-
-        adaptive_dp_on = is_ggeur_client_update_dp_enabled(self._cfg)
-        if raw_state is not None and not self._cfg.fed_smp.use and not adaptive_dp_on:
+        # The unified client uploads the already protected full state. The
+        # optional third tuple item contains public mechanism statistics, not
+        # a second model delta, so attacks observe what aggregation observes.
+        if raw_state is not None:
             return raw_state
 
         protected_delta = self._extract_protected_delta(content)

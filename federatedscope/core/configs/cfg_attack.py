@@ -17,6 +17,9 @@ def extend_attack_cfg(cfg):
     # for gan_attack
     cfg.attack.target_label_ind = -1
     cfg.attack.attacker_id = -1
+    # When enabled, server-side aggregation ignores statistics/prototypes and
+    # model updates from clients listed in cfg.attack.attacker_id.
+    cfg.attack.aggregate_benign_only = False
 
     # for backdoor attack
 
@@ -41,6 +44,146 @@ def extend_attack_cfg(cfg):
     cfg.attack.self_lr = 0.05
     cfg.attack.self_epoch = 6
     # Note: the mean and std should be the list type.
+
+    # for A3FL
+    cfg.attack.a3fl = CN()
+    cfg.attack.a3fl.poison_epochs = 10
+    cfg.attack.a3fl.sample_method = 'random'
+    cfg.attack.a3fl.sample_poison_ratio = 0.2
+    cfg.attack.a3fl.start_round = -1
+    cfg.attack.a3fl.trigger_size = 5
+    cfg.attack.a3fl.trigger_offset = 2
+    cfg.attack.a3fl.trigger_init = 0.5
+    cfg.attack.a3fl.trigger_outer_epochs = 20
+    cfg.attack.a3fl.trigger_update_interval = 1
+    cfg.attack.a3fl.trigger_search_batches = 2
+    cfg.attack.a3fl.trigger_lr = 0.01
+    cfg.attack.a3fl.trigger_clip_min = -2.0
+    cfg.attack.a3fl.trigger_clip_max = 2.0
+    cfg.attack.a3fl.save_trigger_samples = False
+    cfg.attack.a3fl.save_trigger_max_samples = 4
+    cfg.attack.a3fl.poison_feature_repeat = 1
+    cfg.attack.a3fl.poison_train_epochs = 0
+    cfg.attack.a3fl.poison_train_lr = 0.0
+    cfg.attack.a3fl.update_scale = 1.0
+    cfg.attack.a3fl.target_row_scale = 1.0
+
+    # for label-flipping data poisoning on the GGEUR client
+    cfg.attack.label_flip = CN()
+    cfg.attack.label_flip.source_label_ind = -1
+    cfg.attack.label_flip.target_label_ind = -1
+    # When non-empty, each attacker uses a different target label. The i-th
+    # entry corresponds to the i-th attacker in cfg.attack.attacker_id.
+    # When empty or not set, all attackers share target_label_ind.
+    cfg.attack.label_flip.target_labels = []
+    cfg.attack.label_flip.replacement_pairs = []
+    cfg.attack.label_flip.all_to_target = False
+    cfg.attack.label_flip.poison_ratio = 1.0
+    cfg.attack.label_flip.start_round = -1
+    cfg.attack.label_flip.poison_epochs = 0
+    cfg.attack.label_flip.poison_statistics = True
+    cfg.attack.label_flip.poison_training = True
+    # Update-reversal attack: malicious clients train on clean data, then
+    # reverse the model update (delta = local - global) and scale it by
+    # a factor (default: total_clients / num_attackers) before uploading.
+    # This is a training-phase attack, independent of poison_statistics.
+    # When poison_training=True and update_reversal=True, the client does
+    # NOT flip labels during training; instead it reverses the update.
+    cfg.attack.label_flip.update_reversal = False
+    cfg.attack.label_flip.update_reversal_scale = -1.0  # <0 = auto (n_total/n_attackers)
+
+    # for CERBERUS backdoor attack on the GGEUR client
+    cfg.attack.cerberus = CN()
+    cfg.attack.cerberus.start_round = -1
+    cfg.attack.cerberus.poison_epochs = 10
+    cfg.attack.cerberus.alpha_loss = 0.01
+    cfg.attack.cerberus.beta_loss = 0.01
+    cfg.attack.cerberus.clean_anchor_lr = 0.001
+    cfg.attack.cerberus.clean_anchor_epochs = 1
+    cfg.attack.cerberus.shadow_lr = 0.001
+    cfg.attack.cerberus.shadow_epochs = 1
+    cfg.attack.cerberus.poison_lr = 0.001
+    cfg.attack.cerberus.poison_optimizer = 'Adam'
+    cfg.attack.cerberus.internal_poison_epochs = 1
+    cfg.attack.cerberus.poisoning_per_batch = 0
+    cfg.attack.cerberus.preserve_clean_batches = False
+    cfg.attack.cerberus.trigger_init = 0.5
+    cfg.attack.cerberus.pattern_size = 4
+    cfg.attack.cerberus.pattern_offset = 0
+    cfg.attack.cerberus.poison_pattern = []
+    cfg.attack.cerberus.share_model_meta = False
+    cfg.attack.cerberus.aggregate_benign_only = False
+    cfg.attack.cerberus.prefer_best_trigger = True
+    cfg.attack.cerberus.best_trigger_min_improvement = 1e-4
+    cfg.attack.cerberus.eval_poison_on_local_model = False
+    cfg.attack.cerberus.eval_split = 'test'
+    cfg.attack.cerberus.clean_ce_weight = 1.0
+    cfg.attack.cerberus.poison_ce_weight = 1.0
+    cfg.attack.cerberus.clean_target_suppression_weight = 0.0
+    cfg.attack.cerberus.clean_target_margin = 0.5
+    cfg.attack.cerberus.anchor_logits_weight = 0.0
+    cfg.attack.cerberus.backdoor_retain_weight = 0.0
+    cfg.attack.cerberus.replay_as_poison_augmentation = False
+    cfg.attack.cerberus.use_trigger_replay = False
+    cfg.attack.cerberus.retain_current_when_no_replay = False
+    cfg.attack.cerberus.constrain_update_to_anchor = False
+    cfg.attack.cerberus.anchor_residual_gamma = 0.5
+    cfg.attack.cerberus.benign_reference_lr = 0.001
+    cfg.attack.cerberus.benign_reference_epochs = 0
+    cfg.attack.cerberus.auto_scale = False
+    cfg.attack.cerberus.auto_scale_max = 1.0
+    cfg.attack.cerberus.scale_cap = 1.0
+    cfg.attack.cerberus.trigger_search_steps = 0
+    cfg.attack.cerberus.trigger_update_interval = 1
+    cfg.attack.cerberus.trigger_search_batches = 2
+    cfg.attack.cerberus.trigger_search_batch_size = 8
+    cfg.attack.cerberus.trigger_search_lr = 0.05
+    cfg.attack.cerberus.trigger_search_clip_min = -2.5
+    cfg.attack.cerberus.trigger_search_clip_max = 2.5
+    cfg.attack.cerberus.trigger_search_proj_norm = 12.0
+    cfg.attack.cerberus.trigger_search_target_margin = 1.0
+    cfg.attack.cerberus.trigger_search_gain_weight = 0.5
+    cfg.attack.cerberus.trigger_search_gain_margin = 0.5
+    cfg.attack.cerberus.trigger_search_l2_weight = 0.0001
+
+    # for SABRE full-image additive backdoor on the GGEUR MLP head
+    cfg.attack.sabre = CN()
+    cfg.attack.sabre.start_round = -1
+    cfg.attack.sabre.poison_epochs = 10
+    cfg.attack.sabre.clean_anchor_lr = 0.001
+    cfg.attack.sabre.clean_anchor_epochs = 1
+    cfg.attack.sabre.poison_lr = 0.001
+    cfg.attack.sabre.poison_optimizer = 'Adam'
+    cfg.attack.sabre.internal_poison_epochs = 1
+    cfg.attack.sabre.poisoning_per_batch = 0
+    cfg.attack.sabre.preserve_clean_batches = True
+    cfg.attack.sabre.trigger_init_mode = 'uniform'
+    cfg.attack.sabre.trigger_init = 0.0
+    cfg.attack.sabre.trigger_seed = 0
+    cfg.attack.sabre.trigger_random_scale = 0.01
+    cfg.attack.sabre.max_poison_samples = 0
+    cfg.attack.sabre.poison_feature_repeat = 1
+    cfg.attack.sabre.clean_ce_weight = 1.0
+    cfg.attack.sabre.poison_ce_weight = 1.0
+    cfg.attack.sabre.anchor_loss_weight = 0.01
+    cfg.attack.sabre.clean_target_suppression_weight = 0.0
+    cfg.attack.sabre.clean_target_margin = 0.5
+    cfg.attack.sabre.constrain_update_to_anchor = False
+    cfg.attack.sabre.anchor_residual_gamma = 0.5
+    cfg.attack.sabre.image_clip_min = -3.0
+    cfg.attack.sabre.image_clip_max = 3.0
+    cfg.attack.sabre.trigger_search_steps = 0
+    cfg.attack.sabre.trigger_update_interval = 1
+    cfg.attack.sabre.trigger_search_batches = 2
+    cfg.attack.sabre.trigger_search_batch_size = 8
+    cfg.attack.sabre.trigger_search_lr = 0.01
+    cfg.attack.sabre.trigger_search_clip_min = -0.05
+    cfg.attack.sabre.trigger_search_clip_max = 0.05
+    cfg.attack.sabre.trigger_search_proj_norm = 4.0
+    cfg.attack.sabre.trigger_search_target_margin = 1.0
+    cfg.attack.sabre.trigger_search_gain_weight = 0.5
+    cfg.attack.sabre.trigger_search_gain_margin = 0.5
+    cfg.attack.sabre.trigger_search_l2_weight = 0.0001
 
     # for reconstruct_opt
     cfg.attack.reconstruct_lr = 0.01
