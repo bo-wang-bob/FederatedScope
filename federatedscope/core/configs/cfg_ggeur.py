@@ -93,21 +93,6 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.mlp_weight_decay = 0.0
     cfg.ggeur.mlp_label_smoothing = 0.0
     cfg.ggeur.mlp_l2_reg = 0.0
-    # Legacy experiment namespaces retained for config compatibility. Their
-    # data augmentation implementations are independent of the unified
-    # security orchestration.
-    cfg.ggeur.mixup = CN()
-    cfg.ggeur.mixup.use = False
-    cfg.ggeur.mixup.alpha = 0.4
-    cfg.ggeur.mixup.prob = 1.0
-    cfg.ggeur.image_aug_defense = CN()
-    cfg.ggeur.image_aug_defense.use = False
-    cfg.ggeur.image_aug_defense.num_views = 2
-    cfg.ggeur.image_aug_defense.rotation_degrees = 15.0
-    cfg.ggeur.image_aug_defense.translate = 0.1
-    cfg.ggeur.image_aug_defense.shear_degrees = 10.0
-    cfg.ggeur.image_aug_defense.color_jitter = 0.2
-    cfg.ggeur.image_aug_defense.horizontal_flip_prob = 0.5
     cfg.ggeur.local_decoy = CN()
     cfg.ggeur.local_decoy.use = False
     cfg.ggeur.local_decoy.train_with_decoy = True

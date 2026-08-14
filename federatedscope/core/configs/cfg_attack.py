@@ -10,7 +10,7 @@ def extend_attack_cfg(cfg):
     cfg.attack = CN()
     cfg.attack.attack_method = ''
     # Compatibility fields used by the original editable GGEUR modular
-    # attack configs. Distributed PPA uses distributed_ppa below.
+    # attack configs and the standalone privacy plugins.
     cfg.attack.use_ggeur = False
     cfg.attack.modular_attacks = False
     cfg.attack.attack_plugins = []
@@ -207,18 +207,11 @@ def extend_attack_cfg(cfg):
     cfg.attack.mia_simulate_in_round = 20
     cfg.attack.mia_is_simulate_in = False
 
-    # Distributed FedMIA benchmark instrumentation for GGEUR. When enabled,
-    # each real client process evaluates a fixed member/non-member probe set
-    # against its local MLP head and uploads only derived loss/cosine scores.
-    # Raw images and feature vectors are not included in the report.
-    cfg.attack.distributed_fedmia = False
+    # Standalone FedMIA benchmark instrumentation for GGEUR.
     cfg.attack.fedmia_target_client_id = 1
     cfg.attack.fedmia_variant = "FedMIA-I"
-    cfg.attack.fedmia_probe_size = 32
-    cfg.attack.fedmia_nonmember_size = 32
     cfg.attack.fedmia_save_interval = 5
     cfg.attack.fedmia_store_grad_cos = True
-    cfg.attack.fedmia_round_agg = 'mean'
     cfg.attack.fedmia_shadow_stat_mode = 'indexed'
     cfg.attack.fedmia_var_floor = 1e-8
     cfg.attack.fedmia_compute_all_clients = False
@@ -234,12 +227,8 @@ def extend_attack_cfg(cfg):
     cfg.attack.ggeur_num_per_sample = 50
     cfg.attack.ggeur_use_cross_client = True
     cfg.attack.fedmia_use_image_aug_member = False
-    cfg.attack.fedmia_cross_eval = False
 
-    # Distributed GGEUR Meta-PPA. Each client computes
-    # global_sensitivity-local_sensitivity on local class probes and uploads
-    # only the derived feature vector plus its majority-class label.
-    cfg.attack.distributed_ppa = False
+    # Standalone GGEUR Meta-PPA settings.
     cfg.attack.meta_ppa_save_interval = 10
     cfg.attack.meta_ppa_probe_samples_per_class = 16
     cfg.attack.meta_ppa_probe_epochs = 3
@@ -254,25 +243,7 @@ def extend_attack_cfg(cfg):
 
 
 def assert_attack_cfg(cfg):
-    if cfg.attack.distributed_fedmia:
-        assert cfg.attack.fedmia_target_client_id > 0
-        assert cfg.attack.fedmia_probe_size > 0
-        assert cfg.attack.fedmia_nonmember_size >= 0
-        assert cfg.attack.fedmia_save_interval > 0
-        assert cfg.attack.mix_length > 0
-        assert cfg.attack.ggeur_target_size > 0
-        assert cfg.attack.fedmia_round_agg in ['mean', 'min', 'max', 'last']
-        assert cfg.attack.fedmia_shadow_stat_mode in ['global', 'indexed']
-        assert cfg.attack.fedmia_var_floor > 0
-    if cfg.attack.distributed_ppa:
-        assert cfg.attack.classifier_PIA in ['svm', 'randomforest', 'lr']
-        assert cfg.attack.meta_ppa_save_interval > 0
-        assert cfg.attack.meta_ppa_probe_samples_per_class > 0
-        assert cfg.attack.meta_ppa_probe_epochs > 0
-        assert cfg.attack.meta_ppa_probe_lr > 0
-        assert cfg.attack.meta_ppa_probe_batch_size > 0
-        assert cfg.attack.meta_ppa_max_attack_rounds >= 0
-        assert cfg.attack.meta_ppa_max_clients >= 0
+    pass
 
 
 register_config("attack", extend_attack_cfg)

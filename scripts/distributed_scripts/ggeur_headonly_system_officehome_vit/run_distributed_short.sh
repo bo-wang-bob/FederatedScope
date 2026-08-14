@@ -49,7 +49,7 @@ federate:
 
 data:
   type: 'office-home'
-  root: '/root/autodl-tmp/zqq/OfficeHomeDataset_10072016'
+  root: '/root/autodl-tmp/datasets/OfficeHomeDataset_10072016'
   splits: [0.7, 0.0, 0.3]
 
 dataloader:

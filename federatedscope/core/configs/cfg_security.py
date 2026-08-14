@@ -77,12 +77,6 @@ def assert_security_cfg(cfg):
         raise ValueError(
             "The unified GGEUR security flow only supports "
             "federate.mode=standalone")
-    if bool(getattr(attack, 'distributed_fedmia', False)) or \
-            bool(getattr(attack, 'distributed_ppa', False)):
-        raise ValueError(
-            "Real distributed privacy collectors are disabled; use the "
-            "standalone privacy mode")
-
     if mode == 'backdoor':
         if not has_backdoor:
             raise ValueError(
