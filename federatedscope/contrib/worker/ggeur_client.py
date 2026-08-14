@@ -15,9 +15,7 @@ import time
 import logging
 import copy
 import base64
-import hashlib
 import io
-import json
 import zlib
 import numpy as np
 import torch
@@ -25,6 +23,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
+from federatedscope.attack.auxiliary.a3fl_utils import \
+    get_a3fl_start_round, parse_attacker_ids, should_a3fl_attack
 from federatedscope.core.message import Message, b64serializer
 from federatedscope.core.auxiliaries.utils import param2tensor
 from federatedscope.core.workers import Client
@@ -190,6 +190,8 @@ class GGEURClient(Client):
         self.augmented_features = None
         self.augmented_labels = None
         self.augmented_loader = None
+        self.base_augmented_features = None
+        self.base_augmented_labels = None
 
         # Real local features saved before augmentation (for PromptFL training)
         self.real_local_features = {}
@@ -197,6 +199,8 @@ class GGEURClient(Client):
 
         # MLP classifier
         self.mlp_classifier = None
+        # 自适应 DP：保存接收到的全局 MLP 状态，用于上传时计算 delta
+        self._adaptive_dp_global_mlp_state = None
 
         # State tracking
         self.statistics_uploaded = False
@@ -229,24 +233,75 @@ class GGEURClient(Client):
         self.custom_clip = None        # CustomCLIP (HuggingFace-based) for PromptFL
         self.hf_clip_model = None      # HuggingFace CLIPModel (separate from open_clip)
         self.global_prompt_ctx = None  # Latest global PromptFL context
-        self.fail_after_stage = str(
-            getattr(self.ggeur_cfg, 'fail_after_stage', '') or '')
-        self.fail_on_round = int(getattr(self.ggeur_cfg, 'fail_on_round', -1))
 
-    def _maybe_fail_for_distributed_validation(self, stage, round_idx=None):
-        """Intentional process exit hook for distributed scenario tests."""
-        if not self.fail_after_stage:
-            return
-        if self.fail_after_stage != stage:
-            return
-        if round_idx is not None and self.fail_on_round >= 0 and \
-                int(round_idx) != int(self.fail_on_round):
-            return
-        logger.error(
-            f"Client {self.ID}: Fault injection exit at stage={stage}, "
-            f"round={round_idx}")
-        raise SystemExit(
-            f"GGEUR distributed validation fault injection: {stage}")
+        # ===== A3FL Mode =====
+        attack_method = str(getattr(config.attack, 'attack_method', '')).lower()
+        self.a3fl_enabled = attack_method == 'a3fl'
+        self.a3fl_cfg = getattr(config.attack, 'a3fl', None)
+        self.a3fl_attacker_ids = set(parse_attacker_ids(config.attack.attacker_id))
+        self.a3fl_is_attacker = self.a3fl_enabled and self.ID in self.a3fl_attacker_ids
+        self.a3fl_trigger = None
+        self.a3fl_mask = None
+        self.a3fl_latest_meta = {'active': False, 'client_id': int(self.ID)}
+
+        # ===== CERBERUS Mode =====
+        # Ported to the GGEUR feature-head path from doc/attack/user.py:
+        # poisoned CE + clean-anchor distance + optional peer-model cosine.
+        self.cerberus_enabled = attack_method == 'cerberus'
+        self.cerberus_cfg = getattr(config.attack, 'cerberus', None)
+        self.cerberus_attacker_ids = set(parse_attacker_ids(config.attack.attacker_id))
+        self.cerberus_is_attacker = (
+            self.cerberus_enabled and self.ID in self.cerberus_attacker_ids)
+        self.cerberus_trigger = None
+        self.cerberus_mask = None
+        self.cerberus_peer_models = {}
+        self.cerberus_latest_meta = {
+            'active': False,
+            'client_id': int(self.ID)
+        }
+
+        # ===== SABRE Mode =====
+        # Full-image additive trigger on the GGEUR feature-head path.
+        self.sabre_enabled = attack_method == 'sabre'
+        self.sabre_cfg = getattr(config.attack, 'sabre', None)
+        self.sabre_attacker_ids = set(parse_attacker_ids(config.attack.attacker_id))
+        self.sabre_is_attacker = (
+            self.sabre_enabled and self.ID in self.sabre_attacker_ids)
+        self.sabre_trigger = None
+        self.sabre_mask = None
+        self.sabre_latest_meta = {
+            'active': False,
+            'client_id': int(self.ID)
+        }
+
+        # ===== Label-flipping Data Poisoning Mode =====
+        # Ported from doc/DataPoisoning_FL: malicious clients replace local
+        # class labels before local training. In GGEUR, the poisoned labels can
+        # optionally affect both the feature statistics/augmentation stage and
+        # the per-round augmented-feature training stage.
+        self.label_flip_enabled = attack_method in (
+            'label_flip', 'label_flipping', 'data_poisoning')
+        self.label_flip_cfg = getattr(config.attack, 'label_flip', None)
+        self.label_flip_attacker_ids = set(
+            parse_attacker_ids(config.attack.attacker_id))
+        self.label_flip_is_attacker = (
+            self.label_flip_enabled and self.ID in self.label_flip_attacker_ids)
+        self.label_flip_feature_flip_count = 0
+        self.label_flip_latest_meta = {
+            'active': False,
+            'client_id': int(self.ID)
+        }
+
+        # ===== A Little Is Enough / ALIE Model-Poisoning Mode =====
+        # The coordinated parameter rewrite is applied by the GGEUR server
+        # just before aggregation, where same-round attacker statistics are
+        # available. The client tracks identity for cache metadata and logging.
+        self.lie_enabled = attack_method in (
+            'little_is_enough', 'lie', 'alie')
+        self.lie_cfg = getattr(config.attack, 'little_is_enough', None)
+        self.lie_attacker_ids = set(parse_attacker_ids(config.attack.attacker_id))
+        self.lie_is_attacker = (
+            self.lie_enabled and self.ID in self.lie_attacker_ids)
 
     def _register_default_handlers(self):
         """Register message handlers"""
@@ -255,8 +310,6 @@ class GGEURClient(Client):
         # Register handler for receiving global covariance matrices
         self.register_handlers('global_covariances',
                                self.callback_for_global_covariances)
-        self.register_handlers('client_eval',
-                               self.callback_for_client_eval)
 
     def _load_feature_extractor(self):
         """Load feature extractor (CLIP / CNN / timm based on config)"""
@@ -288,6 +341,2294 @@ class GGEURClient(Client):
         if unloaded:
             torch.cuda.empty_cache()
             logger.info(f"Client {self.ID}: Feature extractor unloaded from GPU")
+
+    def _extractor_forward(self, images, allow_input_grad=False):
+        if self.feature_extractor_type == 'cnn':
+            if allow_input_grad and self.cnn_extractor is not None and \
+                    getattr(self.cnn_extractor, 'freeze', False):
+                features = self.cnn_extractor.backbone(images)
+                if features.dim() > 2:
+                    features = features.view(features.size(0), -1)
+                return features
+            return self.cnn_extractor(images)
+        if self.feature_extractor_type == 'timm':
+            if allow_input_grad and self.timm_extractor is not None and \
+                    getattr(self.timm_extractor, 'freeze', False):
+                features = self.timm_extractor.backbone(images)
+                if features.dim() > 2:
+                    features = features.view(features.size(0), -1)
+                return features
+            return self.timm_extractor(images)
+        return self.clip_model.encode_image(images)
+
+    def _get_train_dataset_base(self):
+        train_data = self.trainer.ctx.data.get('train', None)
+        if train_data is None:
+            train_data = self.data.get('train', None)
+        if train_data is None:
+            return None, None
+
+        dataset = train_data.dataset if hasattr(train_data, 'dataset') else train_data
+        from torch.utils.data import Subset
+        if isinstance(dataset, Subset):
+            return dataset.dataset, list(dataset.indices)
+        return dataset, list(range(len(dataset)))
+
+    def _is_label_flip_active_round(self, round_idx):
+        if not self.label_flip_enabled or self.label_flip_cfg is None:
+            return False
+
+        start_round = int(getattr(
+            self.label_flip_cfg, 'start_round',
+            getattr(self._cfg.attack, 'inject_round', 0)))
+        if start_round < 0:
+            start_round = int(getattr(self._cfg.attack, 'inject_round', 0))
+        if int(round_idx) < start_round:
+            return False
+
+        poison_epochs = int(getattr(self.label_flip_cfg, 'poison_epochs', 0))
+        if poison_epochs <= 0:
+            return True
+        return int(round_idx) < start_round + poison_epochs
+
+    def _should_label_flip_attack(self, round_idx):
+        return (
+            self.label_flip_enabled and self.label_flip_is_attacker and
+            self._is_label_flip_active_round(round_idx)
+        )
+
+    def _get_label_flip_target_label(self):
+        # Per-attacker target labels: the i-th attacker in attacker_id uses
+        # target_labels[i]. Falls back to the shared target_label_ind.
+        target_labels = getattr(self.label_flip_cfg, 'target_labels', [])
+        if target_labels:
+            attacker_ids = sorted(self.label_flip_attacker_ids)
+            try:
+                idx = attacker_ids.index(self.ID)
+                if 0 <= idx < len(target_labels):
+                    return int(target_labels[idx])
+            except ValueError:
+                pass  # Not an attacker — fall through to shared target.
+
+        target = int(getattr(
+            self.label_flip_cfg, 'target_label_ind',
+            getattr(self._cfg.attack, 'target_label_ind', -1)))
+        if target < 0:
+            target = int(getattr(self._cfg.attack, 'target_label_ind', -1))
+        return target
+
+    def _get_label_flip_pairs(self):
+        if self.label_flip_cfg is None:
+            return []
+
+        pairs = []
+        raw_pairs = getattr(self.label_flip_cfg, 'replacement_pairs', [])
+        if raw_pairs:
+            for pair in raw_pairs:
+                if pair is None or len(pair) != 2:
+                    continue
+                source, target = int(pair[0]), int(pair[1])
+                if source >= 0 and target >= 0 and source != target:
+                    pairs.append((source, target))
+
+        if pairs:
+            return pairs
+
+        source = getattr(self.label_flip_cfg, 'source_label_ind', -1)
+        target = self._get_label_flip_target_label()
+        if target < 0:
+            return []
+
+        if isinstance(source, (list, tuple)):
+            for item in source:
+                src = int(item)
+                if src >= 0 and src != target:
+                    pairs.append((src, target))
+        else:
+            source = int(source)
+            if source >= 0 and source != target:
+                pairs.append((source, target))
+
+        return pairs
+
+    def _apply_label_flip_to_numpy_labels(self, labels, round_idx, context):
+        arr = np.asarray(labels).copy()
+        if arr.size == 0 or not self._should_label_flip_attack(round_idx):
+            return arr, 0, {}
+
+        target_label = self._get_label_flip_target_label()
+        all_to_target = bool(
+            getattr(self.label_flip_cfg, 'all_to_target', False))
+        replacement_targets = arr.copy()
+        eligible = np.zeros(arr.shape, dtype=bool)
+
+        if all_to_target and target_label >= 0:
+            eligible = arr != target_label
+            replacement_targets[eligible] = target_label
+        else:
+            for source, target in self._get_label_flip_pairs():
+                mask = arr == source
+                if not mask.any():
+                    continue
+                replacement_targets[mask] = target
+                eligible |= mask
+
+        eligible_indices = np.flatnonzero(eligible.reshape(-1))
+        if eligible_indices.size == 0:
+            return arr, 0, {}
+
+        poison_ratio = float(getattr(
+            self.label_flip_cfg, 'poison_ratio',
+            getattr(self._cfg.attack, 'poison_ratio', 1.0)))
+        poison_ratio = max(0.0, min(1.0, poison_ratio))
+        if poison_ratio <= 0.0:
+            return arr, 0, {}
+
+        selected = eligible_indices
+        if poison_ratio < 1.0:
+            poison_num = max(1, int(round(eligible_indices.size *
+                                          poison_ratio)))
+            seed = int(getattr(self._cfg, 'seed', 0))
+            context_offset = sum(ord(ch) for ch in str(context))
+            rng = np.random.RandomState(
+                seed + int(round_idx) * 1009 + int(self.ID) * 9173 +
+                context_offset)
+            selected = rng.choice(eligible_indices,
+                                  size=min(poison_num, eligible_indices.size),
+                                  replace=False)
+
+        flat_arr = arr.reshape(-1)
+        flat_targets = replacement_targets.reshape(-1)
+        flat_arr[selected] = flat_targets[selected]
+
+        actual_counts = {}
+        original_flat = np.asarray(labels).reshape(-1)
+        for idx in selected:
+            key = f'{int(original_flat[idx])}->{int(flat_targets[idx])}'
+            actual_counts[key] = actual_counts.get(key, 0) + 1
+
+        return arr, int(len(selected)), actual_counts
+
+    def _apply_label_flip_to_tensor_labels(self, labels, round_idx, context):
+        if not isinstance(labels, torch.Tensor):
+            flipped, _, _ = self._apply_label_flip_to_numpy_labels(
+                labels, round_idx, context)
+            return flipped
+
+        flipped, _, _ = self._apply_label_flip_to_numpy_labels(
+            labels.detach().cpu().numpy(), round_idx, context)
+        return torch.as_tensor(flipped, dtype=labels.dtype,
+                               device=labels.device)
+
+    def _label_flip_label_for_statistics(self, label):
+        if not bool(getattr(self.label_flip_cfg, 'poison_statistics', True)):
+            return int(label)
+        flipped, count, _ = self._apply_label_flip_to_numpy_labels(
+            np.asarray([int(label)]), self.state, 'statistics')
+        self.label_flip_feature_flip_count += int(count)
+        return int(flipped[0])
+
+    def _apply_label_flip_to_augmented_data(self, round_idx):
+        if not self.label_flip_enabled:
+            return
+        active = self._should_label_flip_attack(round_idx)
+        self.label_flip_latest_meta = {
+            'active': bool(active),
+            'client_id': int(self.ID),
+            'round': int(round_idx),
+            'poison_ratio': float(getattr(
+                self.label_flip_cfg, 'poison_ratio',
+                getattr(self._cfg.attack, 'poison_ratio', 1.0))),
+            'poison_statistics': bool(getattr(
+                self.label_flip_cfg, 'poison_statistics', True)),
+            'poison_training': bool(getattr(
+                self.label_flip_cfg, 'poison_training', True)),
+        }
+        if not bool(getattr(self.label_flip_cfg, 'poison_training', True)):
+            return
+
+        # Update-reversal mode: train on clean data, attack happens at upload
+        # time by reversing the model update. No label flipping needed.
+        if bool(getattr(self.label_flip_cfg, 'update_reversal', False)):
+            self.label_flip_latest_meta['update_reversal'] = True
+            logger.info(
+                f"Client {self.ID}: update-reversal attack active in round "
+                f"{int(round_idx)} — training on clean data, will reverse "
+                f"update at upload")
+            return
+
+        self._restore_base_augmented_dataset()
+        if not active or self.augmented_labels is None:
+            return
+
+        flipped_labels, flipped_count, counts = \
+            self._apply_label_flip_to_numpy_labels(
+                self.augmented_labels, round_idx, 'augmented_training')
+        self.augmented_labels = flipped_labels.astype(
+            np.asarray(self.augmented_labels).dtype, copy=False)
+        dataset = AugmentedFeatureDataset(self.augmented_features,
+                                          self.augmented_labels)
+        self.augmented_loader = DataLoader(
+            dataset,
+            batch_size=self._cfg.dataloader.batch_size,
+            shuffle=True)
+        self.label_flip_latest_meta.update({
+            'flipped_samples': int(flipped_count),
+            'replacement_counts': counts,
+            'target_label': int(self._get_label_flip_target_label()),
+        })
+        logger.info(
+            f"Client {self.ID}: Label-flip poisoning active in round "
+            f"{int(round_idx)} - flipped {int(flipped_count)} augmented "
+            f"labels ({counts})")
+
+    def _ensure_a3fl_trigger(self, sample_image):
+        if self.a3fl_trigger is not None and self.a3fl_mask is not None:
+            return
+        if sample_image.dim() != 3:
+            raise ValueError('A3FL requires image tensor with shape [C, H, W].')
+
+        _, height, width = sample_image.shape
+        trigger_size = max(1, int(getattr(self.a3fl_cfg, 'trigger_size', 5)))
+        trigger_offset = max(0, int(getattr(self.a3fl_cfg, 'trigger_offset', 2)))
+        patch_h = min(trigger_size, height)
+        patch_w = min(trigger_size, width)
+        start_h = min(trigger_offset, max(0, height - patch_h))
+        start_w = min(trigger_offset, max(0, width - patch_w))
+
+        self.a3fl_trigger = torch.full(
+            (1, sample_image.shape[0], height, width),
+            float(getattr(self.a3fl_cfg, 'trigger_init', 0.5)),
+            device=self.device)
+        self.a3fl_mask = torch.zeros_like(self.a3fl_trigger)
+        self.a3fl_mask[:, :, start_h:start_h + patch_h,
+                       start_w:start_w + patch_w] = 1.0
+
+    def _apply_a3fl_trigger(self, images):
+        if self.a3fl_trigger is None or self.a3fl_mask is None:
+            return images
+        return self.a3fl_trigger * self.a3fl_mask + images * (1.0 -
+                                                              self.a3fl_mask)
+
+    def _a3fl_to_visual_tensor(self, images):
+        images = images.detach().cpu().float()
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+
+        if self.feature_extractor_type == 'clip':
+            mean = torch.tensor([0.48145466, 0.4578275, 0.40821073],
+                                dtype=images.dtype).view(1, 3, 1, 1)
+            std = torch.tensor([0.26862954, 0.26130258, 0.27577711],
+                               dtype=images.dtype).view(1, 3, 1, 1)
+            images = images * std + mean
+        elif images.shape[1] == 3:
+            mean = torch.tensor([0.485, 0.456, 0.406],
+                                dtype=images.dtype).view(1, 3, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225],
+                               dtype=images.dtype).view(1, 3, 1, 1)
+            if images.min() < 0.0 or images.max() > 1.0:
+                images = images * std + mean
+
+        return torch.clamp(images, 0.0, 1.0)
+
+    def _save_a3fl_trigger_visuals(self, round_idx, clean_images,
+                                   poisoned_images):
+        if not bool(getattr(self.a3fl_cfg, 'save_trigger_samples', False)):
+            return
+        if clean_images is None or poisoned_images is None or \
+                clean_images.numel() == 0 or poisoned_images.numel() == 0:
+            return
+
+        from torchvision.utils import save_image
+
+        max_samples = max(
+            1, int(getattr(self.a3fl_cfg, 'save_trigger_max_samples', 4)))
+        clean_images = clean_images[:max_samples]
+        poisoned_images = poisoned_images[:max_samples]
+
+        clean_vis = self._a3fl_to_visual_tensor(clean_images)
+        poisoned_vis = self._a3fl_to_visual_tensor(poisoned_images)
+        delta_vis = torch.clamp(
+            (poisoned_vis - clean_vis).abs() * 4.0, 0.0, 1.0)
+        trigger_vis = self._a3fl_to_visual_tensor(
+            self.a3fl_trigger * self.a3fl_mask)
+        mask_vis = self.a3fl_mask.detach().cpu().float()
+        if mask_vis.dim() == 4 and mask_vis.shape[1] > 1:
+            mask_vis = mask_vis[:, :1, :, :]
+
+        round_dir = os.path.join(self._cfg.outdir, 'a3fl_samples',
+                                 f'client_{self.ID}', f'round_{int(round_idx)}')
+        os.makedirs(round_dir, exist_ok=True)
+
+        save_image(clean_vis,
+                   os.path.join(round_dir, 'clean_grid.png'),
+                   nrow=min(max_samples, clean_vis.shape[0]))
+        save_image(poisoned_vis,
+                   os.path.join(round_dir, 'poisoned_grid.png'),
+                   nrow=min(max_samples, poisoned_vis.shape[0]))
+        save_image(delta_vis,
+                   os.path.join(round_dir, 'delta_grid.png'),
+                   nrow=min(max_samples, delta_vis.shape[0]))
+        save_image(trigger_vis,
+                   os.path.join(round_dir, 'trigger.png'))
+        save_image(mask_vis,
+                   os.path.join(round_dir, 'mask.png'))
+        logger.info(
+            f"Client {self.ID}: Saved A3FL trigger visualizations to {round_dir}")
+
+    def _evaluate_a3fl_target_rate(self,
+                                   base_dataset,
+                                   subset_indices,
+                                   max_batches=None):
+        if self.mlp_classifier is None or not subset_indices:
+            return 0.0, 0
+
+        batch_size = max(1, int(getattr(self.ggeur_cfg, 'extract_batch_size', 64)))
+        target_label = int(self._cfg.attack.target_label_ind)
+        max_batches = max_batches or len(subset_indices)
+
+        self.mlp_classifier.eval()
+        self._load_feature_extractor()
+        if self.feature_extractor_type == 'clip' and self.clip_model is not None:
+            self.clip_model.eval()
+        if self.feature_extractor_type == 'cnn' and self.cnn_extractor is not None:
+            self.cnn_extractor.eval()
+        if self.feature_extractor_type == 'timm' and self.timm_extractor is not None:
+            self.timm_extractor.eval()
+
+        total = 0
+        target_hits = 0
+        processed_batches = 0
+        with torch.no_grad():
+            for batch_start in range(0, len(subset_indices), batch_size):
+                batch_indices = subset_indices[batch_start:batch_start + batch_size]
+                if not batch_indices:
+                    continue
+                images = []
+                for base_idx in batch_indices:
+                    image, _ = base_dataset[base_idx]
+                    images.append(image)
+                images = torch.stack(images).to(self.device)
+                poisoned_images = self._apply_a3fl_trigger(images)
+                features = self._extractor_forward(
+                    poisoned_images, allow_input_grad=True).float()
+                logits = self.mlp_classifier(features)
+                preds = torch.argmax(logits, dim=1)
+                target_hits += preds.eq(target_label).sum().item()
+                total += preds.shape[0]
+                processed_batches += 1
+                if processed_batches >= max_batches:
+                    break
+
+        return (target_hits / total if total > 0 else 0.0), total
+
+    def _compute_a3fl_debug_metrics(self, images, poisoned_images):
+        if self.mlp_classifier is None or images is None or poisoned_images is None:
+            return {}
+
+        target_label = int(self._cfg.attack.target_label_ind)
+        with torch.no_grad():
+            clean_features = self._extractor_forward(images).float()
+            poison_features = self._extractor_forward(poisoned_images).float()
+            clean_logits = self.mlp_classifier(clean_features)
+            poison_logits = self.mlp_classifier(poison_features)
+
+            clean_preds = torch.argmax(clean_logits, dim=1)
+            poison_preds = torch.argmax(poison_logits, dim=1)
+
+            clean_target_logits = clean_logits[:, target_label]
+            poison_target_logits = poison_logits[:, target_label]
+
+            feature_shift = torch.norm(
+                poison_features - clean_features, dim=1).mean().item()
+            clean_target_rate = clean_preds.eq(target_label).float().mean().item()
+            poison_target_rate = poison_preds.eq(target_label).float().mean().item()
+            target_logit_gain = (
+                poison_target_logits - clean_target_logits).mean().item()
+            clean_target_logit = clean_target_logits.mean().item()
+            poison_target_logit = poison_target_logits.mean().item()
+
+        return {
+            'feature_shift_l2': float(feature_shift),
+            'clean_target_rate': float(clean_target_rate),
+            'poison_target_rate': float(poison_target_rate),
+            'target_logit_gain': float(target_logit_gain),
+            'clean_target_logit': float(clean_target_logit),
+            'poison_target_logit': float(poison_target_logit),
+        }
+
+    def _strengthen_a3fl_mlp_update(self, global_state_dict, local_state_dict):
+        if global_state_dict is None or local_state_dict is None:
+            return local_state_dict
+
+        update_scale = float(getattr(self.a3fl_cfg, 'update_scale', 1.0))
+        target_row_scale = float(
+            getattr(self.a3fl_cfg, 'target_row_scale', 1.0))
+        if update_scale == 1.0 and target_row_scale == 1.0:
+            return local_state_dict
+
+        target_label = int(self._cfg.attack.target_label_ind)
+        num_classes = int(self._cfg.model.num_classes)
+        strengthened_state = copy.deepcopy(local_state_dict)
+        total_delta_norm = 0.0
+        target_delta_norm = 0.0
+
+        for key, local_tensor in strengthened_state.items():
+            global_tensor = global_state_dict.get(key, None)
+            if global_tensor is None or not torch.is_tensor(local_tensor):
+                continue
+
+            global_tensor = global_tensor.to(local_tensor.device)
+            delta = local_tensor - global_tensor
+
+            if update_scale != 1.0:
+                delta = delta * update_scale
+
+            if target_row_scale != 1.0:
+                if delta.dim() >= 2 and delta.shape[0] == num_classes:
+                    delta[target_label] = delta[target_label] * target_row_scale
+                elif delta.dim() == 1 and delta.shape[0] == num_classes:
+                    delta[target_label] = delta[target_label] * target_row_scale
+
+            strengthened_state[key] = global_tensor + delta
+            total_delta_norm += delta.norm().item()
+
+            if delta.dim() >= 2 and delta.shape[0] == num_classes:
+                target_delta_norm += delta[target_label].norm().item()
+            elif delta.dim() == 1 and delta.shape[0] == num_classes:
+                target_delta_norm += delta[target_label].abs().item()
+
+        self.a3fl_latest_meta.update({
+            'update_scale': float(update_scale),
+            'target_row_scale': float(target_row_scale),
+            'strengthened_total_delta_norm': float(total_delta_norm),
+            'strengthened_target_delta_norm': float(target_delta_norm),
+        })
+        logger.info(
+            f"Client {self.ID}: A3FL update strengthen - "
+            f"update_scale={update_scale:.2f}, "
+            f"target_row_scale={target_row_scale:.2f}, "
+            f"total_delta_norm={total_delta_norm:.4f}, "
+            f"target_delta_norm={target_delta_norm:.4f}")
+        return strengthened_state
+
+    def _run_a3fl_trigger_search(self):
+        if not self.a3fl_enabled or not self.a3fl_is_attacker or \
+                self.mlp_classifier is None:
+            return False
+
+        base_dataset, subset_indices = self._get_train_dataset_base()
+        if base_dataset is None or not subset_indices:
+            logger.warning(f"Client {self.ID}: No dataset available for A3FL trigger search")
+            return False
+
+        self._load_feature_extractor()
+        first_image, _ = base_dataset[subset_indices[0]]
+        self._ensure_a3fl_trigger(first_image.to(self.device))
+
+        batch_size = max(1, int(getattr(self.ggeur_cfg, 'extract_batch_size', 64)))
+        outer_epochs = max(1, int(getattr(self.a3fl_cfg, 'trigger_outer_epochs', 5)))
+        batch_limit = max(1, int(getattr(self.a3fl_cfg, 'trigger_search_batches', 1)))
+        trigger_lr = float(getattr(self.a3fl_cfg, 'trigger_lr', 0.01))
+        clip_min = float(getattr(self.a3fl_cfg, 'trigger_clip_min', -2.0))
+        clip_max = float(getattr(self.a3fl_cfg, 'trigger_clip_max', 2.0))
+        target_label = int(self._cfg.attack.target_label_ind)
+        criterion = nn.CrossEntropyLoss()
+
+        self.mlp_classifier.eval()
+        if self.feature_extractor_type == 'clip' and self.clip_model is not None:
+            self.clip_model.eval()
+        if self.feature_extractor_type == 'cnn' and self.cnn_extractor is not None:
+            self.cnn_extractor.eval()
+        if self.feature_extractor_type == 'timm' and self.timm_extractor is not None:
+            self.timm_extractor.eval()
+
+        trigger = self.a3fl_trigger.detach().clone()
+        processed_batches = 0
+        max_batches = outer_epochs * batch_limit
+        for _ in range(outer_epochs):
+            for batch_start in range(0, len(subset_indices), batch_size):
+                batch_indices = subset_indices[batch_start:batch_start + batch_size]
+                if not batch_indices:
+                    continue
+                images = []
+                for base_idx in batch_indices:
+                    image, _ = base_dataset[base_idx]
+                    images.append(image)
+                images = torch.stack(images).to(self.device)
+                labels = torch.full((images.shape[0], ),
+                                    target_label,
+                                    dtype=torch.long,
+                                    device=self.device)
+
+                trigger.requires_grad_()
+                poisoned_images = trigger * self.a3fl_mask + images * (
+                    1.0 - self.a3fl_mask)
+                features = self._extractor_forward(
+                    poisoned_images, allow_input_grad=True).float()
+                logits = self.mlp_classifier(features)
+                loss = criterion(logits, labels)
+                grad = torch.autograd.grad(loss, trigger)[0]
+                trigger = trigger.detach() - trigger_lr * grad.sign()
+                trigger = torch.clamp(trigger, clip_min, clip_max)
+                processed_batches += 1
+                if processed_batches >= max_batches:
+                    break
+            if processed_batches >= max_batches:
+                break
+
+        self.a3fl_trigger = trigger.detach()
+        target_rate, target_total = self._evaluate_a3fl_target_rate(
+            base_dataset, subset_indices, max_batches=batch_limit)
+        debug_sample_count = min(len(subset_indices), batch_size)
+        debug_metrics = {}
+        if debug_sample_count > 0:
+            debug_images = []
+            for base_idx in subset_indices[:debug_sample_count]:
+                image, _ = base_dataset[base_idx]
+                debug_images.append(image)
+            debug_images = torch.stack(debug_images).to(self.device)
+            debug_poisoned_images = self._apply_a3fl_trigger(debug_images)
+            debug_metrics = self._compute_a3fl_debug_metrics(
+                debug_images, debug_poisoned_images)
+            self.a3fl_latest_meta.update({
+                'trigger_target_rate': float(target_rate),
+                'trigger_eval_samples': int(target_total),
+                'trigger_feature_shift_l2':
+                    debug_metrics['feature_shift_l2'],
+                'trigger_clean_target_rate':
+                    debug_metrics['clean_target_rate'],
+                'trigger_poison_target_rate':
+                    debug_metrics['poison_target_rate'],
+                'trigger_target_logit_gain':
+                    debug_metrics['target_logit_gain'],
+                'trigger_clean_target_logit':
+                    debug_metrics['clean_target_logit'],
+                'trigger_poison_target_logit':
+                    debug_metrics['poison_target_logit'],
+            })
+        logger.info(
+            f"Client {self.ID}: A3FL trigger search finished using {processed_batches} batches, "
+            f"target_hit_rate={target_rate:.4f} on {target_total} samples")
+        if debug_metrics:
+            logger.info(
+                f"Client {self.ID}: A3FL trigger debug - "
+                f"clean_target_rate={debug_metrics['clean_target_rate']:.4f}, "
+                f"poison_target_rate={debug_metrics['poison_target_rate']:.4f}, "
+                f"target_logit_gain={debug_metrics['target_logit_gain']:.4f}, "
+                f"feature_shift_l2={debug_metrics['feature_shift_l2']:.4f}")
+        return processed_batches > 0
+
+    def _should_update_a3fl_trigger(self, round_idx):
+        if self.a3fl_trigger is None or self.a3fl_mask is None:
+            return True
+
+        update_interval = max(
+            1, int(getattr(self.a3fl_cfg, 'trigger_update_interval', 1)))
+        start_round = get_a3fl_start_round(self._cfg)
+        active_offset = int(round_idx) - int(start_round)
+        return active_offset % update_interval == 0
+
+    def _get_a3fl_trigger_update_interval(self):
+        return max(
+            1, int(getattr(self.a3fl_cfg, 'trigger_update_interval', 1)))
+
+    def _train_a3fl_on_augmented_data(self):
+        train_epochs = int(getattr(self.a3fl_cfg, 'poison_train_epochs', 0))
+        if train_epochs <= 0:
+            train_epochs = int(self._cfg.train.local_update_steps)
+        train_epochs = max(1, train_epochs)
+
+        train_lr = float(getattr(self.a3fl_cfg, 'poison_train_lr', 0.0))
+        if train_lr <= 0:
+            train_lr = float(self._cfg.train.optimizer.lr)
+
+        self.a3fl_latest_meta.update({
+            'poison_train_epochs': int(train_epochs),
+            'poison_train_lr': float(train_lr),
+        })
+        return self._train_on_augmented_data(local_epochs=train_epochs,
+                                             lr=train_lr,
+                                             log_prefix='A3FL train')
+
+    def _restore_base_augmented_dataset(self):
+        if self.base_augmented_features is None or self.base_augmented_labels is None:
+            return
+        self.augmented_features = self.base_augmented_features.copy()
+        self.augmented_labels = self.base_augmented_labels.copy()
+        dataset = AugmentedFeatureDataset(self.augmented_features,
+                                          self.augmented_labels)
+        self.augmented_loader = DataLoader(dataset,
+                                           batch_size=self._cfg.dataloader.batch_size,
+                                           shuffle=True)
+
+    def _inject_a3fl_poison_features(self, round_idx):
+        if not self.a3fl_enabled:
+            return
+
+        self._restore_base_augmented_dataset()
+        active = self.a3fl_is_attacker and should_a3fl_attack(
+            self._cfg, round_idx, self.ID, self._cfg.federate.sample_client_num)
+        self.a3fl_latest_meta = {
+            'active': bool(active),
+            'client_id': int(self.ID),
+            'round': int(round_idx),
+            'target_label': int(self._cfg.attack.target_label_ind),
+        }
+        if not active:
+            return
+
+        trigger_update_interval = self._get_a3fl_trigger_update_interval()
+        optimize_trigger = self._should_update_a3fl_trigger(round_idx)
+        self.a3fl_latest_meta.update({
+            'trigger_update_interval': int(trigger_update_interval),
+            'trigger_optimized': bool(optimize_trigger),
+        })
+        if optimize_trigger:
+            if not self._run_a3fl_trigger_search():
+                self.a3fl_latest_meta['active'] = False
+                self.a3fl_latest_meta['trigger_optimized'] = False
+                return
+        else:
+            logger.info(
+                f"Client {self.ID}: Reusing A3FL trigger in round {round_idx}; "
+                f"optimization interval={trigger_update_interval}")
+
+        base_dataset, subset_indices = self._get_train_dataset_base()
+        if base_dataset is None or not subset_indices:
+            return
+
+        poison_count = max(1, int(len(subset_indices) * float(self._cfg.attack.poison_ratio)))
+        poison_count = min(poison_count, len(subset_indices))
+        rng = np.random.RandomState(int(self._cfg.seed) + int(round_idx) + int(self.ID) * 997)
+        selected_indices = rng.choice(subset_indices, size=poison_count, replace=False).tolist()
+
+        self._load_feature_extractor()
+        poison_features = []
+        sample_clean_images = []
+        sample_poisoned_images = []
+        debug_clean_feature_chunks = []
+        debug_poison_feature_chunks = []
+        batch_size = max(1, int(getattr(self.ggeur_cfg, 'extract_batch_size', 64)))
+        sample_budget = max(
+            1, int(getattr(self.a3fl_cfg, 'save_trigger_max_samples', 4)))
+        with torch.no_grad():
+            for start in range(0, len(selected_indices), batch_size):
+                batch_indices = selected_indices[start:start + batch_size]
+                images = []
+                for base_idx in batch_indices:
+                    image, _ = base_dataset[base_idx]
+                    images.append(image)
+                images = torch.stack(images).to(self.device)
+                poisoned_images = self._apply_a3fl_trigger(images)
+                saved_samples = sum(
+                    tensor.shape[0] for tensor in sample_clean_images)
+                if saved_samples < sample_budget:
+                    remain = sample_budget - saved_samples
+                    sample_clean_images.append(images[:remain].detach().cpu())
+                    sample_poisoned_images.append(
+                        poisoned_images[:remain].detach().cpu())
+                    debug_clean_feature_chunks.append(
+                        self._extractor_forward(images[:remain]).float().cpu())
+                    debug_poison_feature_chunks.append(
+                        self._extractor_forward(
+                            poisoned_images[:remain]).float().cpu())
+                features = self._extractor_forward(poisoned_images).float()
+                poison_features.append(features.cpu().numpy())
+
+        if not poison_features:
+            return
+
+        poison_features = np.vstack(poison_features)
+        poison_repeat = max(
+            1, int(getattr(self.a3fl_cfg, 'poison_feature_repeat', 1)))
+        if poison_repeat > 1:
+            poison_features = np.repeat(poison_features,
+                                        poison_repeat,
+                                        axis=0)
+        poison_labels = np.full(poison_features.shape[0],
+                                int(self._cfg.attack.target_label_ind),
+                                dtype=np.int64)
+
+        self.augmented_features = np.vstack(
+            [self.augmented_features, poison_features]).astype(np.float32)
+        self.augmented_labels = np.concatenate(
+            [self.augmented_labels, poison_labels]).astype(np.int64)
+        dataset = AugmentedFeatureDataset(self.augmented_features,
+                                          self.augmented_labels)
+        self.augmented_loader = DataLoader(dataset,
+                                           batch_size=self._cfg.dataloader.batch_size,
+                                           shuffle=True)
+
+        self.a3fl_latest_meta.update({
+            'trigger': self.a3fl_trigger.detach().cpu(),
+            'mask': self.a3fl_mask.detach().cpu(),
+            'poisoned_samples': int(poison_features.shape[0]),
+            'poison_feature_repeat': int(poison_repeat),
+        })
+        if debug_clean_feature_chunks and debug_poison_feature_chunks:
+            debug_clean_features = torch.cat(debug_clean_feature_chunks, dim=0)
+            debug_poison_features = torch.cat(debug_poison_feature_chunks, dim=0)
+            inject_feature_shift = torch.norm(
+                debug_poison_features - debug_clean_features,
+                dim=1).mean().item()
+            self.a3fl_latest_meta.update({
+                'inject_feature_shift_l2': float(inject_feature_shift),
+            })
+            logger.info(
+                f"Client {self.ID}: A3FL inject debug - "
+                f"poisoned_samples={poison_features.shape[0]}, "
+                f"inject_feature_shift_l2={inject_feature_shift:.4f}")
+        if sample_clean_images and sample_poisoned_images:
+            self._save_a3fl_trigger_visuals(
+                round_idx, torch.cat(sample_clean_images, dim=0),
+                torch.cat(sample_poisoned_images, dim=0))
+        logger.info(
+            f"Client {self.ID}: Injected {poison_features.shape[0]} A3FL poisoned feature samples "
+            f"in round {round_idx} (repeat={poison_repeat})")
+
+    def _get_cerberus_start_round(self):
+        start_round = int(getattr(self.cerberus_cfg, 'start_round', -1))
+        if start_round >= 0:
+            return start_round
+        return int(getattr(self._cfg.attack, 'inject_round', 0))
+
+    def _is_cerberus_active_round(self, round_idx):
+        if not self.cerberus_enabled:
+            return False
+        start_round = self._get_cerberus_start_round()
+        if int(round_idx) < start_round:
+            return False
+        poison_epochs = int(getattr(self.cerberus_cfg, 'poison_epochs', 0))
+        if poison_epochs <= 0:
+            return True
+        return int(round_idx) < start_round + poison_epochs
+
+    def _should_cerberus_attack(self, round_idx):
+        return (
+            self.cerberus_is_attacker and
+            self._is_cerberus_active_round(round_idx)
+        )
+
+    def _get_cerberus_trigger_update_interval(self):
+        return max(
+            1, int(getattr(self.cerberus_cfg, 'trigger_update_interval', 1)))
+
+    def _should_update_cerberus_trigger(self, round_idx):
+        if self.cerberus_trigger is None or self.cerberus_mask is None:
+            return True
+
+        update_interval = self._get_cerberus_trigger_update_interval()
+        start_round = self._get_cerberus_start_round()
+        active_offset = int(round_idx) - int(start_round)
+        return active_offset % update_interval == 0
+
+    def _get_cerberus_pattern(self, height, width):
+        pattern = getattr(self.cerberus_cfg, 'poison_pattern', None)
+        if pattern:
+            coords = []
+            for pos in pattern:
+                if len(pos) < 2:
+                    continue
+                row = min(max(int(pos[0]), 0), height - 1)
+                col = min(max(int(pos[1]), 0), width - 1)
+                coords.append((row, col))
+            if coords:
+                return coords
+
+        pattern_size = max(1, int(getattr(self.cerberus_cfg, 'pattern_size', 4)))
+        pattern_offset = max(0, int(getattr(self.cerberus_cfg, 'pattern_offset', 0)))
+        rows = range(pattern_offset, min(height, pattern_offset + pattern_size))
+        cols = range(pattern_offset, min(width, pattern_offset + pattern_size))
+        return [(row, col) for row in rows for col in cols]
+
+    def _ensure_cerberus_trigger(self, sample_image):
+        if self.cerberus_trigger is not None and self.cerberus_mask is not None:
+            return
+        if sample_image.dim() != 3:
+            raise ValueError('CERBERUS requires image tensor with shape [C, H, W].')
+
+        channels, height, width = sample_image.shape
+        trigger_init = float(getattr(self.cerberus_cfg, 'trigger_init', 0.5))
+        self.cerberus_trigger = torch.full(
+            (1, channels, height, width),
+            trigger_init,
+            device=self.device)
+        self.cerberus_mask = torch.zeros_like(self.cerberus_trigger)
+        for row, col in self._get_cerberus_pattern(height, width):
+            self.cerberus_mask[:, :, row, col] = 1.0
+
+    def _apply_cerberus_trigger(self, images):
+        if self.cerberus_trigger is None or self.cerberus_mask is None:
+            return images
+        return self.cerberus_trigger * self.cerberus_mask + images * (
+            1.0 - self.cerberus_mask)
+
+    def _get_sabre_start_round(self):
+        start_round = int(getattr(self.sabre_cfg, 'start_round', -1))
+        if start_round >= 0:
+            return start_round
+        return int(getattr(self._cfg.attack, 'inject_round', 0))
+
+    def _is_sabre_active_round(self, round_idx):
+        if not self.sabre_enabled:
+            return False
+        start_round = self._get_sabre_start_round()
+        if int(round_idx) < start_round:
+            return False
+        poison_epochs = int(getattr(self.sabre_cfg, 'poison_epochs', 0))
+        if poison_epochs <= 0:
+            return True
+        return int(round_idx) < start_round + poison_epochs
+
+    def _should_sabre_attack(self, round_idx):
+        return (
+            self.sabre_is_attacker and
+            self._is_sabre_active_round(round_idx)
+        )
+
+    def _get_sabre_trigger_update_interval(self):
+        return max(
+            1, int(getattr(self.sabre_cfg, 'trigger_update_interval', 1)))
+
+    def _should_update_sabre_trigger(self, round_idx):
+        if self.sabre_trigger is None or self.sabre_mask is None:
+            return True
+
+        update_interval = self._get_sabre_trigger_update_interval()
+        start_round = self._get_sabre_start_round()
+        active_offset = int(round_idx) - int(start_round)
+        return active_offset % update_interval == 0
+
+    def _ensure_sabre_trigger(self, sample_image):
+        if self.sabre_trigger is not None and self.sabre_mask is not None:
+            return
+        if sample_image.dim() != 3:
+            raise ValueError('SABRE requires image tensor with shape [C, H, W].')
+
+        channels, height, width = sample_image.shape
+        shape = (1, channels, height, width)
+        init_mode = str(getattr(
+            self.sabre_cfg, 'trigger_init_mode', 'uniform')).lower()
+        trigger_init = float(getattr(self.sabre_cfg, 'trigger_init', 0.0))
+        random_scale = float(getattr(
+            self.sabre_cfg, 'trigger_random_scale', 0.01))
+        seed = int(getattr(self.sabre_cfg, 'trigger_seed', 0)) + \
+            int(self.ID) * 1009
+
+        if init_mode in ('uniform', 'random_uniform'):
+            generator = torch.Generator(device='cpu')
+            generator.manual_seed(seed)
+            trigger = torch.empty(shape).uniform_(
+                -random_scale, random_scale, generator=generator)
+        elif init_mode in ('normal', 'gaussian', 'random_normal'):
+            generator = torch.Generator(device='cpu')
+            generator.manual_seed(seed)
+            trigger = torch.randn(shape, generator=generator) * random_scale
+        else:
+            trigger = torch.full(shape, trigger_init)
+
+        self.sabre_trigger = trigger.to(self.device)
+        self.sabre_mask = torch.ones_like(self.sabre_trigger)
+
+    def _apply_sabre_trigger(self, images, trigger=None, mask=None):
+        trigger = self.sabre_trigger if trigger is None else trigger
+        mask = self.sabre_mask if mask is None else mask
+        if trigger is None or mask is None:
+            return images
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+        clip_min = float(getattr(self.sabre_cfg, 'image_clip_min', -3.0))
+        clip_max = float(getattr(self.sabre_cfg, 'image_clip_max', 3.0))
+        delta = trigger.to(images.device) * mask.to(images.device)
+        return torch.clamp(images + delta, clip_min, clip_max)
+
+    def _move_prompt_buffers(self, device):
+        self.prompt_learner.token_prefix = self.prompt_learner.token_prefix.to(device)
+        self.prompt_learner.token_suffix = self.prompt_learner.token_suffix.to(device)
+        self.prompt_learner.tokenized_prompts = \
+            self.prompt_learner.tokenized_prompts.to(device)
+
+    def _optimize_cerberus_trigger(self, base_dataset, candidate_indices,
+                                   round_idx):
+        if self.mlp_classifier is None or self.cerberus_trigger is None or \
+                self.cerberus_mask is None or base_dataset is None or \
+                not candidate_indices:
+            return
+
+        target_label = int(self._cfg.attack.target_label_ind)
+        steps = max(0, int(getattr(
+            self.cerberus_cfg, 'trigger_search_steps', 0)))
+        if steps <= 0:
+            return
+
+        batch_size = max(1, int(getattr(
+            self.cerberus_cfg, 'trigger_search_batch_size', 8)))
+        max_batches = max(1, int(getattr(
+            self.cerberus_cfg, 'trigger_search_batches', 2)))
+        lr = float(getattr(self.cerberus_cfg, 'trigger_search_lr', 0.05))
+        clip_min = float(getattr(
+            self.cerberus_cfg, 'trigger_search_clip_min', -2.5))
+        clip_max = float(getattr(
+            self.cerberus_cfg, 'trigger_search_clip_max', 2.5))
+        proj_norm = float(getattr(
+            self.cerberus_cfg, 'trigger_search_proj_norm', 12.0))
+        target_margin = float(getattr(
+            self.cerberus_cfg, 'trigger_search_target_margin', 1.0))
+        gain_weight = float(getattr(
+            self.cerberus_cfg, 'trigger_search_gain_weight', 0.5))
+        gain_margin = float(getattr(
+            self.cerberus_cfg, 'trigger_search_gain_margin', 0.5))
+        l2_weight = float(getattr(
+            self.cerberus_cfg, 'trigger_search_l2_weight', 1e-4))
+
+        search_indices = []
+        for base_idx in candidate_indices:
+            try:
+                _, label = base_dataset[base_idx]
+            except Exception:
+                continue
+            label_value = int(label.item()) if torch.is_tensor(label) else int(label)
+            if label_value != target_label:
+                search_indices.append(base_idx)
+            if len(search_indices) >= batch_size * max_batches:
+                break
+        if not search_indices:
+            search_indices = list(candidate_indices[:batch_size * max_batches])
+        if not search_indices:
+            return
+
+        self._load_feature_extractor()
+        if self.feature_extractor_type == 'clip' and self.clip_model is not None:
+            self.clip_model.eval()
+        if self.feature_extractor_type == 'cnn' and self.cnn_extractor is not None:
+            self.cnn_extractor.eval()
+        if self.feature_extractor_type == 'timm' and self.timm_extractor is not None:
+            self.timm_extractor.eval()
+
+        extractor_modules = [
+            module for module in
+            (self.clip_model, self.cnn_extractor, self.timm_extractor)
+            if module is not None
+        ]
+        saved_requires_grad = []
+        for module in extractor_modules:
+            for param in module.parameters():
+                saved_requires_grad.append((param, param.requires_grad))
+                param.requires_grad_(False)
+        for param in self.mlp_classifier.parameters():
+            saved_requires_grad.append((param, param.requires_grad))
+            param.requires_grad_(False)
+
+        trigger_base = self.cerberus_trigger.detach().clone()
+        trigger = trigger_base.clone().requires_grad_(True)
+        mask = self.cerberus_mask.detach()
+        optimizer = torch.optim.Adam([trigger], lr=lr)
+        criterion = nn.CrossEntropyLoss()
+
+        total_loss = 0.0
+        total_ce = 0.0
+        total_margin = 0.0
+        total_gain = 0.0
+        total_batches = 0
+        try:
+            for step in range(steps):
+                offset = (step * batch_size) % len(search_indices)
+                if offset + batch_size <= len(search_indices):
+                    batch_indices = search_indices[offset:offset + batch_size]
+                else:
+                    batch_indices = search_indices[offset:] + \
+                        search_indices[:batch_size - (len(search_indices) - offset)]
+
+                images = []
+                labels = []
+                for base_idx in batch_indices:
+                    image, label = base_dataset[base_idx]
+                    images.append(image)
+                    labels.append(
+                        int(label.item()) if torch.is_tensor(label)
+                        else int(label))
+                images = torch.stack(images).to(self.device)
+                labels = torch.as_tensor(labels,
+                                         dtype=torch.long,
+                                         device=self.device)
+                target_labels = torch.full_like(labels, target_label)
+
+                optimizer.zero_grad()
+                poisoned_images = trigger * mask + images * (1.0 - mask)
+                poison_features = self._extractor_forward(
+                    poisoned_images, allow_input_grad=True).float()
+                poison_logits = self.mlp_classifier(poison_features)
+                poison_ce = criterion(poison_logits, target_labels)
+
+                target_logits = poison_logits[:, target_label]
+                other_logits = poison_logits.clone()
+                if 0 <= target_label < other_logits.size(1):
+                    other_logits[:, target_label] = -1e9
+                max_other_logits = other_logits.max(dim=1).values
+                target_margin_loss = F.relu(
+                    max_other_logits - target_logits + target_margin).mean()
+
+                with torch.no_grad():
+                    clean_features = self._extractor_forward(images).float()
+                    clean_logits = self.mlp_classifier(clean_features)
+                    clean_target_logits = clean_logits[:, target_label]
+                gain_loss = F.relu(
+                    gain_margin - (target_logits - clean_target_logits)).mean()
+                l2_loss = torch.norm((trigger - trigger_base) * mask, p=2)
+                loss = poison_ce + target_margin_loss + \
+                    gain_weight * gain_loss + l2_weight * l2_loss
+                loss.backward()
+                optimizer.step()
+
+                with torch.no_grad():
+                    trigger.mul_(mask).add_(trigger_base * (1.0 - mask))
+                    trigger.clamp_(clip_min, clip_max)
+                    if proj_norm > 0:
+                        delta = (trigger - trigger_base) * mask
+                        delta_norm = torch.norm(delta, p=2)
+                        if delta_norm > proj_norm:
+                            delta = delta * (proj_norm / (delta_norm + 1e-12))
+                            trigger.copy_(trigger_base + delta)
+                            trigger.mul_(mask).add_(
+                                trigger_base * (1.0 - mask))
+
+                total_loss += loss.item()
+                total_ce += poison_ce.item()
+                total_margin += target_margin_loss.item()
+                total_gain += gain_loss.item()
+                total_batches += 1
+
+            self.cerberus_trigger = trigger.detach()
+        finally:
+            for param, requires_grad in saved_requires_grad:
+                param.requires_grad_(requires_grad)
+
+        if total_batches <= 0:
+            return
+
+        eval_images = []
+        eval_labels = []
+        for base_idx in search_indices[:batch_size]:
+            image, label = base_dataset[base_idx]
+            eval_images.append(image)
+            eval_labels.append(
+                int(label.item()) if torch.is_tensor(label) else int(label))
+        eval_images = torch.stack(eval_images).to(self.device)
+        eval_labels = torch.as_tensor(eval_labels,
+                                      dtype=torch.long,
+                                      device=self.device)
+        with torch.no_grad():
+            clean_features = self._extractor_forward(eval_images).float()
+            clean_logits = self.mlp_classifier(clean_features)
+            poisoned_images = self._apply_cerberus_trigger(eval_images)
+            poison_features = self._extractor_forward(poisoned_images).float()
+            poison_logits = self.mlp_classifier(poison_features)
+            clean_preds = torch.argmax(clean_logits, dim=1)
+            poison_preds = torch.argmax(poison_logits, dim=1)
+            clean_target_rate = clean_preds.eq(target_label).float().mean()
+            poison_target_rate = poison_preds.eq(target_label).float().mean()
+            target_gain = (
+                poison_logits[:, target_label] -
+                clean_logits[:, target_label]).mean()
+            eval_target_labels = torch.full_like(eval_labels, target_label)
+            eval_ce = criterion(poison_logits, eval_target_labels)
+
+        trigger_delta_norm = torch.norm(
+            (self.cerberus_trigger - trigger_base) * mask, p=2).item()
+        self.cerberus_latest_meta.update({
+            'trigger_search_steps': int(steps),
+            'trigger_search_batches': int(max_batches),
+            'trigger_search_loss': float(total_loss / total_batches),
+            'trigger_search_ce': float(total_ce / total_batches),
+            'trigger_search_margin': float(total_margin / total_batches),
+            'trigger_search_gain_loss': float(total_gain / total_batches),
+            'trigger_search_eval_ce': float(eval_ce.item()),
+            'trigger_search_clean_target_rate': float(
+                clean_target_rate.item()),
+            'trigger_search_poison_target_rate': float(
+                poison_target_rate.item()),
+            'trigger_search_target_logit_gain': float(target_gain.item()),
+            'trigger_delta_norm': float(trigger_delta_norm),
+        })
+        logger.info(
+            f"Client {self.ID}: CERBERUS trigger search round {round_idx} "
+            f"steps={steps}, batches={max_batches}, "
+            f"loss={total_loss / total_batches:.4f}, "
+            f"CE={total_ce / total_batches:.4f}, "
+            f"poison_target_rate={poison_target_rate.item():.4f}, "
+            f"clean_target_rate={clean_target_rate.item():.4f}, "
+            f"target_logit_gain={target_gain.item():.4f}, "
+            f"delta_norm={trigger_delta_norm:.4f}")
+
+    def _build_cerberus_poison_feature_pool(self, round_idx):
+        if self.mlp_classifier is None:
+            return None, None
+
+        target_label = int(self._cfg.attack.target_label_ind)
+        base_dataset, subset_indices = self._get_train_dataset_base()
+        poison_ratio = float(getattr(self._cfg.attack, 'poison_ratio', 0.1))
+
+        if base_dataset is None or not subset_indices:
+            if self.augmented_features is None or len(self.augmented_features) == 0:
+                logger.warning(
+                    f"Client {self.ID}: CERBERUS could not find local data "
+                    "for poisoned feature construction")
+                return None, None
+            poison_count = max(1, int(len(self.augmented_features) * poison_ratio))
+            poison_count = min(poison_count, len(self.augmented_features))
+            rng = np.random.RandomState(
+                int(self._cfg.seed) + int(round_idx) + int(self.ID) * 1009)
+            selected = rng.choice(len(self.augmented_features),
+                                  size=poison_count,
+                                  replace=False)
+            poison_features = torch.from_numpy(
+                self.augmented_features[selected]).float()
+            poison_labels = torch.full((poison_count, ),
+                                       target_label,
+                                       dtype=torch.long)
+            return poison_features, poison_labels
+
+        poison_count = max(1, int(len(subset_indices) * poison_ratio))
+        poison_count = min(poison_count, len(subset_indices))
+        rng = np.random.RandomState(
+            int(self._cfg.seed) + int(round_idx) + int(self.ID) * 1009)
+        selected_indices = rng.choice(subset_indices,
+                                      size=poison_count,
+                                      replace=False).tolist()
+
+        self._load_feature_extractor()
+        first_image, _ = base_dataset[selected_indices[0]]
+        self._ensure_cerberus_trigger(first_image.to(self.device))
+        trigger_update_interval = \
+            self._get_cerberus_trigger_update_interval()
+        optimize_trigger = self._should_update_cerberus_trigger(round_idx)
+        self.cerberus_latest_meta.update({
+            'trigger_update_interval': int(trigger_update_interval),
+            'trigger_optimized': bool(optimize_trigger),
+        })
+        if optimize_trigger:
+            self._optimize_cerberus_trigger(base_dataset, selected_indices,
+                                            round_idx)
+        else:
+            logger.info(
+                f"Client {self.ID}: Reusing CERBERUS trigger in round "
+                f"{round_idx}; optimization interval="
+                f"{trigger_update_interval}")
+        self.cerberus_latest_meta.update({
+            'trigger': self.cerberus_trigger.detach().cpu(),
+            'mask': self.cerberus_mask.detach().cpu(),
+        })
+
+        if self.feature_extractor_type == 'clip' and self.clip_model is not None:
+            self.clip_model.eval()
+        if self.feature_extractor_type == 'cnn' and self.cnn_extractor is not None:
+            self.cnn_extractor.eval()
+        if self.feature_extractor_type == 'timm' and self.timm_extractor is not None:
+            self.timm_extractor.eval()
+
+        poison_features = []
+        batch_size = max(1, int(getattr(self.ggeur_cfg, 'extract_batch_size', 64)))
+        with torch.no_grad():
+            for start in range(0, len(selected_indices), batch_size):
+                batch_indices = selected_indices[start:start + batch_size]
+                images = []
+                for base_idx in batch_indices:
+                    image, _ = base_dataset[base_idx]
+                    images.append(image)
+                images = torch.stack(images).to(self.device)
+                poisoned_images = self._apply_cerberus_trigger(images)
+                features = self._extractor_forward(poisoned_images).float()
+                poison_features.append(features.detach().cpu())
+
+        if not poison_features:
+            return None, None
+
+        poison_features = torch.cat(poison_features, dim=0)
+        poison_labels = torch.full((poison_features.shape[0], ),
+                                   target_label,
+                                   dtype=torch.long)
+        self.cerberus_latest_meta.update({
+            'poisoned_samples': int(poison_features.shape[0]),
+            'target_label': int(target_label),
+        })
+        return poison_features, poison_labels
+
+    def _train_cerberus_clean_anchor(self):
+        anchor_model = copy.deepcopy(self.mlp_classifier)
+        anchor_model.train()
+
+        clean_lr = float(getattr(
+            self.cerberus_cfg,
+            'clean_anchor_lr',
+            getattr(self.cerberus_cfg, 'shadow_lr', self._cfg.train.optimizer.lr)))
+        clean_epochs = int(getattr(
+            self.cerberus_cfg,
+            'clean_anchor_epochs',
+            getattr(self.cerberus_cfg, 'shadow_epochs', 1)))
+        clean_epochs = max(1, clean_epochs)
+
+        optimizer = torch.optim.Adam(anchor_model.parameters(), lr=clean_lr)
+        criterion = nn.CrossEntropyLoss()
+        for _ in range(clean_epochs):
+            for features, labels in self.augmented_loader:
+                features = features.to(self.device)
+                labels = labels.to(self.device)
+                optimizer.zero_grad()
+                outputs = anchor_model(features)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+        anchor_state = {
+            name: param.detach().clone()
+            for name, param in anchor_model.named_parameters()
+            if param.requires_grad
+        }
+        return anchor_state
+
+    def _cerberus_anchor_distance(self, anchor_state):
+        distance = torch.tensor(0.0, device=self.device)
+        for name, param in self.mlp_classifier.named_parameters():
+            if not param.requires_grad or name not in anchor_state:
+                continue
+            anchor_param = anchor_state[name].to(param.device)
+            distance = distance + torch.norm(param - anchor_param, p=2) ** 2
+        return distance
+
+    def _cerberus_peer_cosine(self):
+        if not self.cerberus_peer_models:
+            return torch.tensor(0.0, device=self.device)
+
+        peer_terms = []
+        trainable_params = [
+            (name, param)
+            for name, param in self.mlp_classifier.named_parameters()
+            if param.requires_grad
+        ]
+        for _, peer_model in self.cerberus_peer_models.items():
+            layer_terms = []
+            for name, param in trainable_params:
+                if name not in peer_model:
+                    continue
+                peer_param = peer_model[name]
+                if not torch.is_tensor(peer_param):
+                    try:
+                        peer_param = param2tensor(peer_param)
+                    except Exception:
+                        continue
+                peer_param = peer_param.to(param.device).view(-1)
+                param_flat = param.view(-1)
+                eps = 1e-8
+                cosine = F.cosine_similarity(param_flat + eps,
+                                             peer_param + eps,
+                                             dim=0)
+                layer_terms.append(torch.abs(cosine))
+            if layer_terms:
+                peer_terms.append(torch.stack(layer_terms).mean())
+
+        if not peer_terms:
+            return torch.tensor(0.0, device=self.device)
+        return torch.stack(peer_terms).mean()
+
+    def _sample_cerberus_poison_batch(self, poison_features, poison_labels,
+                                      batch_size):
+        pool_size = poison_features.shape[0]
+        if pool_size == 0:
+            return None, None
+
+        poison_per_batch = int(getattr(self.cerberus_cfg,
+                                       'poisoning_per_batch', 0))
+        if poison_per_batch <= 0:
+            poison_ratio = float(getattr(self._cfg.attack, 'poison_ratio', 0.1))
+            poison_per_batch = max(1, int(batch_size * poison_ratio))
+        poison_per_batch = min(max(1, poison_per_batch), batch_size)
+
+        replace = pool_size < poison_per_batch
+        indices = np.random.choice(pool_size,
+                                   size=poison_per_batch,
+                                   replace=replace)
+        poison_x = poison_features[indices].to(self.device)
+        poison_y = poison_labels[indices].to(self.device)
+        return poison_x, poison_y
+
+    def _extract_cerberus_peer_models(self, content):
+        self.cerberus_peer_models = {}
+        if not isinstance(content, dict):
+            return
+
+        peer_models = {}
+        cerberus_payload = content.get('cerberus', None)
+        if isinstance(cerberus_payload, dict):
+            peer_models = cerberus_payload.get('peer_models', peer_models)
+        if isinstance(peer_models, dict):
+            self.cerberus_peer_models = {
+                peer_id: peer_state
+                for peer_id, peer_state in peer_models.items()
+                if int(peer_id) != int(self.ID) and isinstance(peer_state, dict)
+            }
+
+        shared_trigger = content.get('cerberus_shared_trigger', None)
+        if shared_trigger is None and isinstance(cerberus_payload, dict):
+            shared_trigger = cerberus_payload.get('shared_trigger', None)
+        if isinstance(shared_trigger, dict):
+            trigger = shared_trigger.get('trigger', None)
+            mask = shared_trigger.get('mask', None)
+            if trigger is not None and mask is not None:
+                try:
+                    trigger = param2tensor(trigger)
+                    mask = param2tensor(mask)
+                except Exception:
+                    pass
+                if isinstance(trigger, torch.Tensor) and isinstance(mask, torch.Tensor):
+                    self.cerberus_trigger = trigger.to(self.device).float()
+                    self.cerberus_mask = mask.to(self.device).float()
+                    source_client = shared_trigger.get(
+                        'source_client_id', 'unknown')
+                    source_round = shared_trigger.get(
+                        'source_round', 'unknown')
+                    logger.info(
+                        f"Client {self.ID}: Loaded shared CERBERUS trigger "
+                        f"from client {source_client}, round {source_round}")
+
+    def _extract_shared_attack_trigger(self, content, attack_name):
+        if not isinstance(content, dict):
+            return
+
+        payload = content.get(attack_name, None)
+        shared_trigger = content.get(f'{attack_name}_shared_trigger', None)
+        if shared_trigger is None and isinstance(payload, dict):
+            shared_trigger = payload.get('shared_trigger', None)
+        if not isinstance(shared_trigger, dict):
+            return
+
+        trigger = shared_trigger.get('trigger', None)
+        mask = shared_trigger.get('mask', None)
+        if trigger is None or mask is None:
+            return
+        try:
+            trigger = param2tensor(trigger)
+            mask = param2tensor(mask)
+        except Exception as exc:
+            logger.debug(
+                f"Client {self.ID}: Could not restore shared "
+                f"{attack_name.upper()} trigger: {exc}")
+            return
+        if not isinstance(trigger, torch.Tensor) or \
+                not isinstance(mask, torch.Tensor):
+            return
+        if tuple(trigger.shape) != tuple(mask.shape):
+            logger.debug(
+                f"Client {self.ID}: Ignored shared {attack_name.upper()} "
+                f"trigger with mismatched trigger/mask shapes "
+                f"{tuple(trigger.shape)} vs {tuple(mask.shape)}")
+            return
+
+        setattr(self, f'{attack_name}_trigger', trigger.to(self.device).float())
+        setattr(self, f'{attack_name}_mask', mask.to(self.device).float())
+        source_client = shared_trigger.get('source_client_id', 'unknown')
+        source_round = shared_trigger.get('source_round', 'unknown')
+        logger.info(
+            f"Client {self.ID}: Loaded shared {attack_name.upper()} trigger "
+            f"from client {source_client}, round {source_round}")
+
+    def _train_cerberus_on_augmented_data(self, round_idx):
+        if self.augmented_loader is None or self.mlp_classifier is None:
+            return 0, {}, {}
+
+        self.cerberus_latest_meta = {
+            'active': True,
+            'client_id': int(self.ID),
+            'round': int(round_idx),
+            'target_label': int(self._cfg.attack.target_label_ind),
+        }
+
+        poison_features, poison_labels = self._build_cerberus_poison_feature_pool(
+            round_idx)
+        if poison_features is None or poison_labels is None:
+            logger.warning(
+                f"Client {self.ID}: CERBERUS poison pool is empty; "
+                "falling back to clean augmented training")
+            self.cerberus_latest_meta['active'] = False
+            return self._train_on_augmented_data()
+
+        anchor_state = self._train_cerberus_clean_anchor()
+
+        poison_lr = float(getattr(self.cerberus_cfg,
+                                  'poison_lr',
+                                  self._cfg.train.optimizer.lr))
+        optimizer_name = str(getattr(self.cerberus_cfg,
+                                     'poison_optimizer',
+                                     'adam')).lower()
+        if optimizer_name == 'sgd':
+            optimizer = torch.optim.SGD(self.mlp_classifier.parameters(),
+                                        lr=poison_lr)
+        else:
+            optimizer = torch.optim.Adam(self.mlp_classifier.parameters(),
+                                         lr=poison_lr)
+
+        criterion = nn.CrossEntropyLoss()
+        alpha_loss = float(getattr(self.cerberus_cfg, 'alpha_loss', 0.01))
+        beta_loss = float(getattr(self.cerberus_cfg, 'beta_loss', 0.01))
+        clean_ce_weight = float(getattr(
+            self.cerberus_cfg, 'clean_ce_weight', 1.0))
+        poison_ce_weight = float(getattr(
+            self.cerberus_cfg, 'poison_ce_weight', 1.0))
+        clean_target_suppression_weight = float(getattr(
+            self.cerberus_cfg, 'clean_target_suppression_weight', 0.0))
+        clean_target_margin = float(getattr(
+            self.cerberus_cfg, 'clean_target_margin', 0.5))
+        target_label = int(self._cfg.attack.target_label_ind)
+        internal_epochs = max(
+            1, int(getattr(self.cerberus_cfg, 'internal_poison_epochs', 1)))
+        preserve_clean_batches = bool(getattr(
+            self.cerberus_cfg, 'preserve_clean_batches', False))
+
+        self.mlp_classifier.train()
+        total_loss = 0.0
+        total_ce_loss = 0.0
+        total_clean_ce_loss = 0.0
+        total_poison_ce_loss = 0.0
+        total_clean_target_suppression_loss = 0.0
+        total_anchor_loss = 0.0
+        total_peer_loss = 0.0
+        total_correct = 0
+        total_samples = 0
+        total_clean_correct = 0
+        total_clean_samples = 0
+        total_poison_correct = 0
+        total_poison_samples = 0
+        total_clean_target_predictions = 0
+
+        for _ in range(internal_epochs):
+            for clean_features, clean_labels in self.augmented_loader:
+                clean_features = clean_features.to(self.device)
+                clean_labels = clean_labels.to(self.device)
+                poison_x, poison_y = self._sample_cerberus_poison_batch(
+                    poison_features, poison_labels, clean_features.size(0))
+                if poison_x is None:
+                    continue
+
+                optimizer.zero_grad()
+                if preserve_clean_batches:
+                    clean_outputs = self.mlp_classifier(clean_features)
+                    poison_outputs = self.mlp_classifier(poison_x)
+                    clean_ce_loss = criterion(clean_outputs, clean_labels)
+                    poison_ce_loss = criterion(poison_outputs, poison_y)
+                    ce_loss = (
+                        clean_ce_weight * clean_ce_loss +
+                        poison_ce_weight * poison_ce_loss)
+                    outputs = torch.cat([poison_outputs, clean_outputs], dim=0)
+                    labels = torch.cat([poison_y, clean_labels], dim=0)
+                    clean_pred = torch.argmax(clean_outputs, dim=1)
+                    poison_pred = torch.argmax(poison_outputs, dim=1)
+                    clean_eval_labels = clean_labels
+                    clean_outputs_for_suppression = clean_outputs
+                else:
+                    features = clean_features.clone()
+                    labels = clean_labels.clone()
+                    poison_num = poison_x.size(0)
+                    features[:poison_num] = poison_x
+                    labels[:poison_num] = poison_y
+                    outputs = self.mlp_classifier(features)
+                    poison_ce_loss = criterion(
+                        outputs[:poison_num], labels[:poison_num])
+                    if poison_num < outputs.size(0):
+                        clean_ce_loss = criterion(
+                            outputs[poison_num:], labels[poison_num:])
+                    else:
+                        clean_ce_loss = torch.tensor(
+                            0.0, device=self.device)
+                    ce_loss = (
+                        clean_ce_weight * clean_ce_loss +
+                        poison_ce_weight * poison_ce_loss)
+                    poison_pred = torch.argmax(outputs[:poison_num], dim=1)
+                    clean_pred = torch.argmax(outputs[poison_num:], dim=1)
+                    clean_eval_labels = labels[poison_num:]
+                    clean_outputs_for_suppression = outputs[poison_num:]
+                clean_target_suppression_loss = torch.tensor(
+                    0.0, device=self.device)
+                if clean_target_suppression_weight > 0.0 and \
+                        0 <= target_label < clean_outputs_for_suppression.size(1):
+                    non_target_mask = clean_eval_labels != target_label
+                    if non_target_mask.any():
+                        non_target_outputs = clean_outputs_for_suppression[
+                            non_target_mask]
+                        non_target_labels = clean_eval_labels[non_target_mask]
+                        target_logits = non_target_outputs[:, target_label]
+                        true_logits = non_target_outputs.gather(
+                            1, non_target_labels.view(-1, 1)).squeeze(1)
+                        clean_target_suppression_loss = F.relu(
+                            target_logits - true_logits +
+                            clean_target_margin).mean()
+                anchor_loss = self._cerberus_anchor_distance(anchor_state)
+                peer_loss = self._cerberus_peer_cosine()
+                loss = ce_loss + alpha_loss * anchor_loss + \
+                    beta_loss * peer_loss + \
+                    clean_target_suppression_weight * \
+                    clean_target_suppression_loss
+                loss.backward()
+                optimizer.step()
+
+                batch_size = outputs.size(0)
+                total_loss += loss.item() * batch_size
+                total_ce_loss += ce_loss.item() * batch_size
+                total_clean_ce_loss += clean_ce_loss.item() * batch_size
+                total_poison_ce_loss += poison_ce_loss.item() * batch_size
+                total_clean_target_suppression_loss += \
+                    clean_target_suppression_loss.item() * batch_size
+                total_anchor_loss += anchor_loss.item() * batch_size
+                total_peer_loss += peer_loss.item() * batch_size
+                _, predicted = torch.max(outputs, 1)
+                total_correct += (predicted == labels).sum().item()
+                total_samples += batch_size
+                total_poison_correct += (
+                    poison_pred == poison_y).sum().item()
+                total_poison_samples += poison_y.numel()
+                if clean_pred.numel() > 0:
+                    total_clean_correct += (
+                        clean_pred == clean_eval_labels
+                    ).sum().item()
+                    total_clean_target_predictions += clean_pred.eq(
+                        target_label).sum().item()
+                    total_clean_samples += clean_pred.numel()
+
+        avg_loss = total_loss / total_samples if total_samples > 0 else 0
+        avg_ce_loss = total_ce_loss / total_samples if total_samples > 0 else 0
+        avg_clean_ce_loss = (
+            total_clean_ce_loss / total_samples if total_samples > 0 else 0)
+        avg_poison_ce_loss = (
+            total_poison_ce_loss / total_samples if total_samples > 0 else 0)
+        avg_clean_target_suppression_loss = (
+            total_clean_target_suppression_loss / total_samples
+            if total_samples > 0 else 0)
+        avg_anchor_loss = (
+            total_anchor_loss / total_samples if total_samples > 0 else 0)
+        avg_peer_loss = (
+            total_peer_loss / total_samples if total_samples > 0 else 0)
+        accuracy = total_correct / total_samples if total_samples > 0 else 0
+        clean_accuracy = (
+            total_clean_correct / total_clean_samples
+            if total_clean_samples > 0 else 0)
+        poison_accuracy = (
+            total_poison_correct / total_poison_samples
+            if total_poison_samples > 0 else 0)
+        clean_target_rate = (
+            total_clean_target_predictions / total_clean_samples
+            if total_clean_samples > 0 else 0)
+
+        logger.info(
+            f"Client {self.ID}: CERBERUS train loss={avg_loss:.4f} "
+            f"(CE={avg_ce_loss:.4f}, clean_CE={avg_clean_ce_loss:.4f}, "
+            f"poison_CE={avg_poison_ce_loss:.4f}, "
+            f"clean_target_supp={avg_clean_target_suppression_loss:.4f}, "
+            f"anchor={avg_anchor_loss:.4f}, "
+            f"peer={avg_peer_loss:.4f}), accuracy={accuracy:.4f}, "
+            f"clean_acc={clean_accuracy:.4f}, "
+            f"clean_target_rate={clean_target_rate:.4f}, "
+            f"poison_acc={poison_accuracy:.4f}")
+
+        model_para = copy.deepcopy(self.mlp_classifier.state_dict())
+        if bool(getattr(self.cerberus_cfg,
+                        'constrain_update_to_anchor', False)):
+            gamma = float(getattr(
+                self.cerberus_cfg, 'anchor_residual_gamma', 0.5))
+            gamma = min(1.0, max(0.0, gamma))
+            constrained_para = copy.deepcopy(model_para)
+            for name, value in model_para.items():
+                if name not in anchor_state or not isinstance(value, torch.Tensor):
+                    continue
+                anchor_value = anchor_state[name].to(value.device)
+                if tuple(anchor_value.shape) != tuple(value.shape):
+                    continue
+                constrained_para[name] = anchor_value + gamma * (
+                    value - anchor_value)
+            model_para = constrained_para
+            logger.info(
+                f"Client {self.ID}: CERBERUS constrained update to "
+                f"clean anchor with gamma={gamma:.4f}")
+        self.cerberus_latest_meta.update({
+            'alpha_loss': float(alpha_loss),
+            'beta_loss': float(beta_loss),
+            'clean_ce_weight': float(clean_ce_weight),
+            'poison_ce_weight': float(poison_ce_weight),
+            'clean_target_suppression_weight': float(
+                clean_target_suppression_weight),
+            'clean_target_margin': float(clean_target_margin),
+            'anchor_loss': float(avg_anchor_loss),
+            'peer_loss': float(avg_peer_loss),
+            'train_loss': float(avg_loss),
+            'train_clean_ce_loss': float(avg_clean_ce_loss),
+            'train_poison_ce_loss': float(avg_poison_ce_loss),
+            'train_clean_target_suppression_loss': float(
+                avg_clean_target_suppression_loss),
+            'train_acc': float(accuracy),
+            'train_clean_acc': float(clean_accuracy),
+            'train_clean_target_rate': float(clean_target_rate),
+            'train_poison_acc': float(poison_accuracy),
+        })
+        if bool(getattr(self.cerberus_cfg, 'share_model_meta', False)):
+            self.cerberus_latest_meta['model'] = copy.deepcopy(model_para)
+
+        results = {
+            'train_loss': avg_loss,
+            'train_ce_loss': avg_ce_loss,
+            'train_clean_ce_loss': avg_clean_ce_loss,
+            'train_poison_ce_loss': avg_poison_ce_loss,
+            'train_clean_target_suppression_loss':
+            avg_clean_target_suppression_loss,
+            'train_cerberus_anchor_loss': avg_anchor_loss,
+            'train_cerberus_peer_loss': avg_peer_loss,
+            'train_acc': accuracy,
+            'train_clean_acc': clean_accuracy,
+            'train_clean_target_rate': clean_target_rate,
+            'train_poison_acc': poison_accuracy,
+            'train_total': total_samples
+        }
+
+        # FedAvg sample_size should reflect the clean local data scale, not
+        # poisoned replay volume or internal CERBERUS epochs.
+        clean_weight_samples = total_clean_samples
+        if internal_epochs > 0:
+            clean_weight_samples = int(round(
+                float(total_clean_samples) / float(internal_epochs)))
+        clean_weight_samples = max(1, clean_weight_samples)
+        self.cerberus_latest_meta['aggregation_sample_size'] = int(
+            clean_weight_samples)
+        results['aggregation_sample_size'] = int(clean_weight_samples)
+        return clean_weight_samples, model_para, results
+
+    def _optimize_sabre_trigger(self, base_dataset, candidate_indices,
+                                round_idx):
+        if self.mlp_classifier is None or self.sabre_trigger is None or \
+                self.sabre_mask is None or base_dataset is None or \
+                not candidate_indices:
+            return
+
+        target_label = int(self._cfg.attack.target_label_ind)
+        steps = max(0, int(getattr(
+            self.sabre_cfg, 'trigger_search_steps', 0)))
+        if steps <= 0:
+            return
+
+        batch_size = max(1, int(getattr(
+            self.sabre_cfg, 'trigger_search_batch_size', 8)))
+        max_batches = max(1, int(getattr(
+            self.sabre_cfg, 'trigger_search_batches', 2)))
+        lr = float(getattr(self.sabre_cfg, 'trigger_search_lr', 0.01))
+        clip_min = float(getattr(
+            self.sabre_cfg, 'trigger_search_clip_min', -0.05))
+        clip_max = float(getattr(
+            self.sabre_cfg, 'trigger_search_clip_max', 0.05))
+        proj_norm = float(getattr(
+            self.sabre_cfg, 'trigger_search_proj_norm', 4.0))
+        target_margin = float(getattr(
+            self.sabre_cfg, 'trigger_search_target_margin', 1.0))
+        gain_weight = float(getattr(
+            self.sabre_cfg, 'trigger_search_gain_weight', 0.5))
+        gain_margin = float(getattr(
+            self.sabre_cfg, 'trigger_search_gain_margin', 0.5))
+        l2_weight = float(getattr(
+            self.sabre_cfg, 'trigger_search_l2_weight', 1e-4))
+
+        search_indices = []
+        for base_idx in candidate_indices:
+            try:
+                _, label = base_dataset[base_idx]
+            except Exception:
+                continue
+            label_value = int(label.item()) if torch.is_tensor(label) else int(label)
+            if label_value != target_label:
+                search_indices.append(base_idx)
+            if len(search_indices) >= batch_size * max_batches:
+                break
+        if not search_indices:
+            search_indices = list(candidate_indices[:batch_size * max_batches])
+        if not search_indices:
+            return
+
+        self._load_feature_extractor()
+        if self.feature_extractor_type == 'clip' and self.clip_model is not None:
+            self.clip_model.eval()
+        if self.feature_extractor_type == 'cnn' and self.cnn_extractor is not None:
+            self.cnn_extractor.eval()
+        if self.feature_extractor_type == 'timm' and self.timm_extractor is not None:
+            self.timm_extractor.eval()
+
+        extractor_modules = [
+            module for module in
+            (self.clip_model, self.cnn_extractor, self.timm_extractor)
+            if module is not None
+        ]
+        saved_requires_grad = []
+        for module in extractor_modules:
+            for param in module.parameters():
+                saved_requires_grad.append((param, param.requires_grad))
+                param.requires_grad_(False)
+        for param in self.mlp_classifier.parameters():
+            saved_requires_grad.append((param, param.requires_grad))
+            param.requires_grad_(False)
+
+        trigger_base = self.sabre_trigger.detach().clone()
+        trigger = trigger_base.clone().requires_grad_(True)
+        mask = self.sabre_mask.detach()
+        optimizer = torch.optim.Adam([trigger], lr=lr)
+        criterion = nn.CrossEntropyLoss()
+
+        total_loss = 0.0
+        total_ce = 0.0
+        total_margin = 0.0
+        total_gain = 0.0
+        total_batches = 0
+        try:
+            for step in range(steps):
+                offset = (step * batch_size) % len(search_indices)
+                if offset + batch_size <= len(search_indices):
+                    batch_indices = search_indices[offset:offset + batch_size]
+                else:
+                    batch_indices = search_indices[offset:] + \
+                        search_indices[:batch_size - (len(search_indices) - offset)]
+
+                images = []
+                labels = []
+                for base_idx in batch_indices:
+                    image, label = base_dataset[base_idx]
+                    images.append(image)
+                    labels.append(
+                        int(label.item()) if torch.is_tensor(label)
+                        else int(label))
+                images = torch.stack(images).to(self.device)
+                labels = torch.as_tensor(labels,
+                                         dtype=torch.long,
+                                         device=self.device)
+                target_labels = torch.full_like(labels, target_label)
+
+                optimizer.zero_grad()
+                poisoned_images = self._apply_sabre_trigger(
+                    images, trigger=trigger, mask=mask)
+                poison_features = self._extractor_forward(
+                    poisoned_images, allow_input_grad=True).float()
+                poison_logits = self.mlp_classifier(poison_features)
+                poison_ce = criterion(poison_logits, target_labels)
+
+                target_logits = poison_logits[:, target_label]
+                other_logits = poison_logits.clone()
+                if 0 <= target_label < other_logits.size(1):
+                    other_logits[:, target_label] = -1e9
+                max_other_logits = other_logits.max(dim=1).values
+                target_margin_loss = F.relu(
+                    max_other_logits - target_logits + target_margin).mean()
+
+                with torch.no_grad():
+                    clean_features = self._extractor_forward(images).float()
+                    clean_logits = self.mlp_classifier(clean_features)
+                    clean_target_logits = clean_logits[:, target_label]
+                gain_loss = F.relu(
+                    gain_margin - (target_logits - clean_target_logits)).mean()
+                l2_loss = torch.norm(trigger * mask, p=2)
+                loss = poison_ce + target_margin_loss + \
+                    gain_weight * gain_loss + l2_weight * l2_loss
+                loss.backward()
+                optimizer.step()
+
+                with torch.no_grad():
+                    trigger.mul_(mask).add_(trigger_base * (1.0 - mask))
+                    trigger.clamp_(clip_min, clip_max)
+                    if proj_norm > 0:
+                        delta = trigger * mask
+                        delta_norm = torch.norm(delta, p=2)
+                        if delta_norm > proj_norm:
+                            delta = delta * (proj_norm / (delta_norm + 1e-12))
+                            trigger.copy_(delta)
+                            trigger.mul_(mask).add_(
+                                trigger_base * (1.0 - mask))
+
+                total_loss += loss.item()
+                total_ce += poison_ce.item()
+                total_margin += target_margin_loss.item()
+                total_gain += gain_loss.item()
+                total_batches += 1
+
+            self.sabre_trigger = trigger.detach()
+        finally:
+            for param, requires_grad in saved_requires_grad:
+                param.requires_grad_(requires_grad)
+
+        if total_batches <= 0:
+            return
+
+        eval_images = []
+        eval_labels = []
+        for base_idx in search_indices[:batch_size]:
+            image, label = base_dataset[base_idx]
+            eval_images.append(image)
+            eval_labels.append(
+                int(label.item()) if torch.is_tensor(label) else int(label))
+        eval_images = torch.stack(eval_images).to(self.device)
+        eval_labels = torch.as_tensor(eval_labels,
+                                      dtype=torch.long,
+                                      device=self.device)
+        with torch.no_grad():
+            clean_features = self._extractor_forward(eval_images).float()
+            clean_logits = self.mlp_classifier(clean_features)
+            poisoned_images = self._apply_sabre_trigger(eval_images)
+            poison_features = self._extractor_forward(poisoned_images).float()
+            poison_logits = self.mlp_classifier(poison_features)
+            clean_preds = torch.argmax(clean_logits, dim=1)
+            poison_preds = torch.argmax(poison_logits, dim=1)
+            clean_target_rate = clean_preds.eq(target_label).float().mean()
+            poison_target_rate = poison_preds.eq(target_label).float().mean()
+            target_gain = (
+                poison_logits[:, target_label] -
+                clean_logits[:, target_label]).mean()
+            eval_target_labels = torch.full_like(eval_labels, target_label)
+            eval_ce = criterion(poison_logits, eval_target_labels)
+
+        trigger_norm = torch.norm(self.sabre_trigger * self.sabre_mask,
+                                  p=2).item()
+        self.sabre_latest_meta.update({
+            'trigger_search_steps': int(steps),
+            'trigger_search_batches': int(max_batches),
+            'trigger_search_loss': float(total_loss / total_batches),
+            'trigger_search_ce': float(total_ce / total_batches),
+            'trigger_search_margin': float(total_margin / total_batches),
+            'trigger_search_gain_loss': float(total_gain / total_batches),
+            'trigger_search_eval_ce': float(eval_ce.item()),
+            'trigger_search_clean_target_rate': float(
+                clean_target_rate.item()),
+            'trigger_search_poison_target_rate': float(
+                poison_target_rate.item()),
+            'trigger_search_target_logit_gain': float(target_gain.item()),
+            'trigger_norm': float(trigger_norm),
+        })
+        logger.info(
+            f"Client {self.ID}: SABRE trigger search round {round_idx} "
+            f"steps={steps}, batches={max_batches}, "
+            f"loss={total_loss / total_batches:.4f}, "
+            f"CE={total_ce / total_batches:.4f}, "
+            f"poison_target_rate={poison_target_rate.item():.4f}, "
+            f"clean_target_rate={clean_target_rate.item():.4f}, "
+            f"target_logit_gain={target_gain.item():.4f}, "
+            f"trigger_norm={trigger_norm:.4f}")
+
+    def _build_sabre_poison_feature_pool(self, round_idx):
+        if self.mlp_classifier is None:
+            return None, None
+
+        target_label = int(self._cfg.attack.target_label_ind)
+        base_dataset, subset_indices = self._get_train_dataset_base()
+        poison_ratio = float(getattr(self._cfg.attack, 'poison_ratio', 0.1))
+
+        if base_dataset is None or not subset_indices:
+            if self.augmented_features is None or len(self.augmented_features) == 0:
+                logger.warning(
+                    f"Client {self.ID}: SABRE could not find local data "
+                    "for poisoned feature construction")
+                return None, None
+            poison_count = max(1, int(len(self.augmented_features) * poison_ratio))
+            poison_count = min(poison_count, len(self.augmented_features))
+            rng = np.random.RandomState(
+                int(self._cfg.seed) + int(round_idx) + int(self.ID) * 1009)
+            selected = rng.choice(len(self.augmented_features),
+                                  size=poison_count,
+                                  replace=False)
+            poison_features = torch.from_numpy(
+                self.augmented_features[selected]).float()
+            poison_labels = torch.full((poison_count, ),
+                                       target_label,
+                                       dtype=torch.long)
+            return poison_features, poison_labels
+
+        poison_count = max(1, int(len(subset_indices) * poison_ratio))
+        max_poison = int(getattr(self.sabre_cfg, 'max_poison_samples', 0))
+        if max_poison > 0:
+            poison_count = min(poison_count, max_poison)
+        poison_count = min(poison_count, len(subset_indices))
+        rng = np.random.RandomState(
+            int(self._cfg.seed) + int(round_idx) + int(self.ID) * 1009)
+        selected_indices = rng.choice(subset_indices,
+                                      size=poison_count,
+                                      replace=False).tolist()
+
+        self._load_feature_extractor()
+        first_image, _ = base_dataset[selected_indices[0]]
+        self._ensure_sabre_trigger(first_image.to(self.device))
+        trigger_update_interval = self._get_sabre_trigger_update_interval()
+        optimize_trigger = self._should_update_sabre_trigger(round_idx)
+        self.sabre_latest_meta.update({
+            'trigger_update_interval': int(trigger_update_interval),
+            'trigger_optimized': bool(optimize_trigger),
+        })
+        if optimize_trigger:
+            self._optimize_sabre_trigger(base_dataset, selected_indices,
+                                         round_idx)
+        else:
+            logger.info(
+                f"Client {self.ID}: Reusing SABRE trigger in round "
+                f"{round_idx}; optimization interval="
+                f"{trigger_update_interval}")
+        self.sabre_latest_meta.update({
+            'trigger': self.sabre_trigger.detach().cpu(),
+            'mask': self.sabre_mask.detach().cpu(),
+            'trigger_mode': 'additive_full_image',
+        })
+
+        if self.feature_extractor_type == 'clip' and self.clip_model is not None:
+            self.clip_model.eval()
+        if self.feature_extractor_type == 'cnn' and self.cnn_extractor is not None:
+            self.cnn_extractor.eval()
+        if self.feature_extractor_type == 'timm' and self.timm_extractor is not None:
+            self.timm_extractor.eval()
+
+        poison_features = []
+        batch_size = max(1, int(getattr(self.ggeur_cfg, 'extract_batch_size', 64)))
+        with torch.no_grad():
+            for start in range(0, len(selected_indices), batch_size):
+                batch_indices = selected_indices[start:start + batch_size]
+                images = []
+                for base_idx in batch_indices:
+                    image, _ = base_dataset[base_idx]
+                    images.append(image)
+                images = torch.stack(images).to(self.device)
+                poisoned_images = self._apply_sabre_trigger(images)
+                features = self._extractor_forward(poisoned_images).float()
+                poison_features.append(features.detach().cpu())
+
+        if not poison_features:
+            return None, None
+
+        poison_features = torch.cat(poison_features, dim=0)
+        poison_labels = torch.full((poison_features.shape[0], ),
+                                   target_label,
+                                   dtype=torch.long)
+        repeat = max(1, int(getattr(self.sabre_cfg, 'poison_feature_repeat', 1)))
+        if repeat > 1:
+            poison_features = poison_features.repeat((repeat, 1))
+            poison_labels = poison_labels.repeat(repeat)
+
+        self.sabre_latest_meta.update({
+            'poisoned_samples': int(poison_features.shape[0]),
+            'target_label': int(target_label),
+            'trigger_norm': float(torch.norm(
+                self.sabre_trigger * self.sabre_mask, p=2).item()),
+            'trigger_linf': float(torch.max(torch.abs(
+                self.sabre_trigger * self.sabre_mask)).item()),
+        })
+        return poison_features, poison_labels
+
+    def _train_sabre_clean_anchor(self):
+        anchor_model = copy.deepcopy(self.mlp_classifier)
+        anchor_model.train()
+
+        clean_lr = float(getattr(
+            self.sabre_cfg, 'clean_anchor_lr',
+            getattr(self.sabre_cfg, 'poison_lr',
+                    self._cfg.train.optimizer.lr)))
+        clean_epochs = max(
+            1, int(getattr(self.sabre_cfg, 'clean_anchor_epochs', 1)))
+
+        optimizer = torch.optim.Adam(anchor_model.parameters(), lr=clean_lr)
+        criterion = nn.CrossEntropyLoss()
+        for _ in range(clean_epochs):
+            for features, labels in self.augmented_loader:
+                features = features.to(self.device)
+                labels = labels.to(self.device)
+                optimizer.zero_grad()
+                outputs = anchor_model(features)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+        anchor_state = {
+            name: param.detach().clone()
+            for name, param in anchor_model.named_parameters()
+            if param.requires_grad
+        }
+        return anchor_state
+
+    def _sabre_anchor_distance(self, anchor_state):
+        distance = torch.tensor(0.0, device=self.device)
+        for name, param in self.mlp_classifier.named_parameters():
+            if not param.requires_grad or name not in anchor_state:
+                continue
+            anchor_param = anchor_state[name].to(param.device)
+            distance = distance + torch.norm(param - anchor_param, p=2) ** 2
+        return distance
+
+    def _sample_sabre_poison_batch(self, poison_features, poison_labels,
+                                   batch_size):
+        pool_size = poison_features.shape[0]
+        if pool_size == 0:
+            return None, None
+
+        poison_per_batch = int(getattr(self.sabre_cfg,
+                                       'poisoning_per_batch', 0))
+        if poison_per_batch <= 0:
+            poison_ratio = float(getattr(self._cfg.attack, 'poison_ratio', 0.1))
+            poison_per_batch = max(1, int(batch_size * poison_ratio))
+        poison_per_batch = min(max(1, poison_per_batch), batch_size)
+
+        replace = pool_size < poison_per_batch
+        indices = np.random.choice(pool_size,
+                                   size=poison_per_batch,
+                                   replace=replace)
+        poison_x = poison_features[indices].to(self.device)
+        poison_y = poison_labels[indices].to(self.device)
+        return poison_x, poison_y
+
+    def _train_sabre_on_augmented_data(self, round_idx):
+        if self.augmented_loader is None or self.mlp_classifier is None:
+            return 0, {}, {}
+
+        self.sabre_latest_meta = {
+            'active': True,
+            'client_id': int(self.ID),
+            'round': int(round_idx),
+            'target_label': int(self._cfg.attack.target_label_ind),
+        }
+
+        poison_features, poison_labels = self._build_sabre_poison_feature_pool(
+            round_idx)
+        if poison_features is None or poison_labels is None:
+            logger.warning(
+                f"Client {self.ID}: SABRE poison pool is empty; "
+                "falling back to clean augmented training")
+            self.sabre_latest_meta['active'] = False
+            return self._train_on_augmented_data()
+
+        anchor_state = self._train_sabre_clean_anchor()
+        poison_lr = float(getattr(self.sabre_cfg,
+                                  'poison_lr',
+                                  self._cfg.train.optimizer.lr))
+        optimizer_name = str(getattr(self.sabre_cfg,
+                                     'poison_optimizer',
+                                     'adam')).lower()
+        if optimizer_name == 'sgd':
+            optimizer = torch.optim.SGD(self.mlp_classifier.parameters(),
+                                        lr=poison_lr)
+        else:
+            optimizer = torch.optim.Adam(self.mlp_classifier.parameters(),
+                                         lr=poison_lr)
+
+        criterion = nn.CrossEntropyLoss()
+        anchor_loss_weight = float(getattr(self.sabre_cfg,
+                                           'anchor_loss_weight', 0.01))
+        clean_ce_weight = float(getattr(
+            self.sabre_cfg, 'clean_ce_weight', 1.0))
+        poison_ce_weight = float(getattr(
+            self.sabre_cfg, 'poison_ce_weight', 1.0))
+        clean_target_suppression_weight = float(getattr(
+            self.sabre_cfg, 'clean_target_suppression_weight', 0.0))
+        clean_target_margin = float(getattr(
+            self.sabre_cfg, 'clean_target_margin', 0.5))
+        target_label = int(self._cfg.attack.target_label_ind)
+        internal_epochs = max(
+            1, int(getattr(self.sabre_cfg, 'internal_poison_epochs', 1)))
+        preserve_clean_batches = bool(getattr(
+            self.sabre_cfg, 'preserve_clean_batches', True))
+
+        self.mlp_classifier.train()
+        total_loss = 0.0
+        total_ce_loss = 0.0
+        total_clean_ce_loss = 0.0
+        total_poison_ce_loss = 0.0
+        total_clean_target_suppression_loss = 0.0
+        total_anchor_loss = 0.0
+        total_correct = 0
+        total_samples = 0
+        total_clean_correct = 0
+        total_clean_samples = 0
+        total_poison_correct = 0
+        total_poison_samples = 0
+        total_clean_target_predictions = 0
+
+        for _ in range(internal_epochs):
+            for clean_features, clean_labels in self.augmented_loader:
+                clean_features = clean_features.to(self.device)
+                clean_labels = clean_labels.to(self.device)
+                poison_x, poison_y = self._sample_sabre_poison_batch(
+                    poison_features, poison_labels, clean_features.size(0))
+                if poison_x is None:
+                    continue
+
+                optimizer.zero_grad()
+                if preserve_clean_batches:
+                    clean_outputs = self.mlp_classifier(clean_features)
+                    poison_outputs = self.mlp_classifier(poison_x)
+                    clean_ce_loss = criterion(clean_outputs, clean_labels)
+                    poison_ce_loss = criterion(poison_outputs, poison_y)
+                    ce_loss = (
+                        clean_ce_weight * clean_ce_loss +
+                        poison_ce_weight * poison_ce_loss)
+                    outputs = torch.cat([poison_outputs, clean_outputs], dim=0)
+                    labels = torch.cat([poison_y, clean_labels], dim=0)
+                    clean_pred = torch.argmax(clean_outputs, dim=1)
+                    poison_pred = torch.argmax(poison_outputs, dim=1)
+                    clean_eval_labels = clean_labels
+                    clean_outputs_for_suppression = clean_outputs
+                else:
+                    features = clean_features.clone()
+                    labels = clean_labels.clone()
+                    poison_num = poison_x.size(0)
+                    features[:poison_num] = poison_x
+                    labels[:poison_num] = poison_y
+                    outputs = self.mlp_classifier(features)
+                    poison_ce_loss = criterion(
+                        outputs[:poison_num], labels[:poison_num])
+                    if poison_num < outputs.size(0):
+                        clean_ce_loss = criterion(
+                            outputs[poison_num:], labels[poison_num:])
+                    else:
+                        clean_ce_loss = torch.tensor(
+                            0.0, device=self.device)
+                    ce_loss = (
+                        clean_ce_weight * clean_ce_loss +
+                        poison_ce_weight * poison_ce_loss)
+                    poison_pred = torch.argmax(outputs[:poison_num], dim=1)
+                    clean_pred = torch.argmax(outputs[poison_num:], dim=1)
+                    clean_eval_labels = labels[poison_num:]
+                    clean_outputs_for_suppression = outputs[poison_num:]
+
+                clean_target_suppression_loss = torch.tensor(
+                    0.0, device=self.device)
+                if clean_target_suppression_weight > 0.0 and \
+                        clean_outputs_for_suppression.numel() > 0 and \
+                        0 <= target_label < clean_outputs_for_suppression.size(1):
+                    non_target_mask = clean_eval_labels != target_label
+                    if non_target_mask.any():
+                        non_target_outputs = clean_outputs_for_suppression[
+                            non_target_mask]
+                        non_target_labels = clean_eval_labels[non_target_mask]
+                        target_logits = non_target_outputs[:, target_label]
+                        true_logits = non_target_outputs.gather(
+                            1, non_target_labels.view(-1, 1)).squeeze(1)
+                        clean_target_suppression_loss = F.relu(
+                            target_logits - true_logits +
+                            clean_target_margin).mean()
+
+                anchor_loss = self._sabre_anchor_distance(anchor_state)
+                loss = ce_loss + anchor_loss_weight * anchor_loss + \
+                    clean_target_suppression_weight * \
+                    clean_target_suppression_loss
+                loss.backward()
+                optimizer.step()
+
+                batch_size = outputs.size(0)
+                total_loss += loss.item() * batch_size
+                total_ce_loss += ce_loss.item() * batch_size
+                total_clean_ce_loss += clean_ce_loss.item() * batch_size
+                total_poison_ce_loss += poison_ce_loss.item() * batch_size
+                total_clean_target_suppression_loss += \
+                    clean_target_suppression_loss.item() * batch_size
+                total_anchor_loss += anchor_loss.item() * batch_size
+                _, predicted = torch.max(outputs, 1)
+                total_correct += (predicted == labels).sum().item()
+                total_samples += batch_size
+                total_poison_correct += (
+                    poison_pred == poison_y).sum().item()
+                total_poison_samples += poison_y.numel()
+                if clean_pred.numel() > 0:
+                    total_clean_correct += (
+                        clean_pred == clean_eval_labels
+                    ).sum().item()
+                    total_clean_target_predictions += clean_pred.eq(
+                        target_label).sum().item()
+                    total_clean_samples += clean_pred.numel()
+
+        avg_loss = total_loss / total_samples if total_samples > 0 else 0
+        avg_ce_loss = total_ce_loss / total_samples if total_samples > 0 else 0
+        avg_clean_ce_loss = (
+            total_clean_ce_loss / total_samples if total_samples > 0 else 0)
+        avg_poison_ce_loss = (
+            total_poison_ce_loss / total_samples if total_samples > 0 else 0)
+        avg_clean_target_suppression_loss = (
+            total_clean_target_suppression_loss / total_samples
+            if total_samples > 0 else 0)
+        avg_anchor_loss = (
+            total_anchor_loss / total_samples if total_samples > 0 else 0)
+        accuracy = total_correct / total_samples if total_samples > 0 else 0
+        clean_accuracy = (
+            total_clean_correct / total_clean_samples
+            if total_clean_samples > 0 else 0)
+        poison_accuracy = (
+            total_poison_correct / total_poison_samples
+            if total_poison_samples > 0 else 0)
+        clean_target_rate = (
+            total_clean_target_predictions / total_clean_samples
+            if total_clean_samples > 0 else 0)
+
+        logger.info(
+            f"Client {self.ID}: SABRE train loss={avg_loss:.4f} "
+            f"(CE={avg_ce_loss:.4f}, clean_CE={avg_clean_ce_loss:.4f}, "
+            f"poison_CE={avg_poison_ce_loss:.4f}, "
+            f"clean_target_supp={avg_clean_target_suppression_loss:.4f}, "
+            f"anchor={avg_anchor_loss:.4f}), accuracy={accuracy:.4f}, "
+            f"clean_acc={clean_accuracy:.4f}, "
+            f"clean_target_rate={clean_target_rate:.4f}, "
+            f"poison_acc={poison_accuracy:.4f}")
+
+        model_para = copy.deepcopy(self.mlp_classifier.state_dict())
+        if bool(getattr(self.sabre_cfg,
+                        'constrain_update_to_anchor', False)):
+            gamma = float(getattr(
+                self.sabre_cfg, 'anchor_residual_gamma', 0.5))
+            gamma = min(1.0, max(0.0, gamma))
+            constrained_para = copy.deepcopy(model_para)
+            for name, value in model_para.items():
+                if name not in anchor_state or not isinstance(value, torch.Tensor):
+                    continue
+                anchor_value = anchor_state[name].to(value.device)
+                if tuple(anchor_value.shape) != tuple(value.shape):
+                    continue
+                constrained_para[name] = anchor_value + gamma * (
+                    value - anchor_value)
+            model_para = constrained_para
+            logger.info(
+                f"Client {self.ID}: SABRE constrained update to "
+                f"clean anchor with gamma={gamma:.4f}")
+
+        self.sabre_latest_meta.update({
+            'anchor_loss_weight': float(anchor_loss_weight),
+            'clean_ce_weight': float(clean_ce_weight),
+            'poison_ce_weight': float(poison_ce_weight),
+            'clean_target_suppression_weight': float(
+                clean_target_suppression_weight),
+            'clean_target_margin': float(clean_target_margin),
+            'anchor_loss': float(avg_anchor_loss),
+            'train_loss': float(avg_loss),
+            'train_clean_ce_loss': float(avg_clean_ce_loss),
+            'train_poison_ce_loss': float(avg_poison_ce_loss),
+            'train_clean_target_suppression_loss': float(
+                avg_clean_target_suppression_loss),
+            'train_acc': float(accuracy),
+            'train_clean_acc': float(clean_accuracy),
+            'train_clean_target_rate': float(clean_target_rate),
+            'train_poison_acc': float(poison_accuracy),
+        })
+
+        clean_weight_samples = total_clean_samples
+        if internal_epochs > 0:
+            clean_weight_samples = int(round(
+                float(total_clean_samples) / float(internal_epochs)))
+        clean_weight_samples = max(1, clean_weight_samples)
+        self.sabre_latest_meta['aggregation_sample_size'] = int(
+            clean_weight_samples)
+        results = {
+            'train_loss': avg_loss,
+            'train_ce_loss': avg_ce_loss,
+            'train_clean_ce_loss': avg_clean_ce_loss,
+            'train_poison_ce_loss': avg_poison_ce_loss,
+            'train_clean_target_suppression_loss':
+            avg_clean_target_suppression_loss,
+            'train_sabre_anchor_loss': avg_anchor_loss,
+            'train_acc': accuracy,
+            'train_clean_acc': clean_accuracy,
+            'train_clean_target_rate': clean_target_rate,
+            'train_poison_acc': poison_accuracy,
+            'train_total': total_samples,
+            'aggregation_sample_size': int(clean_weight_samples),
+        }
+        return clean_weight_samples, model_para, results
 
     def _load_cnn_extractor(self):
         """Load CNN feature extractor"""
@@ -462,14 +2803,8 @@ class GGEURClient(Client):
         try:
             paths = list(feature_cache.keys())
             features = np.array([feature_cache[p] for p in paths])
-            tmp_path = (
-                f"{cache_path}.client{int(self.ID)}."
-                f"pid{os.getpid()}.tmp.npz")
-            np.savez(tmp_path, paths=np.array(paths), features=features)
-            os.replace(tmp_path, cache_path)
-            logger.info(
-                f"Client {self.ID}: Saved {len(paths)} features to cache "
-                f"{cache_path}")
+            np.savez(cache_path, paths=np.array(paths), features=features)
+            logger.info(f"Client {self.ID}: Saved {len(paths)} features to cache {cache_path}")
         except Exception as e:
             logger.warning(f"Client {self.ID}: Failed to save cache: {e}")
 
@@ -495,16 +2830,6 @@ class GGEURClient(Client):
         Extract features from local data using either CLIP or CNN.
         Supports caching for both modes.
         """
-        timing_total_start = time.time()
-        timing_load_extractor = 0.0
-        timing_load_cache = 0.0
-        timing_scan_cache = 0.0
-        timing_image_load = 0.0
-        timing_forward = 0.0
-        timing_cache_save = 0.0
-        samples_total = 0
-        samples_cached = 0
-        samples_need_extract = 0
         if self.feature_extractor_type == 'cnn':
             extractor_name = 'CNN'
         elif self.feature_extractor_type == 'timm':
@@ -539,16 +2864,12 @@ class GGEURClient(Client):
 
         # Load before cache lookup so embedding_dim reflects the real extractor
         # output, not the config default from a previous backbone.
-        _timing_t0 = time.time()
         self._load_feature_extractor()
-        timing_load_extractor += time.time() - _timing_t0
 
         cache_path = self._get_feature_cache_path(domain)
 
         # Load existing cache
-        _timing_t0 = time.time()
         feature_cache = self._load_feature_cache(cache_path)
-        timing_load_cache += time.time() - _timing_t0
         if feature_cache:
             valid_cache = {
                 path: feat
@@ -568,6 +2889,7 @@ class GGEURClient(Client):
 
         self.local_features = {}
         self.local_labels = {}
+        self.label_flip_feature_flip_count = 0
 
         # QPS tracking
         _qps_samples = 0
@@ -576,7 +2898,6 @@ class GGEURClient(Client):
         if has_paths:
             # Dataset with image paths - can use caching
             num_samples = len(subset_indices) if is_subset else len(base_dataset)
-            samples_total = int(num_samples)
             logger.info(f"Client {self.ID}: Dataset has {num_samples} samples with paths")
 
             # Collect samples that need feature extraction
@@ -584,7 +2905,6 @@ class GGEURClient(Client):
             indices_to_extract = []  # Indices into the current dataset (Subset or base)
             base_indices_to_extract = []  # Indices into base_dataset for loading
 
-            _timing_t0 = time.time()
             for local_idx in range(num_samples):
                 # Get the index into the base dataset
                 if is_subset:
@@ -608,7 +2928,7 @@ class GGEURClient(Client):
                         indices_to_extract.append(local_idx)
                         base_indices_to_extract.append(base_idx)
                         continue
-                    label = int(label)
+                    label = self._label_flip_label_for_statistics(label)
                     if label not in self.local_features:
                         self.local_features[label] = []
                         self.local_labels[label] = []
@@ -619,11 +2939,8 @@ class GGEURClient(Client):
                     paths_to_extract.append(img_path)
                     indices_to_extract.append(local_idx)
                     base_indices_to_extract.append(base_idx)
-            timing_scan_cache += time.time() - _timing_t0
 
             cached_count = num_samples - len(paths_to_extract)
-            samples_cached = int(cached_count)
-            samples_need_extract = int(len(paths_to_extract))
             logger.info(f"Client {self.ID}: {cached_count} samples from cache, {len(paths_to_extract)} need extraction")
 
             # Extract features for non-cached samples
@@ -639,12 +2956,10 @@ class GGEURClient(Client):
                         # Load images from base dataset
                         images = []
                         labels = []
-                        _timing_t0 = time.time()
                         for base_idx in batch_base_indices:
                             img, lbl = base_dataset[base_idx]
                             images.append(img)
                             labels.append(lbl)
-                        timing_image_load += time.time() - _timing_t0
 
                         images = torch.stack(images).to(self.device)
 
@@ -656,10 +2971,8 @@ class GGEURClient(Client):
                             features = self.timm_extractor(images)
                         else:
                             features = self.clip_model.encode_image(images)
-                        _forward_elapsed = time.time() - _t0
                         _qps_samples += len(images)
-                        _qps_time += _forward_elapsed
-                        timing_forward += _forward_elapsed
+                        _qps_time += time.time() - _t0
                         features = features.cpu().numpy()
 
                         for feat, label, path in zip(features, labels, batch_paths):
@@ -675,7 +2988,7 @@ class GGEURClient(Client):
                             cache_updated = True
 
                             # Add to local features
-                            label = int(label)
+                            label = self._label_flip_label_for_statistics(label)
                             if label not in self.local_features:
                                 self.local_features[label] = []
                                 self.local_labels[label] = []
@@ -684,9 +2997,7 @@ class GGEURClient(Client):
 
                 # Save updated cache
                 if cache_updated:
-                    _timing_t0 = time.time()
                     self._save_feature_cache(cache_path, feature_cache)
-                    timing_cache_save += time.time() - _timing_t0
 
         else:
             # Fallback: Dataset without paths - cannot use caching
@@ -703,8 +3014,6 @@ class GGEURClient(Client):
                         continue
 
                     images = images.to(self.device)
-                    samples_total += int(images.shape[0])
-                    samples_need_extract += int(images.shape[0])
 
                     # Skip invalid images
                     if images.shape[1] != 3:
@@ -718,12 +3027,17 @@ class GGEURClient(Client):
                         features = self.timm_extractor(images)
                     else:
                         features = self.clip_model.encode_image(images)
-                    _forward_elapsed = time.time() - _t0
                     _qps_samples += len(images)
-                    _qps_time += _forward_elapsed
-                    timing_forward += _forward_elapsed
+                    _qps_time += time.time() - _t0
                     features = features.cpu().numpy()
                     labels = labels.cpu().numpy()
+                    if bool(getattr(self.label_flip_cfg,
+                                    'poison_statistics', True)):
+                        labels, flipped_count, _ = \
+                            self._apply_label_flip_to_numpy_labels(
+                                labels, self.state, 'statistics')
+                        self.label_flip_feature_flip_count += int(
+                            flipped_count)
 
                     for feat, label in zip(features, labels):
                         if not self._is_valid_feature_vector(feat):
@@ -748,23 +3062,12 @@ class GGEURClient(Client):
             qps = _qps_samples / _qps_time
             logger.info(f"Client {self.ID}: Feature extraction QPS={qps:.1f} img/s "
                         f"({_qps_samples} samples in {_qps_time:.2f}s)")
+        if self.label_flip_enabled:
+            logger.info(
+                f"Client {self.ID}: Label-flip statistics poisoning "
+                f"flipped {self.label_flip_feature_flip_count} labels "
+                f"(active={self._should_label_flip_attack(self.state)})")
         logger.info(f"Client {self.ID}: Extracted {total_samples} {extractor_name} features from {len(self.local_features)} classes")
-        timing_total = time.time() - timing_total_start
-        logger.info(
-            "GGEUR_TIMING_CLIENT "
-            f"client={int(self.ID)} stage=feature_extraction "
-            f"dataset={self._cfg.data.type} extractor={self.feature_extractor_type} "
-            f"total_sec={timing_total:.6f} "
-            f"load_extractor_sec={timing_load_extractor:.6f} "
-            f"load_cache_sec={timing_load_cache:.6f} "
-            f"scan_cache_sec={timing_scan_cache:.6f} "
-            f"image_load_sec={timing_image_load:.6f} "
-            f"forward_sec={timing_forward:.6f} "
-            f"cache_save_sec={timing_cache_save:.6f} "
-            f"samples_total={samples_total} samples_cached={samples_cached} "
-            f"samples_need_extract={samples_need_extract} "
-            f"samples_forward={_qps_samples} output_samples={total_samples} "
-            f"classes={len(self.local_features)} feature_dim={self.embedding_dim}")
 
     def _extract_clip_features(self):
         """Legacy method - now calls _extract_features()"""
@@ -773,15 +3076,10 @@ class GGEURClient(Client):
     def _compute_local_statistics(self):
         """Compute local mean and covariance for each class"""
         logger.info(f"Client {self.ID}: Computing local statistics...")
-        timing_total_start = time.time()
-        timing_mean = 0.0
-        timing_center = 0.0
-        timing_cov = 0.0
 
         self.local_means = {}
         self.local_covs = {}
         self.local_counts = {}
-        sample_count = 0
 
         for class_idx, features in self.local_features.items():
             if features.shape[0] == 0:
@@ -798,33 +3096,17 @@ class GGEURClient(Client):
                 continue
 
             n = features.shape[0]
-            sample_count += int(n)
-            _timing_t0 = time.time()
             mean = np.mean(features, axis=0)
-            timing_mean += time.time() - _timing_t0
 
             # Compute covariance
-            _timing_t0 = time.time()
             centered = features - mean
-            timing_center += time.time() - _timing_t0
-            _timing_t0 = time.time()
             cov = (1.0 / n) * np.dot(centered.T, centered)
-            timing_cov += time.time() - _timing_t0
 
             self.local_means[class_idx] = mean
             self.local_covs[class_idx] = cov
             self.local_counts[class_idx] = n
 
         logger.info(f"Client {self.ID}: Computed statistics for {len(self.local_means)} classes")
-        timing_total = time.time() - timing_total_start
-        logger.info(
-            "GGEUR_TIMING_CLIENT "
-            f"client={int(self.ID)} stage=local_statistics "
-            f"dataset={self._cfg.data.type} extractor={self.feature_extractor_type} "
-            f"total_sec={timing_total:.6f} mean_sec={timing_mean:.6f} "
-            f"center_sec={timing_center:.6f} cov_dot_sec={timing_cov:.6f} "
-            f"classes={len(self.local_means)} samples={sample_count} "
-            f"feature_dim={self.embedding_dim}")
 
     def _validate_local_statistics(self):
         """Validate statistics dimensions before sending them to the server."""
@@ -850,19 +3132,13 @@ class GGEURClient(Client):
     def _upload_local_statistics(self):
         """Upload local statistics to server"""
         logger.info(f"Client {self.ID}: Uploading local statistics to server...")
-        timing_total_start = time.time()
-        _timing_t0 = time.time()
         self._validate_local_statistics()
-        timing_validate = time.time() - _timing_t0
 
         # Also send prototypes for cross-client augmentation
-        _timing_t0 = time.time()
         prototypes = {}
         for class_idx, mean in self.local_means.items():
             prototypes[class_idx] = mean
-        timing_prototype_prepare = time.time() - _timing_t0
 
-        _timing_t0 = time.time()
         content = {
             'client_id': self.ID,
             'embedding_dim': int(self.embedding_dim),
@@ -872,13 +3148,10 @@ class GGEURClient(Client):
             'prototypes': self._serialize_array_payload(prototypes)
         }
         payload_bytes = self._sizeof_content(content)
-        stats_class_count = len(self.local_means)
-        timing_serialize = time.time() - _timing_t0
         logger.info(
             f"Client {self.ID}: Local statistics payload bytes={payload_bytes} "
-            f"(classes={stats_class_count}, embedding_dim={self.embedding_dim})")
+            f"(classes={len(self.local_means)}, embedding_dim={self.embedding_dim})")
 
-        _timing_t0 = time.time()
         self.comm_manager.send(
             Message(
                 msg_type='local_statistics',
@@ -888,21 +3161,9 @@ class GGEURClient(Client):
                 content=content
             )
         )
-        timing_send = time.time() - _timing_t0
 
         self.statistics_uploaded = True
-        self._release_round0_stat_buffers()
         logger.info(f"Client {self.ID}: Statistics uploaded")
-        timing_total = time.time() - timing_total_start
-        logger.info(
-            "GGEUR_TIMING_CLIENT "
-            f"client={int(self.ID)} stage=statistics_upload "
-            f"dataset={self._cfg.data.type} extractor={self.feature_extractor_type} "
-            f"total_sec={timing_total:.6f} validate_sec={timing_validate:.6f} "
-            f"prototype_prepare_sec={timing_prototype_prepare:.6f} "
-            f"serialize_sec={timing_serialize:.6f} send_sec={timing_send:.6f} "
-            f"payload_bytes={payload_bytes} classes={stats_class_count} "
-            f"feature_dim={self.embedding_dim}")
 
     @staticmethod
     def _serialize_array_payload(payload):
@@ -960,28 +3221,15 @@ class GGEURClient(Client):
     def callback_for_global_covariances(self, message: Message):
         """Handle receiving global covariance matrices from server"""
         logger.info(f"Client {self.ID}: Received global covariances from server")
-        timing_total_start = time.time()
 
         content = message.content
-        _timing_t0 = time.time()
         self.global_cov_matrices = self._normalize_covariance_mapping(
             content.get('cov_matrices', {}))
-        timing_cov_decode = time.time() - _timing_t0
-        all_prototypes_by_client = content.get('all_prototypes_by_client', {})
-        _timing_t0 = time.time()
-        if all_prototypes_by_client:
-            self.other_prototypes = (
-                self._normalize_other_prototypes_from_client_pool(
-                    all_prototypes_by_client))
-        else:
-            other_prototypes = content.get('other_prototypes', {})
-            self.other_prototypes = self._normalize_prototype_mapping(
-                self._get_class_value(other_prototypes, self.ID) or {})
-        timing_other_proto_decode = time.time() - _timing_t0
-        _timing_t0 = time.time()
+        other_prototypes = content.get('other_prototypes', {})
+        self.other_prototypes = self._normalize_prototype_mapping(
+            self._get_class_value(other_prototypes, self.ID) or {})
         self.global_prototypes = self._normalize_prototype_mapping(
             content.get('global_prototypes', {}))  # For feature alignment
-        timing_global_proto_decode = time.time() - _timing_t0
 
         # Debug logging for received prototypes
         logger.info(f"Client {self.ID}: Received global_prototypes with {len(self.global_prototypes)} classes")
@@ -998,7 +3246,6 @@ class GGEURClient(Client):
 
         # Perform augmentation
         self._perform_augmentation()
-        self._release_round0_stat_buffers()
 
         # Build MLP classifier
         self._build_mlp_classifier()
@@ -1024,24 +3271,8 @@ class GGEURClient(Client):
             logger.info(f"Client {self.ID}: CNN distillation ready - CLIP: {self.clip_model is not None}, "
                        f"MLP: {self.mlp_classifier is not None}, CNN: {self.cnn_model is not None}")
 
-        cov_classes = len(self.global_cov_matrices)
-        other_proto_classes = len(self.other_prototypes)
-        global_proto_classes = len(self.global_prototypes)
-        self._release_round0_broadcast_buffers_if_unused()
-
         # Notify server that augmentation is complete
         logger.info(f"Client {self.ID}: Notifying server that augmentation is ready")
-        logger.info(
-            "GGEUR_TIMING_CLIENT "
-            f"client={int(self.ID)} stage=global_covariance_callback "
-            f"dataset={self._cfg.data.type} extractor={self.feature_extractor_type} "
-            f"total_sec={time.time() - timing_total_start:.6f} "
-            f"cov_decode_sec={timing_cov_decode:.6f} "
-            f"other_proto_decode_sec={timing_other_proto_decode:.6f} "
-            f"global_proto_decode_sec={timing_global_proto_decode:.6f} "
-            f"cov_classes={cov_classes} "
-            f"other_proto_classes={other_proto_classes} "
-            f"global_proto_classes={global_proto_classes}")
         self.comm_manager.send(
             Message(
                 msg_type='augmentation_ready',
@@ -1051,54 +3282,6 @@ class GGEURClient(Client):
                 content='ready'
             )
         )
-        self._maybe_fail_for_distributed_validation(
-            'after_augmentation_ready', self.state)
-
-    def _normalize_other_prototypes_from_client_pool(self,
-                                                     all_prototypes_by_client):
-        """Keep all prototypes except this client's own prototypes."""
-        normalized = {}
-        if not isinstance(all_prototypes_by_client, dict):
-            return normalized
-
-        for client_id, prototypes in all_prototypes_by_client.items():
-            try:
-                if int(client_id) == int(self.ID):
-                    continue
-            except (TypeError, ValueError):
-                pass
-
-            client_prototypes = self._normalize_prototype_mapping(prototypes)
-            for class_idx, value in client_prototypes.items():
-                if isinstance(value, list):
-                    normalized.setdefault(class_idx, []).extend(value)
-                else:
-                    normalized.setdefault(class_idx, []).append(value)
-
-        logger.info(
-            f"Client {self.ID}: Prepared other_prototypes from shared pool "
-            f"with {len(normalized)} classes")
-        return normalized
-
-    def _release_round0_stat_buffers(self):
-        """Drop per-client round-0 statistics after augmented cache is built."""
-        self.local_means = {}
-        self.local_covs = {}
-        self.local_counts = {}
-        if hasattr(self, '_cov_factor_cache'):
-            self._cov_factor_cache.clear()
-
-    def _release_round0_broadcast_buffers_if_unused(self):
-        """Drop broadcast payloads after HeadOnly augmentation when unused."""
-        keep_global_prototypes = (
-            getattr(self, 'use_fedproto', False)
-            or getattr(self, 'use_feature_alignment', False)
-            or getattr(self, 'use_cnn_distillation', False)
-            or getattr(self, 'use_promptfl', False))
-        if not keep_global_prototypes:
-            self.global_prototypes = {}
-        self.global_cov_matrices = {}
-        self.other_prototypes = {}
 
     @staticmethod
     def _get_class_value(mapping, class_idx):
@@ -1299,40 +3482,12 @@ class GGEURClient(Client):
     def _perform_augmentation(self):
         """Perform GGEUR_Clip feature augmentation"""
         augmentation_start = time.time()
-        timing_cache_load = 0.0
-        timing_init = 0.0
-        timing_original_collect = 0.0
-        timing_cov_lookup = 0.0
-        timing_sample_generation = 0.0
-        timing_prototype_generation = 0.0
-        timing_stack_select = 0.0
-        timing_dataset_build = 0.0
-        timing_cache_save = 0.0
-        original_samples = 0
-        generated_sample_count = 0
-        generated_prototype_count = 0
-        selected_samples = 0
-        sample_generation_calls = 0
-        prototype_generation_calls = 0
-        _timing_t0 = time.time()
         if self._try_load_augmented_feature_cache():
-            timing_cache_load = time.time() - _timing_t0
             self.augmentation_done = True
             self.local_features = {}
             self.local_labels = {}
-            logger.info(
-                "GGEUR_TIMING_CLIENT "
-                f"client={int(self.ID)} stage=augmentation "
-                f"dataset={self._cfg.data.type} extractor={self.feature_extractor_type} "
-                f"cache_hit=1 total_sec={time.time() - augmentation_start:.6f} "
-                f"cache_load_sec={timing_cache_load:.6f} "
-                f"generated_per_sample={getattr(self.ggeur_cfg, 'num_generated_per_sample', 0)} "
-                f"generated_per_prototype={getattr(self.ggeur_cfg, 'num_generated_per_prototype', 0)} "
-                f"target_size_per_class={getattr(self.ggeur_cfg, 'target_size_per_class', 0)}")
             return
-        timing_cache_load = time.time() - _timing_t0
 
-        _timing_t0 = time.time()
         target_size = self.ggeur_cfg.target_size_per_class
         num_per_sample = self.ggeur_cfg.num_generated_per_sample
         num_per_prototype = self.ggeur_cfg.num_generated_per_prototype
@@ -1357,7 +3512,6 @@ class GGEURClient(Client):
             all_classes.update(self.other_prototypes.keys())
 
         total_classes = len(all_classes)
-        timing_init += time.time() - _timing_t0
 
         # 获取特征维度用于日志
         feature_dim = self.embedding_dim
@@ -1379,55 +3533,38 @@ class GGEURClient(Client):
 
             # 1. Original features from this client (always include)
             if class_idx in self.local_features:
-                _timing_t0 = time.time()
                 original = self.local_features[class_idx]
                 class_features.append(original)
-                original_samples += int(original.shape[0])
-                timing_original_collect += time.time() - _timing_t0
 
             # Skip augmentation if disabled
             if no_augmentation:
                 if class_features:
-                    _timing_t0 = time.time()
                     combined = np.vstack(class_features)
                     all_features.append(combined)
                     all_labels.append(np.full(combined.shape[0], class_idx))
-                    selected_samples += int(combined.shape[0])
-                    timing_stack_select += time.time() - _timing_t0
                 continue
 
             # 2. Get global covariance matrix
-            _timing_t0 = time.time()
             if class_idx in self.global_cov_matrices:
                 cov_matrix = self.global_cov_matrices[class_idx]
             else:
                 cov_matrix = np.eye(self.embedding_dim) * 0.01
-            timing_cov_lookup += time.time() - _timing_t0
 
             # 3. Expand original features using global covariance
             if num_per_sample > 0 and class_idx in self.local_features and self.local_features[class_idx].shape[0] > 0:
                 for feat in self.local_features[class_idx]:
-                    _timing_t0 = time.time()
                     generated = self._generate_samples(feat, cov_matrix, num_per_sample)
-                    timing_sample_generation += time.time() - _timing_t0
-                    sample_generation_calls += 1
-                    generated_sample_count += int(generated.shape[0])
                     class_features.append(generated)
 
             # 4. Generate from other clients' prototypes
             if use_cross_client and num_per_prototype > 0 and self.other_prototypes:
                 if class_idx in self.other_prototypes:
                     for prototype in self.other_prototypes[class_idx]:
-                        _timing_t0 = time.time()
                         generated = self._generate_samples(prototype, cov_matrix, num_per_prototype)
-                        timing_prototype_generation += time.time() - _timing_t0
-                        prototype_generation_calls += 1
-                        generated_prototype_count += int(generated.shape[0])
                         class_features.append(generated)
 
             # Combine and sample to target size
             if class_features:
-                _timing_t0 = time.time()
                 combined = np.vstack(class_features)
 
                 # target_size = 0 means use all samples
@@ -1439,13 +3576,10 @@ class GGEURClient(Client):
 
                 all_features.append(selected)
                 all_labels.append(np.full(selected.shape[0], class_idx))
-                selected_samples += int(selected.shape[0])
-                timing_stack_select += time.time() - _timing_t0
 
         logger.info(f"Client {self.ID}: Augmentation complete, building dataset...")
 
         if all_features:
-            _timing_t0 = time.time()
             self.augmented_features = np.vstack(all_features)
             self.augmented_labels = np.concatenate(all_labels)
 
@@ -1456,7 +3590,6 @@ class GGEURClient(Client):
                 batch_size=self._cfg.dataloader.batch_size,
                 shuffle=True
             )
-            timing_dataset_build += time.time() - _timing_t0
 
             if no_augmentation:
                 logger.info(f"Client {self.ID}: Original data - {self.augmented_features.shape[0]} samples, "
@@ -1474,43 +3607,11 @@ class GGEURClient(Client):
                 f"samples={self.augmented_features.shape[0]}, "
                 f"time={augmentation_elapsed:.4f}s, "
                 f"qps={aug_qps:.2f} samples/s")
-            _timing_t0 = time.time()
             self._save_augmented_feature_cache()
-            timing_cache_save += time.time() - _timing_t0
+            self.base_augmented_features = self.augmented_features.copy()
+            self.base_augmented_labels = self.augmented_labels.copy()
 
         self.augmentation_done = True
-        output_samples = (
-            int(self.augmented_features.shape[0])
-            if self.augmented_features is not None else 0)
-        output_classes = (
-            int(len(np.unique(self.augmented_labels)))
-            if self.augmented_labels is not None else 0)
-        logger.info(
-            "GGEUR_TIMING_CLIENT "
-            f"client={int(self.ID)} stage=augmentation "
-            f"dataset={self._cfg.data.type} extractor={self.feature_extractor_type} "
-            f"cache_hit=0 no_augmentation={1 if no_augmentation else 0} "
-            f"total_sec={time.time() - augmentation_start:.6f} "
-            f"cache_load_sec={timing_cache_load:.6f} "
-            f"init_sec={timing_init:.6f} "
-            f"original_collect_sec={timing_original_collect:.6f} "
-            f"cov_lookup_sec={timing_cov_lookup:.6f} "
-            f"sample_generation_sec={timing_sample_generation:.6f} "
-            f"prototype_generation_sec={timing_prototype_generation:.6f} "
-            f"stack_select_sec={timing_stack_select:.6f} "
-            f"dataset_build_sec={timing_dataset_build:.6f} "
-            f"cache_save_sec={timing_cache_save:.6f} "
-            f"classes={total_classes} feature_dim={feature_dim} "
-            f"original_samples={original_samples} "
-            f"generated_from_samples={generated_sample_count} "
-            f"generated_from_prototypes={generated_prototype_count} "
-            f"selected_samples={selected_samples} output_samples={output_samples} "
-            f"output_classes={output_classes} "
-            f"sample_generation_calls={sample_generation_calls} "
-            f"prototype_generation_calls={prototype_generation_calls} "
-            f"generated_per_sample={num_per_sample} "
-            f"generated_per_prototype={num_per_prototype} "
-            f"target_size_per_class={target_size}")
 
         # Free raw features from memory - augmented_features/loader are all we need now
         self.local_features = {}
@@ -1545,13 +3646,9 @@ class GGEURClient(Client):
             splits = list(splits)
         except Exception:
             splits = []
-        version = str(getattr(
-            self.ggeur_cfg, 'augmented_feature_cache_version',
-            getattr(self.ggeur_cfg, 'headonly_cache_version',
-                    'aug_fcache_v1')))
         return {
             'source': 'real_dataset',
-            'mode': 'ggeur_augmented_features',
+            'mode': 'ggeur_headonly_augmented_features',
             'client_id': int(self.ID),
             'client_num': int(self._cfg.federate.client_num),
             'dataset': str(self._cfg.data.type),
@@ -1559,7 +3656,6 @@ class GGEURClient(Client):
             'splits': splits,
             'seed': int(getattr(self._cfg, 'seed', 0)),
             'feature_extractor': str(self.feature_extractor_type),
-            'feature_extractor_model': self._feature_extractor_cache_name(),
             'embedding_dim': int(self.embedding_dim),
             'num_classes': int(self._cfg.model.num_classes),
             'num_generated_per_sample':
@@ -1568,364 +3664,123 @@ class GGEURClient(Client):
                 int(self.ggeur_cfg.num_generated_per_prototype),
             'target_size_per_class':
                 int(self.ggeur_cfg.target_size_per_class),
-            'use_cross_client_prototypes':
-                bool(getattr(self.ggeur_cfg, 'use_cross_client_prototypes',
-                             True)),
-            'max_cross_client_prototypes_per_class':
-                int(getattr(
-                    self.ggeur_cfg,
-                    'max_cross_client_prototypes_per_class', 0)),
-            'cross_client_prototype_seed':
-                int(getattr(self.ggeur_cfg,
-                            'cross_client_prototype_seed', 42)),
-            'use_fedproto':
-                bool(getattr(self.ggeur_cfg, 'use_fedproto', False)),
-            'use_lds':
-                bool(getattr(self.ggeur_cfg, 'use_lds', False)),
-            'lds_alpha':
-                float(getattr(self.ggeur_cfg, 'lds_alpha', 0.1)),
-            'lds_seed':
-                int(getattr(self.ggeur_cfg, 'lds_seed', 42)),
-            'domainnet_domains':
-                self._jsonable_config_value(
-                    getattr(self.ggeur_cfg, 'domainnet_domains', [])),
-            'domainnet_shared_classes_only':
-                bool(getattr(self.ggeur_cfg,
-                             'domainnet_shared_classes_only', False)),
-            'officehome_domains':
-                self._jsonable_config_value(
-                    getattr(self.ggeur_cfg, 'officehome_domains', [])),
-            'officehome_split_strategy':
-                str(getattr(self.ggeur_cfg, 'officehome_split_strategy',
-                            'standard')),
-            'officehome_random_clients_per_domain':
-                int(getattr(
-                    self.ggeur_cfg,
-                    'officehome_random_clients_per_domain', 0)),
-            'officehome_random_samples_per_client':
-                int(getattr(
-                    self.ggeur_cfg,
-                    'officehome_random_samples_per_client', 0)),
-            'officehome_random_sample_with_replacement':
-                bool(getattr(
-                    self.ggeur_cfg,
-                    'officehome_random_sample_with_replacement', False)),
-            'officehome_manifest_path':
-                str(getattr(self.ggeur_cfg, 'officehome_manifest_path', '')),
-            'augmented_feature_cache_version': version,
+            'label_flip_enabled': bool(self.label_flip_enabled),
+            'label_flip_is_attacker': bool(self.label_flip_is_attacker),
+            'label_flip_source_label_ind':
+                getattr(self.label_flip_cfg, 'source_label_ind', -1),
+            'label_flip_target_label_ind':
+                self._get_label_flip_target_label()
+                if self.label_flip_enabled else -1,
+            'label_flip_replacement_pairs': list(getattr(
+                self.label_flip_cfg, 'replacement_pairs', [])),
+            'label_flip_all_to_target': bool(getattr(
+                self.label_flip_cfg, 'all_to_target', False)),
+            'label_flip_poison_ratio': float(getattr(
+                self.label_flip_cfg, 'poison_ratio',
+                getattr(self._cfg.attack, 'poison_ratio', 1.0))),
+            'label_flip_start_round': int(getattr(
+                self.label_flip_cfg, 'start_round', -1)),
+            'label_flip_poison_epochs': int(getattr(
+                self.label_flip_cfg, 'poison_epochs', 0)),
+            'label_flip_poison_statistics': bool(getattr(
+                self.label_flip_cfg, 'poison_statistics', True)),
+            'label_flip_poison_training': bool(getattr(
+                self.label_flip_cfg, 'poison_training', True)),
+            'little_is_enough_enabled': bool(self.lie_enabled),
+            'little_is_enough_is_attacker': bool(self.lie_is_attacker),
+            'little_is_enough_z': float(getattr(
+                self.lie_cfg, 'z', 1.0)) if self.lie_enabled else 1.0,
+            'little_is_enough_auto_z': bool(getattr(
+                self.lie_cfg, 'auto_z', False)) if self.lie_enabled else False,
+            'little_is_enough_direction': str(getattr(
+                self.lie_cfg, 'direction', 'positive'))
+                if self.lie_enabled else 'positive',
+            'little_is_enough_stats_source': str(getattr(
+                self.lie_cfg, 'stats_source', 'attacker'))
+                if self.lie_enabled else 'attacker',
             'headonly_cache_version':
                 str(getattr(self.ggeur_cfg, 'headonly_cache_version',
                             'fcache_v1')),
         }
 
-    @staticmethod
-    def _jsonable_config_value(value):
-        if isinstance(value, (list, tuple)):
-            return [GGEURClient._jsonable_config_value(item)
-                    for item in value]
-        if isinstance(value, dict):
-            return {
-                str(key): GGEURClient._jsonable_config_value(val)
-                for key, val in value.items()
-            }
-        try:
-            if isinstance(value, np.generic):
-                return value.item()
-        except Exception:
-            pass
-        return value
-
-    @staticmethod
-    def _safe_cache_token(value):
-        token = str(value).replace('\\', '_').replace('/', '_')
-        token = token.replace(':', '_').replace(' ', '_')
-        return ''.join(ch if ch.isalnum() or ch in '._-' else '_'
-                       for ch in token)
-
-    def _feature_extractor_cache_name(self):
-        if self.feature_extractor_type == 'cnn':
-            return str(getattr(self.ggeur_cfg, 'cnn_backbone',
-                               'convnext_base'))
-        if self.feature_extractor_type == 'timm':
-            return str(getattr(self.ggeur_cfg, 'timm_model',
-                               'mixer_b16_224'))
-        clip_model = str(getattr(self.ggeur_cfg, 'clip_model', 'ViT-B-16'))
-        pretrained = str(getattr(self.ggeur_cfg, 'clip_pretrained',
-                                 'openai'))
-        return f'{clip_model}_{pretrained}'
-
-    def _augmented_cache_fingerprint(self, metadata):
-        keys = [
-            'client_num',
-            'dataset',
-            'splits',
-            'seed',
-            'feature_extractor',
-            'feature_extractor_model',
-            'embedding_dim',
-            'num_classes',
-            'num_generated_per_sample',
-            'num_generated_per_prototype',
-            'target_size_per_class',
-            'use_cross_client_prototypes',
-            'max_cross_client_prototypes_per_class',
-            'cross_client_prototype_seed',
-            'use_fedproto',
-            'use_lds',
-            'lds_alpha',
-            'lds_seed',
-            'domainnet_domains',
-            'domainnet_shared_classes_only',
-            'officehome_domains',
-            'officehome_split_strategy',
-            'officehome_random_clients_per_domain',
-            'officehome_random_samples_per_client',
-            'officehome_random_sample_with_replacement',
-            'officehome_manifest_path',
-            'augmented_feature_cache_version',
-        ]
-        payload = {key: metadata.get(key) for key in keys}
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=True,
-                          default=str)
-        return hashlib.sha1(text.encode('utf-8')).hexdigest()[:16]
-
-    def _get_augmented_feature_cache_base_dir(self):
-        cache_dir = getattr(self.ggeur_cfg,
-                            'augmented_feature_cache_dir', '')
-        if not cache_dir:
-            cache_dir = getattr(self.ggeur_cfg, 'feature_cache_dir', '')
-        if not cache_dir:
-            cache_dir = os.path.join(os.path.dirname(self._cfg.data.root),
-                                     'clip_feature_cache')
-        return cache_dir
-
     def _get_augmented_feature_cache_path(self):
-        if not (getattr(self.ggeur_cfg, 'reuse_augmented_feature_cache',
-                        True) or
-                getattr(self.ggeur_cfg, 'save_augmented_feature_cache',
-                        True)):
+        if not getattr(self.ggeur_cfg, 'head_only_mode', False):
             return None
-        cache_dir = self._get_augmented_feature_cache_base_dir()
-        metadata = self._augmented_cache_metadata()
-        version = self._safe_cache_token(
-            metadata.get('augmented_feature_cache_version',
-                         metadata.get('headonly_cache_version',
-                                      'aug_fcache_v1')))
-        dataset = self._safe_cache_token(metadata['dataset'])
-        extractor = self._safe_cache_token(
-            f"{metadata['feature_extractor']}_"
-            f"{metadata['feature_extractor_model']}")
-        fingerprint = self._augmented_cache_fingerprint(metadata)
-        namespace = (
-            f"{dataset}_{extractor}_{metadata['client_num']}c_"
-            f"gps{metadata['num_generated_per_sample']}_"
-            f"gpp{metadata['num_generated_per_prototype']}_"
-            f"target{metadata['target_size_per_class']}_{fingerprint}")
-        subdir = (
-            'headonly_augmented'
-            if getattr(self.ggeur_cfg, 'head_only_mode', False)
-            else 'augmented_features')
+        cache_dir = getattr(self.ggeur_cfg, 'feature_cache_dir', '')
+        if not cache_dir:
+            return None
+        version = str(getattr(self.ggeur_cfg, 'headonly_cache_version',
+                              'fcache_v1')).replace('/', '_')
+        dataset = str(self._cfg.data.type).replace('/', '_')
+        # 用 feature_extractor + embedding_dim 做子目录隔离，
+        # 避免 CNN(1024) 与 CLIP(512) 等不同模型同名缓存文件互相覆盖
+        ext = str(self.feature_extractor_type).replace('/', '_')
+        dim = int(self.embedding_dim)
+        model_subdir = f'{ext}_d{dim}'
         path = os.path.join(
             cache_dir,
-            subdir,
+            'headonly_augmented',
             version,
-            namespace,
+            model_subdir,
             f'{dataset}_client_{int(self.ID):06d}.pt',
         )
         os.makedirs(os.path.dirname(path), exist_ok=True)
         return path
 
-    def _get_augmented_feature_cache_candidates(self):
+    def _try_load_augmented_feature_cache(self):
         path = self._get_augmented_feature_cache_path()
-        if path is None:
-            return []
-
-        paths = [path]
-        cache_dir = self._get_augmented_feature_cache_base_dir()
-        if cache_dir:
-            legacy_ids = [int(self.ID) - 1, int(self.ID)]
-            for legacy_id in legacy_ids:
-                if legacy_id < 0:
-                    continue
-                legacy_path = os.path.join(
-                    cache_dir, f'client_{legacy_id:06d}.pt')
-                if legacy_path not in paths:
-                    paths.append(legacy_path)
-        return paths
-
-    def _is_augmented_cache_metadata_compatible(self, metadata):
-        """Check cache metadata while allowing moved legacy cache dirs."""
-        if not isinstance(metadata, dict):
+        if path is None or not os.path.exists(path):
             return False
-
-        expected = self._augmented_cache_metadata()
-        if metadata == expected:
-            return True
-
-        expected_version = (
-            expected.get('augmented_feature_cache_version') or
-            expected.get('headonly_cache_version'))
-        cached_version = (
-            metadata.get('augmented_feature_cache_version') or
-            metadata.get('headonly_cache_version') or
-            metadata.get('feature_cache_version')
-        )
-        checks = [
-            (str(metadata.get('dataset', '')) == expected['dataset']),
-            (str(metadata.get('feature_extractor', '')) ==
-             expected['feature_extractor']),
-            (int(metadata.get('embedding_dim', -1)) ==
-             expected['embedding_dim']),
-            (int(metadata.get('num_classes', -1)) == expected['num_classes']),
-            (int(metadata.get('num_generated_per_sample', -1)) ==
-             expected['num_generated_per_sample']),
-            (int(metadata.get('num_generated_per_prototype', -1)) ==
-             expected['num_generated_per_prototype']),
-            (int(metadata.get('target_size_per_class', -1)) ==
-             expected['target_size_per_class']),
-            (str(cached_version) == str(expected_version)),
-        ]
-        if metadata.get('augmented_feature_cache_version') is not None:
-            checks[-1] = (
-                str(metadata.get('augmented_feature_cache_version')) ==
-                str(expected.get('augmented_feature_cache_version')))
-        if metadata.get('feature_extractor_model') is not None:
-            checks.append(
-                str(metadata.get('feature_extractor_model')) ==
-                str(expected['feature_extractor_model']))
-        if metadata.get('use_fedproto') is not None:
-            checks.append(
-                bool(metadata.get('use_fedproto')) ==
-                bool(expected['use_fedproto']))
-        if metadata.get('use_lds') is not None:
-            checks.append(
-                bool(metadata.get('use_lds')) == bool(expected['use_lds']))
-        if metadata.get('lds_alpha') is not None:
-            checks.append(
-                float(metadata.get('lds_alpha')) ==
-                float(expected['lds_alpha']))
-        if metadata.get('lds_seed') is not None:
-            checks.append(
-                int(metadata.get('lds_seed')) == int(expected['lds_seed']))
-        if metadata.get('client_num') is not None:
-            checks.append(
-                int(metadata.get('client_num')) == expected['client_num'])
-
-        cached_client_id = metadata.get('client_id')
-        if cached_client_id is not None:
-            valid_ids = {int(self.ID), int(self.ID) - 1}
-            checks.append(int(cached_client_id) in valid_ids)
-
-        return all(checks)
-
-    @staticmethod
-    def _copy_numpy_mapping(mapping, dtype=np.float32):
-        if not isinstance(mapping, dict):
-            return {}
-        copied = {}
-        for key, value in mapping.items():
-            try:
-                key = int(key)
-            except (TypeError, ValueError):
-                pass
-            copied[key] = np.asarray(value, dtype=dtype)
-        return copied
-
-    def _restore_cached_local_statistics(self, local_statistics):
-        if not isinstance(local_statistics, dict):
-            return False
-        means = self._copy_numpy_mapping(local_statistics.get('means', {}))
-        covs = self._copy_numpy_mapping(local_statistics.get('covs', {}))
-        counts = {}
-        for key, value in local_statistics.get('counts', {}).items():
-            try:
-                counts[int(key)] = int(value)
-            except (TypeError, ValueError):
-                continue
-        if not means or not covs or not counts:
-            return False
-        prototypes = self._copy_numpy_mapping(
-            local_statistics.get('prototypes', means))
-        self.local_means = means
-        self.local_covs = covs
-        self.local_counts = counts
-        self.cached_local_prototypes = prototypes
-        return True
-
-    def _try_load_augmented_feature_cache(self, restore_statistics=False):
-        if not getattr(self.ggeur_cfg, 'reuse_augmented_feature_cache',
-                       True):
-            return False
-        for path in self._get_augmented_feature_cache_candidates():
-            if not os.path.exists(path):
-                continue
-            try:
-                cached = torch.load(path, map_location='cpu')
-                metadata = cached.get('metadata', {})
-                if not self._is_augmented_cache_metadata_compatible(metadata):
-                    logger.info(
-                        f"Client {self.ID}: Ignore augmented cache metadata "
-                        f"mismatch at {path}")
-                    continue
-                features = cached['features']
-                labels = cached['labels']
-                self.augmented_features = (
-                    features.numpy() if isinstance(features, torch.Tensor)
-                    else np.asarray(features)
-                )
-                self.augmented_labels = (
-                    labels.numpy() if isinstance(labels, torch.Tensor)
-                    else np.asarray(labels)
-                )
-                cached_global_prototypes = cached.get('global_prototypes', {})
-                if cached_global_prototypes:
-                    self.global_prototypes = self._copy_numpy_mapping(
-                        cached_global_prototypes)
-                restored_stats = False
-                if restore_statistics:
-                    restored_stats = self._restore_cached_local_statistics(
-                        cached.get('local_statistics', {}))
-                dataset = AugmentedFeatureDataset(
-                    self.augmented_features, self.augmented_labels)
-                self.augmented_loader = DataLoader(
-                    dataset,
-                    batch_size=self._cfg.dataloader.batch_size,
-                    shuffle=True,
-                )
+        try:
+            cached = torch.load(path, map_location='cpu')
+            metadata = cached.get('metadata', {})
+            expected = self._augmented_cache_metadata()
+            if metadata != expected:
                 logger.info(
-                    f"Client {self.ID}: Loaded augmented feature cache "
-                    f"from {path} ({len(self.augmented_labels)} samples, "
-                    f"restored_statistics={restored_stats})")
-                return True
-            except Exception as error:
-                logger.warning(
-                    f"Client {self.ID}: Failed to load augmented cache "
-                    f"{path}: {error}")
-        return False
+                    f"Client {self.ID}: Ignore augmented cache metadata "
+                    f"mismatch at {path}")
+                return False
+            features = cached['features']
+            labels = cached['labels']
+            self.augmented_features = (
+                features.numpy() if isinstance(features, torch.Tensor)
+                else np.asarray(features)
+            )
+            self.augmented_labels = (
+                labels.numpy() if isinstance(labels, torch.Tensor)
+                else np.asarray(labels)
+            )
+            self.base_augmented_features = self.augmented_features.copy()
+            self.base_augmented_labels = self.augmented_labels.copy()
+            dataset = AugmentedFeatureDataset(
+                self.augmented_features, self.augmented_labels)
+            self.augmented_loader = DataLoader(
+                dataset,
+                batch_size=self._cfg.dataloader.batch_size,
+                shuffle=True,
+            )
+            logger.info(
+                f"Client {self.ID}: Loaded augmented HeadOnly feature cache "
+                f"from {path} ({len(self.augmented_labels)} samples)")
+            return True
+        except Exception as error:
+            logger.warning(
+                f"Client {self.ID}: Failed to load augmented cache {path}: "
+                f"{error}")
+            return False
 
     def _save_augmented_feature_cache(self):
-        if not getattr(self.ggeur_cfg, 'save_augmented_feature_cache',
-                       True):
-            return
         path = self._get_augmented_feature_cache_path()
         if path is None or self.augmented_features is None:
             return
         try:
-            local_statistics = {
-                'means': copy.deepcopy(self.local_means),
-                'covs': copy.deepcopy(self.local_covs),
-                'counts': copy.deepcopy(self.local_counts),
-                'prototypes': copy.deepcopy(self.local_means),
-            }
             torch.save({
                 'features': torch.as_tensor(self.augmented_features).float(),
                 'labels': torch.as_tensor(self.augmented_labels).long(),
                 'metadata': self._augmented_cache_metadata(),
-                'local_statistics': local_statistics,
-                'global_prototypes': copy.deepcopy(self.global_prototypes or {}),
             }, path)
             logger.info(
-                f"Client {self.ID}: Saved augmented feature cache "
+                f"Client {self.ID}: Saved augmented HeadOnly feature cache "
                 f"to {path} ({len(self.augmented_labels)} samples)")
         except Exception as error:
             logger.warning(
@@ -1933,66 +3788,26 @@ class GGEURClient(Client):
                 f"{error}")
 
     def _try_start_from_augmented_cache(self):
-        """Load generated samples and avoid repeated feature generation.
-
-        Returns:
-            - 'statistics_uploaded' when cached local statistics were restored
-              and sent to the server, so the normal covariance broadcast can
-              continue.
-            - 'augmentation_ready' when only generated features were restored
-              and the client can immediately join training.
-            - None on cache miss.
-        """
-        reuse_cache = getattr(self.ggeur_cfg,
-                              'reuse_augmented_feature_cache', True)
-        legacy_headonly_hot = getattr(
-            self.ggeur_cfg,
-            'headonly_skip_round0_if_augmented_cache_exists',
-            False)
-        if not (reuse_cache or legacy_headonly_hot):
-            return None
-        if self.use_cnn_distillation or self.use_feature_alignment:
-            logger.info(
-                f"Client {self.ID}: Augmented cache-hot mode disabled for "
-                "CNN distillation/feature-alignment because those modes "
-                "require original-image loaders.")
-            return None
-        if not self._try_load_augmented_feature_cache(
-                restore_statistics=True):
-            return None
-        has_restored_stats = bool(
-            self.local_means and self.local_covs and self.local_counts)
-        needs_server_context = (
-            bool(getattr(self.ggeur_cfg, 'use_fedproto', False)) or
-            bool(getattr(self.ggeur_cfg, 'use_promptfl', False)))
-        if needs_server_context and not has_restored_stats:
-            logger.info(
-                f"Client {self.ID}: Ignore augmented cache-hot direct start "
-                "because this method needs server-side prototypes/context "
-                "and the cache does not contain local statistics.")
-            self.augmented_features = None
-            self.augmented_labels = None
-            self.augmented_loader = None
-            return None
+        """Load generated HeadOnly samples and skip round-0 generation."""
+        if not getattr(self.ggeur_cfg,
+                       'headonly_skip_round0_if_augmented_cache_exists',
+                       False):
+            return False
+        if not getattr(self.ggeur_cfg, 'head_only_mode', False):
+            return False
+        if not self._try_load_augmented_feature_cache():
+            return False
 
         self._build_mlp_classifier()
         self.augmentation_done = True
+        self.statistics_uploaded = True
         self.local_features = {}
         self.local_labels = {}
-        if has_restored_stats:
-            logger.info(
-                f"Client {self.ID}: Augmented cache-hot mode restored local "
-                "statistics; upload cached statistics and skip feature "
-                "extraction/generation.")
-            self._upload_local_statistics()
-            return 'statistics_uploaded'
-
-        self.statistics_uploaded = True
         logger.info(
-            f"Client {self.ID}: Augmented cache-hot mode active; skip "
-            "round-0 feature extraction/statistics/generation and train "
+            f"Client {self.ID}: HeadOnly cache-hot mode active; skip "
+            "round-0 feature extraction/statistics/augmentation and train "
             "on cached generated samples.")
-        return 'augmentation_ready'
+        return True
 
     def _should_skip_statistics_phase(self):
         """Whether baseline mode can skip server-side statistics exchange."""
@@ -2028,12 +3843,7 @@ class GGEURClient(Client):
         if round_idx == self.ggeur_cfg.statistics_round and not self.statistics_uploaded:
             logger.info(f"Client {self.ID}: Round {round_idx} - Statistics collection phase")
 
-            cache_hot_status = self._try_start_from_augmented_cache()
-            if cache_hot_status == 'statistics_uploaded':
-                self._maybe_fail_for_distributed_validation(
-                    'after_statistics_upload', round_idx)
-                return
-            if cache_hot_status == 'augmentation_ready':
+            if self._try_start_from_augmented_cache():
                 self.comm_manager.send(
                     Message(
                         msg_type='augmentation_ready',
@@ -2043,8 +3853,6 @@ class GGEURClient(Client):
                         content='ready'
                     )
                 )
-                self._maybe_fail_for_distributed_validation(
-                    'after_augmentation_ready', round_idx)
                 return
 
             # Extract CLIP features
@@ -2070,8 +3878,6 @@ class GGEURClient(Client):
                         content='ready'
                     )
                 )
-                self._maybe_fail_for_distributed_validation(
-                    'after_augmentation_ready', round_idx)
                 return
 
             # Compute local statistics
@@ -2079,8 +3885,6 @@ class GGEURClient(Client):
 
             # Upload to server
             self._upload_local_statistics()
-            self._maybe_fail_for_distributed_validation(
-                'after_statistics_upload', round_idx)
 
             # Unload extractor to free VRAM (features are cached to disk)
             if getattr(self.ggeur_cfg, 'unload_extractor_after_cache', True):
@@ -2107,15 +3911,11 @@ class GGEURClient(Client):
 
         # Handle Separated Training Mode
         if self.use_separated_training:
-            self._maybe_fail_for_distributed_validation(
-                'before_train_round', round_idx)
             self._handle_separated_training(message)
             return
 
         # Normal training round on augmented data
         logger.info(f"Client {self.ID}: Round {round_idx} - Training on augmented data")
-        self._maybe_fail_for_distributed_validation(
-            'before_train_round', round_idx)
 
         # Parse content - may contain both MLP and CNN parameters
         mlp_para = None
@@ -2143,12 +3943,30 @@ class GGEURClient(Client):
                 except Exception as e:
                     logger.debug(f"Client {self.ID}: Could not load prompt ctx: {e}")
 
+        if self.a3fl_enabled:
+            self._extract_shared_attack_trigger(content, 'a3fl')
+
+        if self.cerberus_enabled:
+            self._extract_cerberus_peer_models(content)
+
+        if self.sabre_enabled:
+            self._extract_shared_attack_trigger(content, 'sabre')
+
         # Update MLP with global model parameters
         if mlp_para is not None and self.mlp_classifier is not None:
             try:
                 self.mlp_classifier.load_state_dict(mlp_para)
             except Exception as e:
                 logger.debug(f"Client {self.ID}: Could not load MLP state dict: {e}")
+        a3fl_global_mlp_state = None
+        if self.mlp_classifier is not None:
+            a3fl_global_mlp_state = copy.deepcopy(
+                self.mlp_classifier.state_dict())
+
+        # 自适应 DP：保存全局 MLP 状态快照，上传时用于计算 delta = local - global
+        self._adaptive_dp_global_mlp_state = (
+            copy.deepcopy(self.mlp_classifier.state_dict())
+            if self.mlp_classifier is not None else None)
 
         # MOON: snapshot global model after loading global params, before local training
         if self.use_moon and self.mlp_classifier is not None:
@@ -2164,8 +3982,55 @@ class GGEURClient(Client):
             except Exception as e:
                 logger.debug(f"Client {self.ID}: Could not load CNN state dict: {e}")
 
+        # Apply A3FL poisoning on the GGEUR augmented feature training set.
+        self._inject_a3fl_poison_features(round_idx)
+
+        # Apply label-flipping data poisoning on this client's augmented local
+        # labels before the normal MLP-head training step.
+        self._apply_label_flip_to_augmented_data(round_idx)
+
         # Train MLP on augmented features
-        mlp_sample_size, mlp_model_para, mlp_results = self._train_on_augmented_data()
+        if self._should_cerberus_attack(round_idx):
+            logger.info(
+                f"Client {self.ID}: Round {round_idx} - CERBERUS attack training")
+            mlp_sample_size, mlp_model_para, mlp_results = \
+                self._train_cerberus_on_augmented_data(round_idx)
+            self.sabre_latest_meta = {
+                'active': False,
+                'client_id': int(self.ID),
+                'round': int(round_idx),
+            }
+        elif self._should_sabre_attack(round_idx):
+            logger.info(
+                f"Client {self.ID}: Round {round_idx} - SABRE attack training")
+            mlp_sample_size, mlp_model_para, mlp_results = \
+                self._train_sabre_on_augmented_data(round_idx)
+            self.cerberus_latest_meta = {
+                'active': False,
+                'client_id': int(self.ID),
+                'round': int(round_idx),
+            }
+        else:
+            self.cerberus_latest_meta = {
+                'active': False,
+                'client_id': int(self.ID),
+                'round': int(round_idx),
+            }
+            self.sabre_latest_meta = {
+                'active': False,
+                'client_id': int(self.ID),
+                'round': int(round_idx),
+            }
+            if self.a3fl_enabled and self.a3fl_latest_meta.get('active',
+                                                               False):
+                mlp_sample_size, mlp_model_para, mlp_results = \
+                    self._train_a3fl_on_augmented_data()
+            else:
+                mlp_sample_size, mlp_model_para, mlp_results = \
+                    self._train_on_augmented_data()
+        if self.a3fl_enabled and self.a3fl_latest_meta.get('active', False):
+            mlp_model_para = self._strengthen_a3fl_mlp_update(
+                a3fl_global_mlp_state, mlp_model_para)
 
         # MOON: save current local model as previous model for next round
         if self.use_moon and self.mlp_classifier is not None:
@@ -2221,6 +4086,45 @@ class GGEURClient(Client):
             combined_para = mlp_model_para
             sample_size = mlp_sample_size
 
+        if self.a3fl_enabled:
+            if isinstance(combined_para, dict) and 'mlp' in combined_para:
+                combined_para['a3fl'] = copy.deepcopy(self.a3fl_latest_meta)
+            else:
+                combined_para = {
+                    'mlp': combined_para,
+                    'a3fl': copy.deepcopy(self.a3fl_latest_meta)
+                }
+
+        if self.cerberus_enabled:
+            if isinstance(combined_para, dict) and 'mlp' in combined_para:
+                combined_para['cerberus'] = copy.deepcopy(
+                    self.cerberus_latest_meta)
+            else:
+                combined_para = {
+                    'mlp': combined_para,
+                    'cerberus': copy.deepcopy(self.cerberus_latest_meta)
+                }
+
+        if self.sabre_enabled:
+            if isinstance(combined_para, dict) and 'mlp' in combined_para:
+                combined_para['sabre'] = copy.deepcopy(
+                    self.sabre_latest_meta)
+            else:
+                combined_para = {
+                    'mlp': combined_para,
+                    'sabre': copy.deepcopy(self.sabre_latest_meta)
+                }
+
+        if self.label_flip_enabled:
+            if isinstance(combined_para, dict) and 'mlp' in combined_para:
+                combined_para['label_flip'] = copy.deepcopy(
+                    self.label_flip_latest_meta)
+            else:
+                combined_para = {
+                    'mlp': combined_para,
+                    'label_flip': copy.deepcopy(self.label_flip_latest_meta)
+                }
+
         # PromptFL: train soft prompts on augmented features and attach to combined_para
         if self.use_promptfl:
             _, prompt_para, _ = self._train_prompt_on_augmented_data()
@@ -2228,6 +4132,14 @@ class GGEURClient(Client):
                 combined_para['prompt'] = prompt_para
             else:
                 combined_para = {'mlp': combined_para, 'prompt': prompt_para}
+
+        # 自适应 DP：对上传的 MLP 更新施加 clip(delta, C_t) + 高斯噪声
+        combined_para = self._apply_adaptive_dp_to_upload(
+            combined_para, round_idx)
+
+        # Update-reversal attack: reverse and scale the MLP update before upload
+        combined_para = self._apply_update_reversal_to_upload(
+            combined_para, round_idx)
 
         # Send model parameters
         self.comm_manager.send(
@@ -2241,201 +4153,154 @@ class GGEURClient(Client):
             )
         )
 
-    def callback_for_client_eval(self, message: Message):
-        """Evaluate the aggregated MLP on this client's local test split."""
-        round_idx = int(message.state)
-        model_para = message.content
-        self.state = round_idx
+    def _apply_adaptive_dp_to_upload(self, combined_para, round_idx):
+        """对上传的 MLP 更新施加自适应裁剪 DP：clip(delta, C_t) + 高斯噪声。
 
-        if self.mlp_classifier is None:
-            self._build_mlp_classifier()
-        if model_para is not None and self.mlp_classifier is not None:
-            try:
-                self.mlp_classifier.load_state_dict(model_para)
-            except Exception as error:
-                logger.warning(
-                    f"Client {self.ID}: Could not load MLP for local eval: "
-                    f"{error}")
-
-        metrics = self._evaluate_mlp_on_local_test(round_idx)
-        self.comm_manager.send(
-            Message(
-                msg_type='client_eval_metrics',
-                sender=self.ID,
-                receiver=[message.sender],
-                state=round_idx,
-                timestamp=message.timestamp,
-                content=metrics
-            )
-        )
-
-    def _get_local_test_loader(self):
-        test_data = None
+        在上传前计算 delta = local_mlp - global_mlp，裁剪并加噪后重建
+        sanitized_local = global + sanitized_delta，仅替换 MLP 部分，
+        不影响攻击元数据或 CNN/Prompt 等其他上传字段。
+        """
+        from federatedscope.core.privacy.adaptive_dp import get_controller_for_cfg
         try:
-            test_data = self.trainer.ctx.data.get('test', None)
+            controller = get_controller_for_cfg(self._cfg)
         except Exception:
-            test_data = None
-        if test_data is None and isinstance(self.data, dict):
-            test_data = self.data.get('test', None)
-        return test_data
-
-    def _extract_eval_features(self, dataloader):
-        dataset = dataloader.dataset if hasattr(dataloader, 'dataset') \
-            else dataloader
-
-        from torch.utils.data import Subset
-        is_subset = isinstance(dataset, Subset)
-        if is_subset:
-            base_dataset = dataset.dataset
-            subset_indices = dataset.indices
-            domain = getattr(base_dataset, 'domain', None)
-        else:
-            base_dataset = dataset
-            subset_indices = None
-            domain = getattr(dataset, 'domain', None)
-
-        self._load_feature_extractor()
-        cache_path = self._get_feature_cache_path(domain)
-        feature_cache = self._load_feature_cache(cache_path)
-        feature_cache = {
-            path: feat
-            for path, feat in feature_cache.items()
-            if self._is_valid_feature_vector(feat)
-        }
-
-        has_paths = hasattr(base_dataset, 'data') and \
-            len(base_dataset.data) > 0 and isinstance(base_dataset.data[0], str)
-        features = []
-        labels = []
-        paths_to_extract = []
-        base_indices_to_extract = []
-
-        if has_paths:
-            num_samples = len(subset_indices) if is_subset else len(base_dataset)
-            for local_idx in range(num_samples):
-                base_idx = subset_indices[local_idx] if is_subset else local_idx
-                img_path = base_dataset.data[base_idx]
-                label = int(base_dataset.targets[base_idx])
-                cached = feature_cache.get(img_path)
-                if cached is not None and self._is_valid_feature_vector(cached):
-                    features.append(cached)
-                    labels.append(label)
-                else:
-                    paths_to_extract.append(img_path)
-                    base_indices_to_extract.append(base_idx)
-
-            if paths_to_extract:
-                batch_size = getattr(self.ggeur_cfg, 'extract_batch_size', 64)
-                use_fp16 = getattr(self.ggeur_cfg, 'use_fp16_extraction',
-                                   True) and torch.cuda.is_available()
-                cache_updated = False
-                with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_fp16):
-                    for i in range(0, len(base_indices_to_extract), batch_size):
-                        batch_indices = base_indices_to_extract[i:i + batch_size]
-                        batch_paths = paths_to_extract[i:i + batch_size]
-                        images = []
-                        batch_labels = []
-                        for base_idx in batch_indices:
-                            image, label = base_dataset[base_idx]
-                            images.append(image)
-                            batch_labels.append(int(label))
-                        images = torch.stack(images).to(self.device)
-                        if self.feature_extractor_type == 'cnn':
-                            batch_features = self.cnn_extractor(images)
-                        elif self.feature_extractor_type == 'timm':
-                            batch_features = self.timm_extractor(images)
-                        else:
-                            batch_features = self.clip_model.encode_image(images)
-                        batch_features = batch_features.cpu().numpy()
-                        for feat, label, path in zip(batch_features,
-                                                     batch_labels,
-                                                     batch_paths):
-                            if not self._is_valid_feature_vector(feat):
-                                continue
-                            feature_cache[path] = feat
-                            cache_updated = True
-                            features.append(feat)
-                            labels.append(label)
-                if cache_updated:
-                    self._save_feature_cache(cache_path, feature_cache)
-        else:
-            use_fp16 = getattr(self.ggeur_cfg, 'use_fp16_extraction',
-                               True) and torch.cuda.is_available()
-            with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_fp16):
-                for batch in dataloader:
-                    if len(batch) < 2:
-                        continue
-                    images, batch_labels = batch[0].to(self.device), batch[1]
-                    if self.feature_extractor_type == 'cnn':
-                        batch_features = self.cnn_extractor(images)
-                    elif self.feature_extractor_type == 'timm':
-                        batch_features = self.timm_extractor(images)
-                    else:
-                        batch_features = self.clip_model.encode_image(images)
-                    features.extend(batch_features.cpu().numpy())
-                    labels.extend([int(x) for x in batch_labels.cpu().numpy()])
-
-        if not features:
-            return None, None
-        return (
-            torch.as_tensor(np.asarray(features), dtype=torch.float32),
-            torch.as_tensor(np.asarray(labels), dtype=torch.long),
-        )
-
-    def _evaluate_mlp_on_local_test(self, round_idx):
-        dataloader = self._get_local_test_loader()
-        if dataloader is None or self.mlp_classifier is None:
+            controller = None
+        if controller is None or combined_para is None:
+            return combined_para
+        if self._adaptive_dp_global_mlp_state is None:
             logger.warning(
-                f"Client {self.ID}: No local test data or MLP for eval")
-            return {
-                'accuracy': 0.0,
-                'loss': 0.0,
-                'correct': 0,
-                'total': 0,
-            }
+                f"Client {self.ID}: adaptive DP enabled but no global MLP "
+                f"snapshot; skip sanitization.")
+            return combined_para
 
-        features, labels = self._extract_eval_features(dataloader)
-        if features is None:
-            return {
-                'accuracy': 0.0,
-                'loss': 0.0,
-                'correct': 0,
-                'total': 0,
-            }
+        # 定位 combined_para 中的 MLP state_dict
+        is_wrapped = (
+            isinstance(combined_para, dict) and 'mlp' in combined_para
+            and not all(torch.is_tensor(v) for v in combined_para.values()))
+        if is_wrapped:
+            mlp_state = combined_para.get('mlp')
+        else:
+            mlp_state = combined_para
 
-        self.mlp_classifier.eval()
-        criterion = nn.CrossEntropyLoss(reduction='sum')
-        total_loss = 0.0
-        total_correct = 0
-        total_samples = 0
-        eval_loader = DataLoader(
-            AugmentedFeatureDataset(features, labels),
-            batch_size=getattr(self._cfg.dataloader, 'batch_size', 32),
-            shuffle=False,
-            num_workers=0)
+        if not isinstance(mlp_state, dict):
+            return combined_para
 
-        with torch.no_grad():
-            for batch_features, batch_labels in eval_loader:
-                batch_features = batch_features.to(self.device)
-                batch_labels = batch_labels.to(self.device)
-                outputs = self.mlp_classifier(batch_features)
-                total_loss += criterion(outputs, batch_labels).item()
-                predicted = torch.argmax(outputs, dim=1)
-                total_correct += (predicted == batch_labels).sum().item()
-                total_samples += int(batch_labels.numel())
+        global_state = self._adaptive_dp_global_mlp_state
 
-        accuracy = total_correct / total_samples if total_samples > 0 else 0.0
-        avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
+        # delta = local - global
+        delta = {}
+        for key, value in mlp_state.items():
+            g = global_state.get(key)
+            if torch.is_tensor(value) and torch.is_tensor(g):
+                delta[key] = (
+                    value.detach().cpu().float()
+                    - g.detach().cpu().float())
+            else:
+                delta[key] = value
+
+        expected = max(1, int(self._cfg.federate.sample_client_num))
+        sanitized_delta, stats = controller.sanitize(
+            delta, round_idx=int(round_idx), client_id=int(self.ID),
+            expected_clients=expected)
+
+        # 重建 sanitized_local = global + sanitized_delta
+        new_mlp_state = {}
+        for key, value in mlp_state.items():
+            g = global_state.get(key)
+            sd = sanitized_delta.get(key)
+            if torch.is_tensor(g) and torch.is_tensor(sd):
+                base = g.detach().cpu().float() + sd
+                new_mlp_state[key] = base.to(value.dtype) if torch.is_tensor(value) else base
+            else:
+                new_mlp_state[key] = value
+
         logger.info(
-            f"Client {self.ID}: Round {round_idx} local MLP eval - "
-            f"acc={accuracy:.4f}, loss={avg_loss:.4f}, "
-            f"correct={total_correct}, total={total_samples}")
-        return {
-            'accuracy': float(accuracy),
-            'loss': float(avg_loss),
-            'correct': int(total_correct),
-            'total': int(total_samples),
-        }
+            f"[AdaptiveDP] client={self.ID} round={round_idx} "
+            f"raw_norm={float(stats.get('raw_norm', 0.0)):.6f} "
+            f"clip={float(stats.get('clip_bound', 0.0)):.6f} "
+            f"factor={float(stats.get('clip_factor', 0.0)):.6f} "
+            f"noise_std={float(stats.get('noise_std', 0.0)):.6f} "
+            f"sanitized_norm={float(stats.get('sanitized_norm', 0.0)):.6f}")
+
+        if is_wrapped:
+            combined_para['mlp'] = new_mlp_state
+        else:
+            combined_para = new_mlp_state
+        return combined_para
+
+    def _apply_update_reversal_to_upload(self, combined_para, round_idx):
+        """Update-reversal attack: reverse and scale the MLP update.
+
+        Malicious clients train on clean data, then compute
+        delta = local_mlp - global_mlp, reverse it (-delta), scale by
+        a factor (default: total_clients / num_attackers), and upload
+        global + reversed_delta * scale. This effectively cancels out
+        the updates from benign clients and pushes the global model
+        in the opposite direction.
+
+        Only active when label_flip.update_reversal=True and the client
+        is an active attacker in the current round.
+        """
+        if not self.label_flip_enabled or not self.label_flip_is_attacker:
+            return combined_para
+        if not bool(getattr(self.label_flip_cfg, 'update_reversal', False)):
+            return combined_para
+        if not self._is_label_flip_active_round(round_idx):
+            return combined_para
+        if self._adaptive_dp_global_mlp_state is None or combined_para is None:
+            return combined_para
+
+        # Determine scale factor
+        scale_cfg = float(getattr(
+            self.label_flip_cfg, 'update_reversal_scale', -1.0))
+        if scale_cfg > 0:
+            scale = scale_cfg
+        else:
+            n_total = max(1, int(self._cfg.federate.client_num))
+            n_attackers = max(1, len(self.label_flip_attacker_ids))
+            scale = n_total / n_attackers
+
+        # Locate MLP state_dict in combined_para
+        is_wrapped = (
+            isinstance(combined_para, dict) and 'mlp' in combined_para
+            and not all(torch.is_tensor(v) for v in combined_para.values()))
+        if is_wrapped:
+            mlp_state = combined_para.get('mlp')
+        else:
+            mlp_state = combined_para
+        if not isinstance(mlp_state, dict):
+            return combined_para
+
+        global_state = self._adaptive_dp_global_mlp_state
+
+        # Compute reversed-and-scaled update:
+        #   delta = local - global
+        #   poisoned = global - delta * scale = global*(1+scale) - local*scale
+        new_mlp_state = {}
+        total_delta_norm = 0.0
+        for key, value in mlp_state.items():
+            g = global_state.get(key)
+            if torch.is_tensor(value) and torch.is_tensor(g):
+                local_v = value.detach().cpu().float()
+                global_v = g.detach().cpu().float()
+                delta = local_v - global_v
+                total_delta_norm += float(delta.norm().item()) ** 2
+                poisoned = global_v - delta * scale
+                new_mlp_state[key] = poisoned.to(value.dtype)
+            else:
+                new_mlp_state[key] = value
+
+        total_delta_norm = total_delta_norm ** 0.5
+        logger.info(
+            f"Client {self.ID}: update-reversal attack in round {round_idx} — "
+            f"scale={scale:.4f}, delta_norm={total_delta_norm:.6f}, "
+            f"poisoned_update_norm={total_delta_norm * scale:.6f}")
+
+        if is_wrapped:
+            combined_para['mlp'] = new_mlp_state
+        else:
+            combined_para = new_mlp_state
+        return combined_para
 
     def _handle_separated_training(self, message: Message):
         """Handle training in separated training mode"""
@@ -2463,8 +4328,14 @@ class GGEURClient(Client):
                 except Exception as e:
                     logger.debug(f"Client {self.ID}: Could not load classifier: {e}")
 
+            self._apply_label_flip_to_augmented_data(round_idx)
+
             # Train classifier on augmented features
             sample_size, model_para, results = self._train_on_augmented_data()
+            response_para = {'classifier': model_para}
+            if self.label_flip_enabled:
+                response_para['label_flip'] = copy.deepcopy(
+                    self.label_flip_latest_meta)
 
             # Send classifier parameters
             self.comm_manager.send(
@@ -2474,7 +4345,7 @@ class GGEURClient(Client):
                     receiver=[sender],
                     state=self.state,
                     timestamp=timestamp,
-                    content=(sample_size, {'classifier': model_para})
+                    content=(sample_size, response_para)
                 )
             )
 
@@ -2745,14 +4616,17 @@ class GGEURClient(Client):
 
         return total_samples, backbone_para, results
 
-    def _train_on_augmented_data(self):
+    def _train_on_augmented_data(self, local_epochs=None, lr=None,
+                                 log_prefix='Train'):
         """Train MLP classifier on augmented features with optional FedProto/FedProx regularization"""
         if self.augmented_loader is None or self.mlp_classifier is None:
             return 0, {}, {}
 
         self.mlp_classifier.train()
+        if lr is None:
+            lr = float(self._cfg.train.optimizer.lr)
         optimizer = torch.optim.Adam(self.mlp_classifier.parameters(),
-                                     lr=self._cfg.train.optimizer.lr)
+                                     lr=lr)
         criterion = nn.CrossEntropyLoss()
 
         # FedProx settings (proximal term to the received global model)
@@ -2809,7 +4683,9 @@ class GGEURClient(Client):
         total_correct = 0
         total_samples = 0
 
-        local_epochs = self._cfg.train.local_update_steps
+        if local_epochs is None:
+            local_epochs = self._cfg.train.local_update_steps
+        local_epochs = max(1, int(local_epochs))
 
         for epoch in range(local_epochs):
             for features, labels in self.augmented_loader:
@@ -2939,16 +4815,16 @@ class GGEURClient(Client):
         accuracy = total_correct / total_samples if total_samples > 0 else 0
 
         if use_fedproto:
-            logger.info(f"Client {self.ID}: Train loss={avg_loss:.4f} (CE={avg_ce_loss:.4f}, "
+            logger.info(f"Client {self.ID}: {log_prefix} loss={avg_loss:.4f} (CE={avg_ce_loss:.4f}, "
                        f"proto={avg_proto_loss:.4f}), accuracy={accuracy:.4f}")
         elif use_fedprox and fedprox_mu > 0:
-            logger.info(f"Client {self.ID}: Train loss={avg_loss:.4f} (CE={avg_ce_loss:.4f}, "
+            logger.info(f"Client {self.ID}: {log_prefix} loss={avg_loss:.4f} (CE={avg_ce_loss:.4f}, "
                        f"prox={avg_prox_loss:.4f}), accuracy={accuracy:.4f}")
         elif use_moon:
-            logger.info(f"Client {self.ID}: Train loss={avg_loss:.4f} (CE={avg_ce_loss:.4f}, "
+            logger.info(f"Client {self.ID}: {log_prefix} loss={avg_loss:.4f} (CE={avg_ce_loss:.4f}, "
                        f"moon={avg_moon_loss:.4f}), accuracy={accuracy:.4f}")
         else:
-            logger.info(f"Client {self.ID}: Train loss={avg_loss:.4f}, accuracy={accuracy:.4f}")
+            logger.info(f"Client {self.ID}: {log_prefix} loss={avg_loss:.4f}, accuracy={accuracy:.4f}")
 
         # Get model parameters
         model_para = copy.deepcopy(self.mlp_classifier.state_dict())
@@ -2960,7 +4836,9 @@ class GGEURClient(Client):
             'train_prox_loss': avg_prox_loss,
             'train_moon_loss': avg_moon_loss,
             'train_acc': accuracy,
-            'train_total': total_samples
+            'train_total': total_samples,
+            'train_epochs': int(local_epochs),
+            'train_lr': float(lr)
         }
 
         return total_samples, model_para, results
@@ -3536,17 +5414,25 @@ class GGEURClient(Client):
                     f"({n_local_samples} balanced local, {n_proto_samples} proto-augmented, "
                     f"requested_proto={requested_n_per_proto}, effective_proto={effective_n_per_proto})")
 
-    def _train_prompt_on_augmented_data(self):
+    def _train_prompt_on_augmented_data(self,
+                                        prompt_loader=None,
+                                        lr=None,
+                                        local_epochs=None,
+                                        prompt_mu=None,
+                                        log_prefix='Prompt'):
         """
         Train soft prompt ctx vectors on augmented CLIP features.
         The shared CLIP backbone is moved to GPU only for this client's turn,
         then moved back to CPU to free VRAM for the next client.
         """
-        if self.prompt_learner is None or self.prompt_loader is None:
+        prompt_loader = self.prompt_loader if prompt_loader is None else prompt_loader
+        if self.prompt_learner is None or prompt_loader is None:
             return 0, {}, {}
 
-        lr = getattr(self.ggeur_cfg, 'prompt_lr', 0.002)
-        local_epochs = getattr(self.ggeur_cfg, 'prompt_local_epochs', 1)
+        if lr is None:
+            lr = getattr(self.ggeur_cfg, 'prompt_lr', 0.002)
+        if local_epochs is None:
+            local_epochs = getattr(self.ggeur_cfg, 'prompt_local_epochs', 1)
         max_train_batches = int(
             getattr(self.ggeur_cfg, 'prompt_max_train_batches', 0))
 
@@ -3555,9 +5441,7 @@ class GGEURClient(Client):
         clip_model.eval()
 
         # Move prompt buffers to GPU
-        self.prompt_learner.token_prefix = self.prompt_learner.token_prefix.to(self.device)
-        self.prompt_learner.token_suffix = self.prompt_learner.token_suffix.to(self.device)
-        self.prompt_learner.tokenized_prompts = self.prompt_learner.tokenized_prompts.to(self.device)
+        self._move_prompt_buffers(self.device)
         self.prompt_learner.train()
 
         optimizer = torch.optim.Adam([self.prompt_learner.ctx], lr=lr)
@@ -3568,7 +5452,8 @@ class GGEURClient(Client):
         logit_scale = 1.0 / temperature
 
         # FedProx proximal term: keeps local ctx close to global ctx
-        prompt_mu = getattr(self.ggeur_cfg, 'prompt_proximal_mu', 0.0)
+        if prompt_mu is None:
+            prompt_mu = getattr(self.ggeur_cfg, 'prompt_proximal_mu', 0.0)
         global_ctx = self.global_prompt_ctx  # may be None in round 0
 
         total_loss = 0.0
@@ -3580,7 +5465,7 @@ class GGEURClient(Client):
             epoch_correct = 0
             epoch_samples = 0
 
-            for batch_idx, (features, labels) in enumerate(self.prompt_loader):
+            for batch_idx, (features, labels) in enumerate(prompt_loader):
                 if max_train_batches > 0 and batch_idx >= max_train_batches:
                     break
 
@@ -3618,15 +5503,14 @@ class GGEURClient(Client):
         # Move shared CLIP back to CPU and free GPU memory
         GGEURClient._shared_prompt_clip = clip_model.cpu()
         # Move prompt buffers back to CPU
-        self.prompt_learner.token_prefix = self.prompt_learner.token_prefix.cpu()
-        self.prompt_learner.token_suffix = self.prompt_learner.token_suffix.cpu()
-        self.prompt_learner.tokenized_prompts = self.prompt_learner.tokenized_prompts.cpu()
+        self._move_prompt_buffers(torch.device('cpu'))
         torch.cuda.empty_cache()
 
         avg_loss = total_loss / total_samples if total_samples > 0 else 0
         accuracy = total_correct / total_samples if total_samples > 0 else 0
 
-        logger.info(f"Client {self.ID}: Prompt training - loss={avg_loss:.4f}, acc={accuracy:.4f}, "
+        logger.info(f"Client {self.ID}: {log_prefix} training - "
+                    f"loss={avg_loss:.4f}, acc={accuracy:.4f}, "
                     f"samples={total_samples}")
 
         prompt_para = {
