@@ -105,6 +105,20 @@ def param2tensor(param):
     return param
 
 
+def recursive_param2tensor(param):
+    """Restore tensors nested in a gRPC model-parameter payload."""
+    if isinstance(param, dict):
+        return {
+            key: recursive_param2tensor(value)
+            for key, value in param.items()
+        }
+    if isinstance(param, tuple):
+        return tuple(recursive_param2tensor(value) for value in param)
+    if isinstance(param, list):
+        return [recursive_param2tensor(value) for value in param]
+    return param2tensor(param)
+
+
 def merge_param_dict(raw_param, filtered_param):
     for key in filtered_param.keys():
         raw_param[key] = filtered_param[key]

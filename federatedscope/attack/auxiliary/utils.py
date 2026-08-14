@@ -5,8 +5,125 @@ import logging
 import os
 import numpy as np
 import federatedscope.register as register
+try:
+    from skimage.metrics import structural_similarity as ssim
+except Exception:  # pragma: no cover
+    ssim = None
+
 
 logger = logging.getLogger(__name__)
+
+
+def _resize_like_if_needed(reference, candidate):
+    reference = np.asarray(reference)
+    candidate = np.asarray(candidate)
+    if reference.shape == candidate.shape:
+        return reference, candidate
+
+    if reference.ndim >= 2 and candidate.ndim >= 2 and \
+            reference.shape[:2] != candidate.shape[:2]:
+        cand = torch.from_numpy(candidate).float()
+        if candidate.ndim == 2:
+            cand = cand.unsqueeze(0).unsqueeze(0)
+        elif candidate.ndim == 3:
+            cand = cand.permute(2, 0, 1).unsqueeze(0)
+        else:
+            return reference, candidate
+        cand = F.interpolate(
+            cand, size=reference.shape[:2], mode='bilinear',
+            align_corners=False)
+        if candidate.ndim == 2:
+            candidate = cand.squeeze(0).squeeze(0).numpy()
+        else:
+            candidate = cand.squeeze(0).permute(1, 2, 0).numpy()
+
+    return reference, candidate
+
+
+def _fallback_ssim(original, reconstructed, data_range=1.0):
+    original = np.asarray(original, dtype=np.float64)
+    reconstructed = np.asarray(reconstructed, dtype=np.float64)
+    c1 = (0.01 * data_range) ** 2
+    c2 = (0.03 * data_range) ** 2
+
+    if original.ndim == 2:
+        channels = [(original, reconstructed)]
+    else:
+        channels = [
+            (original[..., c], reconstructed[..., c])
+            for c in range(original.shape[-1])
+        ]
+
+    values = []
+    for orig_c, recon_c in channels:
+        mux = orig_c.mean()
+        muy = recon_c.mean()
+        varx = ((orig_c - mux) ** 2).mean()
+        vary = ((recon_c - muy) ** 2).mean()
+        cov = ((orig_c - mux) * (recon_c - muy)).mean()
+        numerator = (2 * mux * muy + c1) * (2 * cov + c2)
+        denominator = (mux ** 2 + muy ** 2 + c1) * (varx + vary + c2)
+        values.append(numerator / denominator if denominator != 0 else 1.0)
+    return float(np.mean(values))
+
+
+def calculate_ssim(original, reconstructed, data_range=1.0, multichannel=True):
+    try:
+        if torch.is_tensor(original):
+            original = original.detach().cpu().numpy()
+        if torch.is_tensor(reconstructed):
+            reconstructed = reconstructed.detach().cpu().numpy()
+
+        original, reconstructed = _resize_like_if_needed(
+            original, reconstructed)
+
+        if ssim is None:
+            return _fallback_ssim(original, reconstructed, data_range)
+
+        if len(original.shape) == 2:
+            return float(ssim(original, reconstructed, data_range=data_range))
+
+        try:
+            return float(ssim(original, reconstructed,
+                              data_range=data_range,
+                              channel_axis=2))
+        except TypeError:
+            return float(ssim(original, reconstructed,
+                              data_range=data_range,
+                              multichannel=True))
+    except Exception as e:
+        logger.warning(f"SSIM calculation failed: {e}")
+        return _fallback_ssim(original, reconstructed, data_range)
+
+
+def calculate_psnr(original, reconstructed, data_range=1.0):
+    try:
+        if torch.is_tensor(original):
+            original = original.cpu().numpy()
+        if torch.is_tensor(reconstructed):
+            reconstructed = reconstructed.cpu().numpy()
+        original, reconstructed = _resize_like_if_needed(
+            original, reconstructed)
+        mse = np.mean((original - reconstructed) ** 2)
+        if mse == 0:
+            return float('inf')
+        return float(10 * np.log10((data_range ** 2) / mse))
+    except Exception as e:
+        logger.warning(f"PSNR calculation failed: {e}")
+        return -1.0
+
+
+def wasserstein_distance(x, y, device='cpu', sample_size=100000):
+    x_flat = x.flatten()
+    y_flat = y.flatten()
+    total_size = x_flat.shape[0]
+    if total_size > sample_size:
+        indices = torch.randperm(total_size, device=device)[:sample_size]
+        x_flat = x_flat[indices]
+        y_flat = y_flat[indices]
+    x_sorted, _ = torch.sort(x_flat)
+    y_sorted, _ = torch.sort(y_flat)
+    return torch.mean(torch.abs(x_sorted - y_sorted))
 
 
 def label_to_onehot(target, num_classes=100):
@@ -124,10 +241,15 @@ def get_data_info(dataset_name):
 
     '''
     if dataset_name.lower() == 'femnist':
-
         return [1, 28, 28], 36, False
+    elif 'mnist' in dataset_name.lower():
+        return [1, 28, 28], 10, False
+    elif 'cifar10' in dataset_name.lower():
+        return [3, 32, 32], 10, False
+    elif 'office' in dataset_name.lower() and 'home' in dataset_name.lower():
+        return [3, 128, 128], 65, False
     else:
-        ValueError(
+        raise ValueError(
             'Please provide the data info of {}: data_feature_dim, num_class'.
             format(dataset_name))
 
@@ -135,36 +257,280 @@ def get_data_info(dataset_name):
 def get_data_sav_fn(dataset_name):
     if dataset_name.lower() == 'femnist':
         return sav_femnist_image
+    elif 'mnist' in dataset_name.lower():
+        return sav_mnist_image
+    elif 'cifar10' in dataset_name.lower():
+        return sav_cifar10_image
+    elif 'office' in dataset_name.lower() and 'home' in dataset_name.lower():
+        return sav_officehome_image  # 使用专门的 OfficeHome 保存函数（ImageNet 归一化）
     else:
         logger.info(f"Reconstructed data saving function is not provided for "
                     f"dataset: {dataset_name}")
         return None
 
 
-def sav_femnist_image(data, sav_pth, name):
+def _postprocess_mnist_recon(img):
+    img = torch.clamp(img, 0, 1).clone()
 
-    _ = plt.figure(figsize=(4, 4))
-    # print(data.shape)
+    # Estimate the dark background from lower quantiles, then stretch contrast.
+    flat = img.flatten()
+    lo = torch.quantile(flat, 0.60)
+    hi = torch.quantile(flat, 0.995)
+    if hi > lo:
+        img = (img - lo) / (hi - lo)
+    else:
+        img = img - lo
+    img = torch.clamp(img, 0, 1)
 
+    # Suppress residual gray haze while keeping thin strokes.
+    threshold = min(0.35, max(0.12, float(img.mean() + 0.25 * img.std())))
+    img[img < threshold] = 0.0
+
+    max_val = img.max()
+    if max_val > 0:
+        img = img / max_val
+    return img
+
+
+def sav_mnist_image(data, sav_pth, name, original_data=None):
+    """Save MNIST reconstructed images with black-background post-processing."""
     if len(data.shape) == 2:
         data = torch.unsqueeze(data, 0)
         data = torch.unsqueeze(data, 0)
 
     ind = min(data.shape[0], 16)
-    # print(data.shape)
 
-    # plt.imshow(data * 127.5 + 127.5, cmap='gray')
+    if original_data is not None:
+        if len(original_data.shape) == 2:
+            original_data = torch.unsqueeze(original_data, 0)
+            original_data = torch.unsqueeze(original_data, 0)
 
-    for i in range(ind):
-        plt.subplot(4, 4, i + 1)
+        ssim_values = []
+        psnr_values = []
+        for i in range(min(ind, 8)):
+            orig_img = original_data[i, 0, :, :].cpu()
+            orig_img = orig_img * 0.1592 + 0.9637
+            orig_img = torch.clamp(orig_img, 0, 1).numpy()
 
-        plt.imshow(data[i, 0, :, :] * 127.5 + 127.5, cmap='gray')
-        # plt.imshow(generated_data[i, 0, :, :] , cmap='gray')
-        # plt.imshow()
-        plt.axis('off')
+            recon_img = _postprocess_mnist_recon(data[i, 0, :, :].cpu()).numpy()
+            ssim_values.append(calculate_ssim(orig_img, recon_img, data_range=1.0, multichannel=False))
+            psnr_values.append(calculate_psnr(orig_img, recon_img, data_range=1.0))
 
+        avg_ssim = np.mean(ssim_values) if ssim_values else -1.0
+        avg_psnr = np.mean(psnr_values) if psnr_values else -1.0
+        logger.info(f"[METRICS] MNIST reconstruction quality (black-background postprocessed) - SSIM: {avg_ssim:.4f}, PSNR: {avg_psnr:.2f} dB | Individual SSIM: {[f'{s:.3f}' for s in ssim_values]}, PSNR: {[f'{p:.2f}' for p in psnr_values]}")
+
+        fig = plt.figure(figsize=(8, 4))
+        rows, cols = 2, min(ind, 8)
+        for i in range(min(ind, 8)):
+            plt.subplot(rows, cols, i + 1)
+            orig_img = original_data[i, 0, :, :].cpu()
+            orig_img = orig_img * 0.1592 + 0.9637
+            orig_img = torch.clamp(orig_img * 255, 0, 255)
+            plt.imshow(orig_img, cmap='gray', vmin=0, vmax=255)
+            plt.axis('off')
+            if i == 0:
+                plt.title(f"Original (SSIM: {avg_ssim:.3f}, PSNR: {avg_psnr:.1f}dB)", fontsize=8)
+
+            plt.subplot(rows, cols, cols + i + 1)
+            recon_img = _postprocess_mnist_recon(data[i, 0, :, :].cpu()) * 255
+            plt.imshow(recon_img, cmap='gray', vmin=0, vmax=255)
+            plt.axis('off')
+            if i == 0:
+                plt.title(f"Reconstructed (SSIM: {ssim_values[i]:.3f}, PSNR: {psnr_values[i]:.1f}dB)", fontsize=8)
+    else:
+        fig = plt.figure(figsize=(4, 4))
+        for i in range(ind):
+            plt.subplot(4, 4, i + 1)
+            recon_img = _postprocess_mnist_recon(data[i, 0, :, :].cpu()) * 255
+            plt.imshow(recon_img, cmap='gray', vmin=0, vmax=255)
+            plt.axis('off')
+
+    plt.tight_layout()
     plt.savefig(os.path.join(sav_pth, name))
     plt.close()
+
+def sav_femnist_image(data, sav_pth, name, original_data=None):
+    """Save FEMNIST reconstructed images with optional original comparison
+
+    Args:
+        data: Reconstructed images [B, 1, H, W]
+        sav_pth: Save path
+        name: Filename
+        original_data: Optional original images for comparison [B, 1, H, W]
+
+    Note: GRNN generator outputs images in [0,1] range (sigmoid activation).
+    We scale to [0, 255] for grayscale display.
+    """
+    if len(data.shape) == 2:
+        data = torch.unsqueeze(data, 0)
+        data = torch.unsqueeze(data, 0)
+
+    ind = min(data.shape[0], 16)
+
+    # Determine grid size based on whether we have original data
+    if original_data is not None:
+        # Show original and reconstructed side by side
+        if len(original_data.shape) == 2:
+            original_data = torch.unsqueeze(original_data, 0)
+            original_data = torch.unsqueeze(original_data, 0)
+
+        # 计算SSIM和PSNR值
+        ssim_values = []
+        psnr_values = []
+        for i in range(min(ind, 8)):
+            # 准备原始图像（反归一化）
+            orig_img = original_data[i, 0, :, :].cpu()
+            orig_img = orig_img * 0.1592 + 0.9637
+            orig_img = torch.clamp(orig_img, 0, 1).numpy()
+
+            # 准备重建图像
+            recon_img = data[i, 0, :, :].cpu()
+            recon_img = torch.clamp(recon_img, 0, 1).numpy()
+
+            # 计算SSIM
+            ssim_val = calculate_ssim(orig_img, recon_img, data_range=1.0, multichannel=False)
+            ssim_values.append(ssim_val)
+
+            # 计算PSNR
+            psnr_val = calculate_psnr(orig_img, recon_img, data_range=1.0)
+            psnr_values.append(psnr_val)
+
+        # 计算平均SSIM和PSNR
+        avg_ssim = np.mean(ssim_values) if ssim_values else -1.0
+        avg_psnr = np.mean(psnr_values) if psnr_values else -1.0
+        logger.info(f"[METRICS] FEMNIST reconstruction quality - SSIM: {avg_ssim:.4f}, PSNR: {avg_psnr:.2f} dB | Individual SSIM: {[f'{s:.3f}' for s in ssim_values]}, PSNR: {[f'{p:.2f}' for p in psnr_values]}")
+
+        fig = plt.figure(figsize=(8, 4))
+        rows, cols = 2, min(ind, 8)  # 2 rows: original + reconstructed
+
+        for i in range(min(ind, 8)):
+            # Original image (top row)
+            plt.subplot(rows, cols, i + 1)
+            orig_img = original_data[i, 0, :, :].cpu()
+            # Denormalize original (FEMNIST uses mean=0.9637, std=0.1592)
+            orig_img = orig_img * 0.1592 + 0.9637
+            orig_img = torch.clamp(orig_img * 255, 0, 255)
+            plt.imshow(orig_img, cmap='gray', vmin=0, vmax=255)
+            plt.axis('off')
+            if i == 0:
+                plt.title(f'Original (SSIM: {avg_ssim:.3f}, PSNR: {avg_psnr:.1f}dB)', fontsize=8)
+
+            # Reconstructed image (bottom row)
+            plt.subplot(rows, cols, cols + i + 1)
+            recon_img = data[i, 0, :, :] * 255
+            plt.imshow(recon_img, cmap='gray', vmin=0, vmax=255)
+            plt.axis('off')
+            if i == 0:
+                plt.title(f'Reconstructed (SSIM: {ssim_values[i]:.3f}, PSNR: {psnr_values[i]:.1f}dB)', fontsize=8)
+    else:
+        # Only show reconstructed images
+        fig = plt.figure(figsize=(4, 4))
+        for i in range(ind):
+            plt.subplot(4, 4, i + 1)
+            plt.imshow(data[i, 0, :, :] * 255, cmap='gray', vmin=0, vmax=255)
+            plt.axis('off')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(sav_pth, name))
+    plt.close()
+
+
+def sav_cifar10_image(data, sav_pth, name, original_data=None):
+    """Save CIFAR10 reconstructed images with optional original comparison
+
+    Args:
+        data: Reconstructed images [B, C, H, W]
+        sav_pth: Save path
+        name: Filename
+        original_data: Optional original images for comparison [B, C, H, W]
+
+    Note: GRNN generator outputs images in [0,1] range (sigmoid activation),
+    so we don't need to denormalize. We display them directly.
+    """
+    if len(data.shape) == 3:  # single image [C, H, W]
+        data = torch.unsqueeze(data, 0)
+
+    ind = min(data.shape[0], 16)
+
+    # Determine grid size based on whether we have original data
+    if original_data is not None:
+        # Show original and reconstructed side by side
+        if len(original_data.shape) == 3:
+            original_data = torch.unsqueeze(original_data, 0)
+
+        # 计算SSIM和PSNR值
+        ssim_values = []
+        psnr_values = []
+        for i in range(min(ind, 8)):
+            # 准备原始图像（反归一化）
+            orig_img = original_data[i].cpu()
+            mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1)
+            std = torch.tensor([0.2470, 0.2435, 0.2616]).view(3, 1, 1)
+            orig_img = orig_img * std + mean
+            orig_img = torch.clamp(orig_img, 0, 1)
+            orig_img = orig_img.permute(1, 2, 0).numpy()
+
+            # 准备重建图像
+            recon_img = data[i].cpu()
+            recon_img = torch.clamp(recon_img, 0, 1)
+            recon_img = recon_img.permute(1, 2, 0).numpy()
+
+            # 计算SSIM
+            ssim_val = calculate_ssim(orig_img, recon_img, data_range=1.0, multichannel=True)
+            ssim_values.append(ssim_val)
+
+            # 计算PSNR
+            psnr_val = calculate_psnr(orig_img, recon_img, data_range=1.0)
+            psnr_values.append(psnr_val)
+
+        # 计算平均SSIM和PSNR
+        avg_ssim = np.mean(ssim_values) if ssim_values else -1.0
+        avg_psnr = np.mean(psnr_values) if psnr_values else -1.0
+        logger.info(f"[METRICS] CIFAR-10 reconstruction quality - SSIM: {avg_ssim:.4f}, PSNR: {avg_psnr:.2f} dB | Individual SSIM: {[f'{s:.3f}' for s in ssim_values]}, PSNR: {[f'{p:.2f}' for p in psnr_values]}")
+
+        fig = plt.figure(figsize=(8, 4))
+        rows, cols = 2, min(ind, 8)  # 2 rows: original + reconstructed
+
+        for i in range(min(ind, 8)):
+            # Original image (top row)
+            plt.subplot(rows, cols, i + 1)
+            orig_img = original_data[i].cpu()
+            # Denormalize original (CIFAR-10 normalization)
+            mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1)
+            std = torch.tensor([0.2470, 0.2435, 0.2616]).view(3, 1, 1)
+            orig_img = orig_img * std + mean
+            orig_img = torch.clamp(orig_img, 0, 1)
+            orig_img = orig_img.permute(1, 2, 0).numpy()
+            plt.imshow(orig_img)
+            plt.axis('off')
+            if i == 0:
+                plt.title(f'Original (SSIM: {avg_ssim:.3f}, PSNR: {avg_psnr:.1f}dB)', fontsize=8)
+
+            # Reconstructed image (bottom row)
+            plt.subplot(rows, cols, cols + i + 1)
+            recon_img = data[i].cpu()
+            recon_img = torch.clamp(recon_img, 0, 1)
+            recon_img = recon_img.permute(1, 2, 0).numpy()
+            plt.imshow(recon_img)
+            plt.axis('off')
+            if i == 0:
+                plt.title(f'Reconstructed (SSIM: {ssim_values[i]:.3f}, PSNR: {psnr_values[i]:.1f}dB)', fontsize=8)
+    else:
+        # Only show reconstructed images
+        fig = plt.figure(figsize=(4, 4))
+        for i in range(ind):
+            plt.subplot(4, 4, i + 1)
+            img = data[i].cpu()
+            img = torch.clamp(img, 0, 1)
+            img = img.permute(1, 2, 0).numpy()
+            plt.imshow(img)
+            plt.axis('off')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(sav_pth, name))
+    plt.close()
+
 
 
 def get_info_diff_loss(info_diff_type):
@@ -181,16 +547,15 @@ def get_info_diff_loss(info_diff_type):
 
 
 def get_reconstructor(atk_method, **kwargs):
-    '''
+    """
 
     Args:
-        atk_method: the attack method name, and currently supporting "DLG:
-        deep leakage from gradient", and "IG: Inverting gradient" ; Type: str
+        atk_method: the attack method name.
         **kwargs: other arguments
 
     Returns:
 
-    '''
+    """
 
     if atk_method.lower() == 'dlg':
         from federatedscope.attack.privacy_attacks.reconstruction_opt import\
@@ -220,8 +585,22 @@ def get_reconstructor(atk_method, **kwargs):
                               info_diff_type=kwargs['info_diff_type'],
                               federate_method=kwargs['federate_method'],
                               alpha_TV=kwargs['alpha_TV'])
+    elif atk_method.lower() == 'grnn':
+        from federatedscope.attack.privacy_attacks.grnn_attack import \
+            GRNNAttack
+        logger.info('--------- Getting reconstructor: GRNN --------------------')
+        return GRNNAttack(max_ite=kwargs['max_ite'],
+                          lr=kwargs['lr'],
+                          federate_loss_fn=kwargs['federate_loss_fn'],
+                          device=kwargs['device'],
+                          federate_method=kwargs['federate_method'],
+                          federate_lr=kwargs['federate_lr'],
+                          g_in=kwargs.get('g_in', 128),
+                          tv_weight=kwargs.get('tv_weight', 1e-6),
+                          use_wd=kwargs.get('use_wd', False),
+                          dataset_name=kwargs.get('dataset_name', ''))
     else:
-        ValueError(
+        raise ValueError(
             "attack method: {} lacks reconstructor implementation".format(
                 atk_method))
 
@@ -352,3 +731,93 @@ def plot_mia_loss_compare(loss_in_pth, loss_out_pth, in_round=20):
     plt.xlabel('Round', fontsize=16)
     plt.ylabel('$L_x$', fontsize=16)
     plt.show()
+
+
+def sav_officehome_image(data, sav_pth, name, original_data=None):
+    """Save OfficeHome reconstructed images with optional original comparison
+
+    Args:
+        data: Reconstructed images [B, C, H, W]
+        sav_pth: Save path
+        name: Filename
+        original_data: Optional original images for comparison [B, C, H, W]
+
+    Note: GRNN generator outputs images in [0,1] range (sigmoid activation),
+    so we don't need to denormalize. We display them directly.
+    """
+    if len(data.shape) == 3:  # single image [C, H, W]
+        data = torch.unsqueeze(data, 0)
+
+    ind = min(data.shape[0], 16)
+
+    # Determine grid size based on whether we have original data
+    if original_data is not None:
+        # Show original and reconstructed side by side
+        if len(original_data.shape) == 3:
+            original_data = torch.unsqueeze(original_data, 0)
+
+        # 计算SSIM和PSNR值
+        ssim_values = []
+        psnr_values = []
+        for i in range(min(ind, 8)):
+            # 原始图像已在 [0,1] 范围（ToTensor，无归一化），直接使用
+            orig_img = original_data[i].cpu()
+            orig_img = torch.clamp(orig_img, 0, 1)
+            orig_img = orig_img.permute(1, 2, 0).numpy()
+
+            # 准备重建图像
+            recon_img = data[i].cpu()
+            recon_img = torch.clamp(recon_img, 0, 1)
+            recon_img = recon_img.permute(1, 2, 0).numpy()
+
+            # 计算SSIM
+            ssim_val = calculate_ssim(orig_img, recon_img, data_range=1.0, multichannel=True)
+            ssim_values.append(ssim_val)
+
+            # 计算PSNR
+            psnr_val = calculate_psnr(orig_img, recon_img, data_range=1.0)
+            psnr_values.append(psnr_val)
+
+        # 计算平均SSIM和PSNR
+        avg_ssim = np.mean(ssim_values) if ssim_values else -1.0
+        avg_psnr = np.mean(psnr_values) if psnr_values else -1.0
+        logger.info(f"[METRICS] OfficeHome reconstruction quality - SSIM: {avg_ssim:.4f}, PSNR: {avg_psnr:.2f} dB | Individual SSIM: {[f'{s:.3f}' for s in ssim_values]}, PSNR: {[f'{p:.2f}' for p in psnr_values]}")
+
+        fig = plt.figure(figsize=(8, 4))
+        rows, cols = 2, min(ind, 8)  # 2 rows: original + reconstructed
+
+        for i in range(min(ind, 8)):
+            # Original image (top row)
+            plt.subplot(rows, cols, i + 1)
+            orig_img = original_data[i].cpu()
+            # 原始图像已在 [0,1] 范围（ToTensor，无归一化），直接使用
+            orig_img = torch.clamp(orig_img, 0, 1)
+            orig_img = orig_img.permute(1, 2, 0).numpy()
+            plt.imshow(orig_img)
+            plt.axis('off')
+            if i == 0:
+                plt.title(f'Original (SSIM: {avg_ssim:.3f}, PSNR: {avg_psnr:.1f}dB)', fontsize=8)
+
+            # Reconstructed image (bottom row)
+            plt.subplot(rows, cols, cols + i + 1)
+            recon_img = data[i].cpu()
+            recon_img = torch.clamp(recon_img, 0, 1)
+            recon_img = recon_img.permute(1, 2, 0).numpy()
+            plt.imshow(recon_img)
+            plt.axis('off')
+            if i == 0:
+                plt.title(f'Reconstructed (SSIM: {ssim_values[i]:.3f}, PSNR: {psnr_values[i]:.1f}dB)', fontsize=8)
+    else:
+        # Only show reconstructed images
+        fig = plt.figure(figsize=(4, 4))
+        for i in range(ind):
+            plt.subplot(4, 4, i + 1)
+            img = data[i].cpu()
+            img = torch.clamp(img, 0, 1)
+            img = img.permute(1, 2, 0).numpy()
+            plt.imshow(img)
+            plt.axis('off')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(sav_pth, name))
+    plt.close()

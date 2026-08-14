@@ -41,6 +41,7 @@ def get_client_cls(cfg):
         ``attack.worker_as_attacker.active_client``
         ==================== ==============================================
     """
+
     for func in register.worker_dict.values():
         worker_class = func(cfg.federate.method.lower())
         if worker_class is not None:
@@ -138,6 +139,11 @@ def get_server_cls(cfg):
         ``attack.worker_as_attacker.server_attacker.BackdoorServer``
         ==================== ==============================================
     """
+    if cfg.federate.method.lower() == 'ggeur' and \
+            cfg.attack.attack_method.lower() == 'grnn':
+        from federatedscope.contrib.worker.ggeur_attack_server import \
+            GGEURPassiveServer
+        return GGEURPassiveServer
     for func in register.worker_dict.values():
         worker_class = func(cfg.federate.method.lower())
         if worker_class is not None:
@@ -157,7 +163,7 @@ def get_server_cls(cfg):
         from federatedscope.autotune.pfedhpo import pFedHPOFLServer
         return pFedHPOFLServer
 
-    if cfg.attack.attack_method.lower() in ['dlg', 'ig']:
+    if cfg.attack.attack_method.lower() in ['dlg', 'ig', 'grnn']:
         from federatedscope.attack.worker_as_attacker.server_attacker import\
             PassiveServer
         return PassiveServer

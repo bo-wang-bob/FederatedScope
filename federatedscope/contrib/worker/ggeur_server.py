@@ -15,6 +15,7 @@ import os
 import time
 import logging
 import copy
+import json
 import re
 import queue
 import base64
@@ -29,7 +30,8 @@ from torch.utils.data import DataLoader
 from federatedscope.core.message import Message, b64serializer
 from federatedscope.core.workers import Server
 from federatedscope.core.auxiliaries.optimizer_builder import get_optimizer
-from federatedscope.core.auxiliaries.utils import param2tensor
+from federatedscope.core.auxiliaries.utils import (
+    param2tensor, recursive_param2tensor)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,31 @@ class GGEURServer(Server):
         # MLP model for aggregation
         self.global_mlp = None
 
+        # Optional distributed attack collectors.
+        self.distributed_fedmia_collector = None
+        if bool(getattr(config.attack, "distributed_fedmia", False)):
+            from federatedscope.contrib.attack.distributed_fedmia import DistributedFedMIACollector
+            self.distributed_fedmia_collector = DistributedFedMIACollector(self)
+            logger.info("Server: distributed FedMIA collector enabled")
+        self.distributed_ppa_collector = None
+        if bool(getattr(config.attack, "distributed_ppa", False)):
+            from federatedscope.contrib.attack.distributed_ppa import DistributedPPACollector
+            self.distributed_ppa_collector = DistributedPPACollector(self)
+            logger.info("Server: distributed PPA collector enabled")
+
+        # Standalone GGEUR FedMIA hook.
+        self.fedmia_hook = None
+        if self._is_ggeur_fedmia_attack_enabled():
+            from federatedscope.contrib.worker.ggeur_fedmia_server import GGEURFedMIAHook
+            self.fedmia_hook = GGEURFedMIAHook(self)
+            logger.info("Server: GGEUR FedMIA hook enabled")
+        # Standalone GGEUR Meta-PPA hook.
+        self.ppa_hook = None
+        if self._is_ggeur_ppa_attack_enabled():
+            from federatedscope.contrib.worker.ggeur_ppa_server import GGEURPPAHook
+            self.ppa_hook = GGEURPPAHook(self)
+            logger.info("Server: GGEUR Meta-PPA hook enabled")
+
         # ===== FedOpt (server-side) =====
         self.use_fedopt = getattr(config.fedopt, 'use', False) if hasattr(config, 'fedopt') else False
         self.fedopt_optimizer = None
@@ -104,6 +131,7 @@ class GGEURServer(Server):
         self.test_accuracies_history = {}  # {domain: [acc_per_round]}
         self.client_eval_buffer = {}
         self.pending_client_eval_round = None
+        self.distributed_defense_stats = {}
 
         # ===== CNN Mode =====
         self.use_cnn_distillation = getattr(self.ggeur_cfg, 'use_cnn_distillation', False)
@@ -170,6 +198,44 @@ class GGEURServer(Server):
         self.active_client_ids = set()
         self.training_client_ids = set()
 
+    def _is_ggeur_fedmia_attack_enabled(self):
+        attack_method = str(getattr(self._cfg.attack, 'attack_method', '')).lower()
+        if attack_method in ['fedmia', 'ggeur_fedmia']:
+            return True
+        plugins = [str(name).lower() for name in getattr(self._cfg.attack, 'attack_plugins', [])]
+        fedmia_plugins = {'blackbox_loss', 'grad_cosine', 'grad_diff', 'grad_norm', 'loss_series', 'avg_cosine', 'fedmia_i', 'fedmia_ii'}
+        return bool(getattr(self._cfg.attack, 'modular_attacks', False)) and any(name in fedmia_plugins for name in plugins)
+
+    def _is_ggeur_ppa_attack_enabled(self):
+        attack_method = str(getattr(self._cfg.attack, "attack_method", "")).lower()
+        if attack_method == "ggeur_ppa":
+            return True
+        plugins = [str(name).lower() for name in getattr(self._cfg.attack, "attack_plugins", [])]
+        return bool(getattr(self._cfg.attack, "modular_attacks", False)) and any(
+            name in ["meta_ppa", "ppa", "property_inference"] for name in plugins)
+
+
+    def link_clients(self, clients):
+        self.clients = clients
+        if self.fedmia_hook is not None:
+            self.fedmia_hook.link_clients(clients)
+        if self.ppa_hook is not None:
+            self.ppa_hook.link_clients(clients)
+
+    def _run_attack_model_para_hooks(self, message):
+        if self.fedmia_hook is not None:
+            try:
+                self.fedmia_hook.after_model_para(message)
+            except Exception as error:
+                logger.exception('Server: GGEUR FedMIA hook failed for round %s, sender %s: %s', message.state, message.sender, error)
+
+        if self.ppa_hook is not None:
+            try:
+                self.ppa_hook.after_model_para(message)
+            except Exception as error:
+                logger.exception("Server: GGEUR Meta-PPA hook failed for round %s, sender %s: %s", message.state, message.sender, error)
+
+
     def _resolve_min_clients(self, name):
         value = int(getattr(self.ggeur_cfg, name, 0))
         if value <= 0:
@@ -225,6 +291,10 @@ class GGEURServer(Server):
         if hasattr(self.comm_manager, 'shutdown'):
             self.comm_manager.shutdown()
         self.is_finish = True
+        try:
+            self._save_dp_noise_summary()
+        except Exception as error:
+            logger.exception("Server: failed to save DP noise variance summary: %s", error)
         raise TimeoutError(
             f"GGEUR distributed stage timeout: {self._stage_name}")
 
@@ -1593,10 +1663,18 @@ class GGEURServer(Server):
                 f"{self.state}")
             return
 
-        if isinstance(content, (tuple, list)) and len(content) == 2:
+        defense_stats = None
+        if isinstance(content, (tuple, list)) and len(content) == 3:
+            sample_size, model_para, defense_stats = content
+        elif isinstance(content, (tuple, list)) and len(content) == 2:
             sample_size, model_para = content
         else:
             sample_size, model_para = 0, content
+        if model_para is not None:
+            model_para = recursive_param2tensor(model_para)
+        if isinstance(defense_stats, dict):
+            self.distributed_defense_stats.setdefault(int(round_idx), {})[int(sender)] = defense_stats
+            logger.info('Server: received adaptive defense stats from client %s for round %s: clip=%s next_clip=%s clipped=%s noise_std=%s', sender, round_idx, defense_stats.get('clip_bound'), defense_stats.get('next_clip_bound'), defense_stats.get('clipped'), defense_stats.get('noise_std'))
 
         # Store in message buffer
         if round_idx not in self.msg_buffer['train']:
@@ -1612,6 +1690,7 @@ class GGEURServer(Server):
             return
 
         self.msg_buffer['train'][round_idx].append((sample_size, model_para, sender))
+        self._run_attack_model_para_hooks(message)
 
         expected_updates = self._expected_train_updates()
         logger.info(f"Server: Received model from client {sender} for round {round_idx} "
@@ -1620,6 +1699,8 @@ class GGEURServer(Server):
 
         # Check if the configured training-update quorum has responded.
         if len(self.msg_buffer['train'][round_idx]) >= expected_updates:
+            if self.distributed_fedmia_collector is not None and self.distributed_fedmia_collector.start_cross_eval(round_idx, self.msg_buffer["train"][round_idx]):
+                return
             self._perform_fedavg(round_idx)
 
     def _perform_fedavg(self, round_idx):
@@ -2187,9 +2268,86 @@ class GGEURServer(Server):
             return total
         return 0
 
+    def _save_dp_noise_summary(self):
+        if not self.distributed_defense_stats:
+            return None
+        per_round = {}
+        all_variances = []
+        mechanism_counts = {}
+        for round_idx, client_stats in sorted(self.distributed_defense_stats.items()):
+            round_variances = []
+            round_stds = []
+            updates = 0
+            for stats in client_stats.values():
+                mechanism = str(stats.get("mechanism", "unknown"))
+                mechanism_counts[mechanism] = mechanism_counts.get(mechanism, 0) + 1
+                events = stats.get("noise_events") or [stats]
+                for event in events:
+                    variance = float(event.get("noise_variance", float(event.get("noise_std", 0.0)) ** 2))
+                    std = float(event.get("noise_std", variance ** 0.5))
+                    round_variances.append(variance)
+                    round_stds.append(std)
+                    all_variances.append(variance)
+                    updates += 1
+            if round_variances:
+                per_round[str(int(round_idx))] = {
+                    "num_updates": updates,
+                    "mean_noise_std": float(np.mean(round_stds)),
+                    "mean_noise_variance": float(np.mean(round_variances)),
+                    "min_noise_variance": float(np.min(round_variances)),
+                    "max_noise_variance": float(np.max(round_variances)),
+                    "total_update_noise_variance": float(np.sum(round_variances))}
+        if not per_round:
+            return None
+        rounds = sorted(per_round, key=int)
+        summary = {
+            "num_rounds": len(rounds),
+            "num_updates": len(all_variances),
+            "mean_noise_std": float(np.mean(np.sqrt(all_variances))),
+            "mean_noise_variance": float(np.mean(all_variances)),
+            "min_noise_variance": float(np.min(all_variances)),
+            "max_noise_variance": float(np.max(all_variances)),
+            "final_noise_variance": float(per_round[rounds[-1]]["mean_noise_variance"]),
+            "total_noise_variance": float(sum(item["mean_noise_variance"] for item in per_round.values())),
+            "total_update_noise_variance": float(np.sum(all_variances)),
+            "mechanism_counts": mechanism_counts}
+        payload = {"summary": summary, "per_round": per_round}
+        os.makedirs(self._cfg.outdir, exist_ok=True)
+        save_path = os.path.join(self._cfg.outdir, "dp_noise_summary.json")
+        with open(save_path, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+        logger.info("Server: DP noise variance summary across training process: rounds=%s updates=%s mean_noise_std=%.6f mean_noise_variance=%.6f min_noise_variance=%.6f max_noise_variance=%.6f final_noise_variance=%.6f total_noise_variance=%.6f total_update_noise_variance=%.6f mechanisms=%s", summary["num_rounds"], summary["num_updates"], summary["mean_noise_std"], summary["mean_noise_variance"], summary["min_noise_variance"], summary["max_noise_variance"], summary["final_noise_variance"], summary["total_noise_variance"], summary["total_update_noise_variance"], mechanism_counts)
+        logger.info("Server: saved DP noise variance summary to %s", save_path)
+        return payload
+
+
     def _finish(self):
         """Finish FL training"""
         self.is_finish = True
+        try:
+            self._save_dp_noise_summary()
+        except Exception as error:
+            logger.exception("Server: failed to save DP noise variance summary: %s", error)
+        if self.fedmia_hook is not None:
+            try:
+                self.fedmia_hook.finish()
+            except Exception as error:
+                logger.exception("Server: GGEUR FedMIA finalization failed: %s", error)
+        if self.distributed_fedmia_collector is not None:
+            try:
+                self.distributed_fedmia_collector.finalize()
+            except Exception as error:
+                logger.exception("Server: distributed FedMIA finalization failed: %s", error)
+        if self.ppa_hook is not None:
+            try:
+                self.ppa_hook.finish()
+            except Exception as error:
+                logger.exception("Server: GGEUR Meta-PPA finalization failed: %s", error)
+        if self.distributed_ppa_collector is not None:
+            try:
+                self.distributed_ppa_collector.finalize()
+            except Exception as error:
+                logger.exception("Server: distributed PPA finalization failed: %s", error)
         logger.info("="*60)
         logger.info(f"Server: Training finished after {self.state} rounds")
 

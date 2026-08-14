@@ -84,6 +84,10 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.use_fp16_extraction = True
     # Batch size for feature extraction (larger = faster; reduce if OOM during extraction)
     cfg.ggeur.extract_batch_size = 64
+    # Optional cross-process lock used when many distributed clients share one
+    # GPU. Empty disables serialization; a common absolute path makes clients
+    # load, run, and unload the feature extractor one at a time.
+    cfg.ggeur.feature_extraction_lock_file = ''
 
     # ========== Feature Augmentation ==========
     # Number of samples to generate per original sample
@@ -96,6 +100,18 @@ def extend_ggeur_cfg(cfg):
     # ========== MLP Classifier ==========
     cfg.ggeur.mlp_hidden_dim = 0  # Hidden dim (0 means no hidden layer, just linear)
     cfg.ggeur.mlp_dropout = 0.0  # Dropout rate
+    # Compatibility with the original editable PPA experiment configs.
+    cfg.ggeur.mlp_weight_decay = 0.0
+    cfg.ggeur.mlp_label_smoothing = 0.0
+    cfg.ggeur.mlp_l2_reg = 0.0
+    cfg.ggeur.local_decoy = CN()
+    cfg.ggeur.local_decoy.use = False
+    cfg.ggeur.local_decoy.train_with_decoy = True
+    cfg.ggeur.local_decoy.num_per_class = 0
+    cfg.ggeur.local_decoy.noise_scale = 0.15
+    cfg.ggeur.local_decoy.min_std = 1e-4
+    cfg.ggeur.local_decoy.max_total = 0
+    cfg.ggeur.local_decoy.seed_offset = 1701
 
     # ========== Multi-domain Settings ==========
     # Whether to use cross-client prototypes for augmentation
@@ -214,6 +230,8 @@ def extend_ggeur_cfg(cfg):
     # If True: Train CNN by aligning features with CLIP (no pretrained weights needed)
     # If False: Use knowledge distillation mode (requires use_cnn_distillation=True)
     cfg.ggeur.use_feature_alignment = False
+    # Standalone GRNN compatibility flag for the optional image branch.
+    cfg.ggeur.grnn_ce_only_image_branch = False
 
     # Feature alignment loss weight (lambda in: L = CE + lambda * MSE)
     # Higher values encourage stronger feature alignment

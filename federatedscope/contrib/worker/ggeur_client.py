@@ -26,7 +26,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 from federatedscope.core.message import Message, b64serializer
-from federatedscope.core.auxiliaries.utils import param2tensor
+from federatedscope.core.auxiliaries.utils import (
+    param2tensor, recursive_param2tensor)
 from federatedscope.core.workers import Client
 from federatedscope.register import register_worker
 
@@ -189,6 +190,7 @@ class GGEURClient(Client):
         # Augmented data
         self.augmented_features = None
         self.augmented_labels = None
+        self.augmented_generated_mask = None
         self.augmented_loader = None
 
         # Real local features saved before augmentation (for PromptFL training)
@@ -197,6 +199,37 @@ class GGEURClient(Client):
 
         # MLP classifier
         self.mlp_classifier = None
+
+        # Optional multi-machine FedMIA reporter. It sends only derived
+        # loss/cosine probe scores and never changes the model update payload.
+        self.distributed_fedmia_reporter = None
+        if bool(getattr(config.attack, 'distributed_fedmia', False)):
+            from federatedscope.contrib.attack.distributed_fedmia import \
+                DistributedFedMIAClientReporter
+            self.distributed_fedmia_reporter = \
+                DistributedFedMIAClientReporter(self)
+            logger.info('Client %s: distributed FedMIA reporter enabled',
+                        self.ID)
+
+        # Optional multi-machine property-inference reporter. Raw images and
+        # embedding probes stay local; only Meta-PPA sensitivity vectors are
+        # sent to the server.
+        self.distributed_ppa_reporter = None
+        if bool(getattr(config.attack, 'distributed_ppa', False)):
+            from federatedscope.contrib.attack.distributed_ppa import \
+                DistributedPPAClientReporter
+            self.distributed_ppa_reporter = \
+                DistributedPPAClientReporter(self)
+            logger.info('Client %s: distributed PPA reporter enabled',
+                        self.ID)
+
+        # Created lazily only when cfg.dp enables adaptive GGEUR update
+        # protection. Existing experiments keep the original upload path.
+        self._local_adaptive_clipper = None
+        self._attack_last_batch_data = None
+        self._attack_cnn_gradients = None
+        self._attack_backbone_gradients = None
+        self._grnn_adaptive_clipper = None
 
         # State tracking
         self.statistics_uploaded = False
@@ -248,6 +281,78 @@ class GGEURClient(Client):
         raise SystemExit(
             f"GGEUR distributed validation fault injection: {stage}")
 
+    def _is_grnn_attack_enabled(self):
+        return str(getattr(self._cfg.attack, "attack_method", "")).lower() == "grnn"
+
+    def _record_attack_last_batch(self, images, labels):
+        if not self._is_grnn_attack_enabled() or \
+                self._attack_last_batch_data is not None:
+            return
+        images_cpu = images.detach().cpu().clone()
+        labels_cpu = labels.detach().cpu().clone()
+        self._attack_last_batch_data = (images_cpu, labels_cpu)
+
+        # Keep the evaluation reference local; it is never sent in the update.
+        try:
+            outdir = str(getattr(self._cfg, "outdir", "") or "")
+            if not outdir:
+                return
+            reference_dir = os.path.join(outdir, "grnn_eval_references")
+            os.makedirs(reference_dir, exist_ok=True)
+            reference = images_cpu
+            if reference.ndim == 4 and reference.shape[1] == 3:
+                mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+                std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+                reference = torch.clamp(reference * std + mean, 0.0, 1.0)
+            round_idx = int(getattr(self, "state", 0))
+            path = os.path.join(
+                reference_dir,
+                f"state_{round_idx}_client_{int(self.ID)}.pt")
+            torch.save({
+                "images": reference,
+                "labels": labels_cpu,
+                "state": round_idx,
+                "client_id": int(self.ID),
+            }, path)
+            logger.info("[GRNN] Saved local evaluation reference: %s", path)
+        except Exception as exc:
+            logger.warning(
+                "[GRNN] Could not save local evaluation reference: %s", exc)
+
+    def _record_attack_branch_gradients(self, model, branch):
+        if not self._is_grnn_attack_enabled():
+            return
+        attr = "_attack_" + branch + "_gradients"
+        if getattr(self, attr, None) is not None:
+            return
+        gradients = {}
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                gradients[name] = param.grad.detach().cpu().clone()
+        if gradients:
+            setattr(self, attr, gradients)
+
+    def _protect_grnn_cnn_for_upload(self, global_state, local_state, round_idx):
+        """Sanitize the image-branch update visible to a GRNN attacker."""
+        dp_cfg = self._get_ggeur_adaptive_dp_cfg()
+        if dp_cfg is None or global_state is None or local_state is None:
+            return local_state, False
+        from federatedscope.core.privacy.adaptive_dp import (
+            LocalAdaptiveClipper, subtract_states, add_delta)
+        if self._grnn_adaptive_clipper is None:
+            self._grnn_adaptive_clipper = LocalAdaptiveClipper.from_cfg(dp_cfg)
+        self._grnn_adaptive_clipper.noise_multiplier = self._get_ggeur_dp_sigma(dp_cfg)
+        delta = subtract_states(local_state, global_state)
+        protected_delta, stats = self._grnn_adaptive_clipper.sanitize(
+            delta, round_idx=int(round_idx), client_id=int(self.ID))
+        defended_state = add_delta(global_state, protected_delta)
+        logger.info(
+            "[GRNN defense] client=%s round=%s clip=%.6f next_clip=%.6f "
+            "noise_std=%.6f variance=%.6f", self.ID, round_idx,
+            float(stats["clip_bound"]), float(stats["next_clip_bound"]),
+            float(stats["noise_std"]), float(stats["noise_variance"]))
+        return defended_state, True
+
     def _register_default_handlers(self):
         """Register message handlers"""
         super()._register_default_handlers()
@@ -257,6 +362,188 @@ class GGEURClient(Client):
                                self.callback_for_global_covariances)
         self.register_handlers('client_eval',
                                self.callback_for_client_eval)
+        if bool(getattr(self._cfg.attack, 'distributed_fedmia', False)):
+            self.register_handlers(
+                'fedmia_cross_eval_request',
+                self.callback_for_fedmia_cross_eval_request)
+
+    def callback_for_fedmia_cross_eval_request(self, message: Message):
+        """Score round-local heads on this client's local probes."""
+        self.distributed_fedmia_reporter.handle_cross_eval_request(message)
+
+    def _get_ggeur_adaptive_dp_cfg(self):
+        from federatedscope.core.privacy.adaptive_dp import \
+            get_ggeur_client_update_dp_cfg
+        return get_ggeur_client_update_dp_cfg(self._cfg)
+
+    def _is_ggeur_adaptive_dp_enabled(self):
+        return self._get_ggeur_adaptive_dp_cfg() is not None
+
+    def _get_ggeur_dp_baseline(self, dp_cfg):
+        baseline = str(getattr(dp_cfg, "baseline", "")).lower()
+        if baseline:
+            return baseline
+        clipping = getattr(dp_cfg, "clipping", None)
+        return "adaptive" if str(getattr(clipping, "type", "fixed")).lower() == "adaptive" else "ldp_fed"
+
+    def _get_ggeur_dp_sigma(self, dp_cfg):
+        manual_sigma = float(getattr(dp_cfg, "noise_multiplier", 0.0))
+        if manual_sigma > 0:
+            return manual_sigma
+        from federatedscope.core.trainers.fed_smp_utils import compute_sigma_opacus
+        sample_rate = float(getattr(dp_cfg, "accountant_sample_rate", -1.0))
+        if sample_rate <= 0:
+            sample_rate = float(self._cfg.federate.sample_client_num) / float(self._cfg.federate.client_num)
+        return float(compute_sigma_opacus(
+            float(getattr(dp_cfg, "epsilon", 1.0)),
+            float(getattr(dp_cfg, "delta", 1e-5)),
+            max(1, int(self._cfg.federate.total_round_num)), sample_rate))
+
+    def _is_dpfl_gradient_noise_enabled(self, dp_cfg=None):
+        dp_cfg = dp_cfg or self._get_ggeur_adaptive_dp_cfg()
+        return dp_cfg is not None and self._get_ggeur_dp_baseline(dp_cfg) == "dpfl" and str(getattr(dp_cfg, "dpfl_noise_location", "update")).lower() == "gradient"
+
+    def _begin_dpfl_gradient_stats(self):
+        self._dpfl_gradient_events = []
+        self._dpfl_public_stats = None
+
+    def _apply_dpfl_gradient_noise(self, module, event_idx):
+        dp_cfg = self._get_ggeur_adaptive_dp_cfg()
+        if not self._is_dpfl_gradient_noise_enabled(dp_cfg):
+            return
+        parameters = [param for param in module.parameters() if param.grad is not None]
+        if not parameters:
+            return
+        raw_norm = float(torch.norm(torch.stack([param.grad.detach().float().norm(2).cpu() for param in parameters]), 2).item())
+        clip_bound = float(getattr(dp_cfg, "max_grad_norm", 1.0))
+        torch.nn.utils.clip_grad_norm_(parameters, max_norm=clip_bound)
+        sigma = self._get_ggeur_dp_sigma(dp_cfg)
+        noise_std = sigma * clip_bound
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(int(getattr(dp_cfg, "seed", 0)) + int(self.state) * 1000000 + int(self.ID) * 10000 + int(event_idx))
+        with torch.no_grad():
+            for param in parameters:
+                noise = torch.randn(param.grad.shape, generator=generator, dtype=param.grad.detach().cpu().dtype, device="cpu").to(param.grad.device)
+                param.grad.add_(noise, alpha=noise_std)
+        self._dpfl_gradient_events.append({
+            "noise_std": float(noise_std),
+            "noise_variance": float(noise_std ** 2),
+            "raw_grad_norm": raw_norm,
+            "clipped": int(raw_norm > clip_bound)})
+
+    def _finalize_dpfl_gradient_stats(self):
+        events = list(getattr(self, "_dpfl_gradient_events", []))
+        if not events:
+            return
+        variances = np.asarray([item["noise_variance"] for item in events], dtype=np.float64)
+        stds = np.asarray([item["noise_std"] for item in events], dtype=np.float64)
+        self._dpfl_public_stats = {
+            "enabled": 1, "mechanism": "dpfl_client_gradient_dp",
+            "client_id": int(self.ID), "round": int(self.state),
+            "noise_std": float(stds.mean()),
+            "noise_variance": float(variances.mean()),
+            "min_noise_variance": float(variances.min()),
+            "max_noise_variance": float(variances.max()),
+            "total_noise_variance": float(variances.sum()),
+            "num_noise_events": int(len(events)),
+            "clipped_fraction": float(np.mean([item["clipped"] for item in events])),
+            "noise_events": events}
+        logger.info("[DPFL-Grad] client=%s round=%s mean_noise_variance=%.6f total_noise_variance=%.6f", self.ID, self.state, variances.mean(), variances.sum())
+
+
+    def _protect_mlp_for_upload(self, global_state, local_state, round_idx):
+        """Return the server-visible defended local head and public stats."""
+        dp_cfg = self._get_ggeur_adaptive_dp_cfg()
+        if dp_cfg is None or global_state is None or local_state is None:
+            return local_state, None
+        baseline = self._get_ggeur_dp_baseline(dp_cfg)
+        sigma = self._get_ggeur_dp_sigma(dp_cfg)
+        if baseline == "dpfl" and self._is_dpfl_gradient_noise_enabled(dp_cfg):
+            stats = getattr(self, "_dpfl_public_stats", None)
+            if stats is None:
+                raise RuntimeError("DPFL gradient statistics are missing")
+            return local_state, stats
+
+
+        from federatedscope.core.privacy.adaptive_dp import (
+            LocalAdaptiveClipper,
+            add_delta,
+            subtract_states,
+            sanitize_update,
+        )
+        if baseline in ["ldp_fed", "dpfl"] or str(getattr(getattr(dp_cfg, "clipping", None), "type", "fixed")).lower() == "fixed":
+            model_delta = subtract_states(local_state, global_state)
+            clip_bound = float(getattr(dp_cfg, "max_grad_norm", getattr(getattr(dp_cfg, "clipping", None), "initial_clip", 1.0)))
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(int(getattr(dp_cfg, "seed", 0)) + int(round_idx) * 100000 + int(self.ID))
+            protected_delta, private_stats = sanitize_update(
+                model_delta, clip_bound=clip_bound, noise_multiplier=sigma,
+                eps=float(getattr(dp_cfg, "eps", 1e-12)), generator=generator)
+            noise_variance = float(private_stats["noise_std"] ** 2)
+            mechanism = baseline + "_client_update_dp"
+            public_stats = {
+                "enabled": 1, "mechanism": mechanism,
+                "client_id": int(self.ID), "round": int(round_idx),
+                "clip_bound": float(private_stats["clip_bound"]),
+                "clip_factor": float(private_stats["clip_factor"]),
+                "clipped": int(bool(private_stats["clipped"])),
+                "noise_multiplier": float(sigma),
+                "noise_std": float(private_stats["noise_std"]),
+                "noise_variance": noise_variance}
+            logger.info("[%s] client=%s round=%s noise_std=%.6f noise_variance=%.6f", baseline.upper(), self.ID, round_idx, private_stats["noise_std"], noise_variance)
+            return add_delta(global_state, protected_delta), public_stats
+
+        if self._local_adaptive_clipper is None:
+            self._local_adaptive_clipper = LocalAdaptiveClipper.from_cfg(
+                dp_cfg)
+        self._local_adaptive_clipper.noise_multiplier = sigma
+
+        model_delta = subtract_states(local_state, global_state)
+        protected_delta, private_stats = \
+            self._local_adaptive_clipper.sanitize(
+                model_delta, round_idx=int(round_idx),
+                client_id=int(self.ID))
+        defended_state = add_delta(global_state, protected_delta)
+
+        public_stats = {
+            'enabled': 1,
+            'mechanism': private_stats['mechanism'],
+            'client_id': int(self.ID),
+            'round': int(round_idx),
+            'clip_bound': float(private_stats['clip_bound']),
+            'next_clip_bound': float(private_stats['next_clip_bound']),
+            'clip_factor': float(private_stats['clip_factor']),
+            'clipped': int(bool(private_stats['clipped'])),
+            'noise_multiplier': float(private_stats['noise_multiplier']),
+            'noise_std': float(private_stats['noise_std']),
+            'noise_variance': float(private_stats['noise_variance']),
+            'target_quantile': float(private_stats['target_quantile']),
+            'ema': float(private_stats['ema']),
+            'private_clip_update': int(bool(getattr(
+                dp_cfg, 'private_clip_update', True))),
+        }
+        if bool(getattr(dp_cfg, 'upload_private_stats', False)):
+            public_stats.update({
+                'raw_norm': float(private_stats['raw_norm']),
+                'sanitized_norm': float(
+                    private_stats['sanitized_norm']),
+            })
+
+        if bool(getattr(dp_cfg, 'log_private_stats', True)):
+            logger.info(
+                f"[AdaptiveDP] GGEUR client #{self.ID} round={round_idx} "
+                f"raw_norm={private_stats['raw_norm']:.6f}, "
+                f"clip={private_stats['clip_bound']:.6f}, "
+                f"next_clip={private_stats['next_clip_bound']:.6f}, "
+                f"factor={private_stats['clip_factor']:.6f}, "
+                f"noise_std={private_stats['noise_std']:.6f}, "
+                f"sanitized_norm={private_stats['sanitized_norm']:.6f}")
+        else:
+            logger.info(
+                f"[AdaptiveDP] GGEUR client #{self.ID} protected round "
+                f"{round_idx} with clip={private_stats['clip_bound']:.6f} "
+                f"and noise_std={private_stats['noise_std']:.6f}")
+        return defended_state, public_stats
 
     def _load_feature_extractor(self):
         """Load feature extractor (CLIP / CNN / timm based on config)"""
@@ -537,11 +824,6 @@ class GGEURClient(Client):
             subset_indices = None
             domain = getattr(dataset, 'domain', None)
 
-        # Load before cache lookup so embedding_dim reflects the real extractor
-        # output, not the config default from a previous backbone.
-        _timing_t0 = time.time()
-        self._load_feature_extractor()
-        timing_load_extractor += time.time() - _timing_t0
 
         cache_path = self._get_feature_cache_path(domain)
 
@@ -631,6 +913,9 @@ class GGEURClient(Client):
                 # Create a mini dataloader for samples to extract
                 batch_size = getattr(self.ggeur_cfg, 'extract_batch_size', 64)
                 use_fp16 = getattr(self.ggeur_cfg, 'use_fp16_extraction', True) and torch.cuda.is_available()
+                _timing_t0 = time.time()
+                self._load_feature_extractor()
+                timing_load_extractor += time.time() - _timing_t0
                 with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_fp16):
                     for i in range(0, len(base_indices_to_extract), batch_size):
                         batch_base_indices = base_indices_to_extract[i:i + batch_size]
@@ -767,8 +1052,49 @@ class GGEURClient(Client):
             f"classes={len(self.local_features)} feature_dim={self.embedding_dim}")
 
     def _extract_clip_features(self):
-        """Legacy method - now calls _extract_features()"""
-        self._extract_features()
+        """Extract features with an optional cross-process GPU lock.
+
+        In loopback distributed runs every client is a separate process. A
+        large backbone therefore cannot be loaded by all clients on the same
+        GPU at once. ``feature_extraction_lock_file`` serializes the expensive
+        load/forward/unload section while all clients remain connected to the
+        server.
+        """
+        lock_path = str(getattr(
+            self.ggeur_cfg, 'feature_extraction_lock_file', '') or '').strip()
+        lock_stream = None
+        try:
+            if lock_path:
+                import fcntl
+
+                lock_path = os.path.abspath(os.path.expanduser(lock_path))
+                os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+                lock_stream = open(lock_path, 'a+', encoding='utf-8')
+                logger.info(
+                    f"Client {self.ID}: Waiting for feature extraction lock "
+                    f"{lock_path}")
+                wait_start = time.time()
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+                logger.info(
+                    f"Client {self.ID}: Acquired feature extraction lock "
+                    f"after {time.time() - wait_start:.1f}s")
+
+            self._extract_features()
+        finally:
+            if lock_stream is not None:
+                try:
+                    if getattr(self.ggeur_cfg,
+                               'unload_extractor_after_cache', True):
+                        if not (self.use_cnn_distillation or
+                                self.use_feature_alignment):
+                            self._unload_feature_extractor()
+                finally:
+                    import fcntl
+
+                    fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+                    lock_stream.close()
+                    logger.info(
+                        f"Client {self.ID}: Released feature extraction lock")
 
     def _compute_local_statistics(self):
         """Compute local mean and covariance for each class"""
@@ -963,6 +1289,10 @@ class GGEURClient(Client):
         timing_total_start = time.time()
 
         content = message.content
+        if self._is_grnn_attack_enabled():
+            self._attack_last_batch_data = None
+            self._attack_cnn_gradients = None
+            self._attack_backbone_gradients = None
         _timing_t0 = time.time()
         self.global_cov_matrices = self._normalize_covariance_mapping(
             content.get('cov_matrices', {}))
@@ -1296,6 +1626,73 @@ class GGEURClient(Client):
             return mean + z * factor
         return mean + z @ factor.T
 
+    def _get_local_decoy_cfg(self):
+        return getattr(self.ggeur_cfg, 'local_decoy', None)
+
+    def _is_local_decoy_enabled(self):
+        decoy_cfg = self._get_local_decoy_cfg()
+        return decoy_cfg is not None and \
+            bool(getattr(decoy_cfg, 'use', False)) and \
+            int(getattr(decoy_cfg, 'num_per_class', 0)) > 0
+
+    def _generate_local_decoy_features(self):
+        """Generate editable-compatible fake samples from local class stats."""
+        if not self._is_local_decoy_enabled() or not self.local_features:
+            return None, None
+
+        decoy_cfg = self._get_local_decoy_cfg()
+        num_per_class = int(getattr(decoy_cfg, 'num_per_class', 0))
+        noise_scale = float(getattr(decoy_cfg, 'noise_scale', 0.15))
+        min_std = float(getattr(decoy_cfg, 'min_std', 1e-4))
+        max_total = int(getattr(decoy_cfg, 'max_total', 0))
+        seed_offset = int(getattr(decoy_cfg, 'seed_offset', 1701))
+        rng = np.random.default_rng(
+            int(getattr(self._cfg, 'seed', 0)) + seed_offset + int(self.ID))
+
+        all_local = [
+            np.asarray(features, dtype=np.float32)
+            for features in self.local_features.values()
+            if len(features) > 0
+        ]
+        if not all_local:
+            return None, None
+        global_std = np.maximum(
+            np.std(np.vstack(all_local), axis=0), min_std)
+
+        decoy_features = []
+        decoy_labels = []
+        for class_idx in sorted(self.local_features.keys()):
+            features = np.asarray(
+                self.local_features[class_idx], dtype=np.float32)
+            if features.size == 0:
+                continue
+            mean = np.mean(features, axis=0)
+            std = np.std(features, axis=0) \
+                if features.shape[0] > 1 else global_std
+            std = np.maximum(std, min_std)
+            samples = mean + rng.normal(
+                loc=0.0, scale=1.0,
+                size=(num_per_class, features.shape[1])) * std * noise_scale
+            decoy_features.append(samples.astype(np.float32))
+            decoy_labels.append(np.full(
+                num_per_class, int(class_idx), dtype=np.int64))
+
+        if not decoy_features:
+            return None, None
+        features = np.vstack(decoy_features)
+        labels = np.concatenate(decoy_labels)
+        if max_total > 0 and len(labels) > max_total:
+            indices = rng.choice(len(labels), size=max_total, replace=False)
+            features = features[indices]
+            labels = labels[indices]
+
+        logger.info(
+            f"Client {self.ID}: Generated local decoy features - "
+            f"samples={len(labels)}, classes={len(np.unique(labels))}, "
+            f"noise_scale={noise_scale}, train_with_decoy="
+            f"{bool(getattr(decoy_cfg, 'train_with_decoy', True))}")
+        return features, labels
+
     def _perform_augmentation(self):
         """Perform GGEUR_Clip feature augmentation"""
         augmentation_start = time.time()
@@ -1446,11 +1843,34 @@ class GGEURClient(Client):
 
         if all_features:
             _timing_t0 = time.time()
-            self.augmented_features = np.vstack(all_features)
-            self.augmented_labels = np.concatenate(all_labels)
+            base_features = np.vstack(all_features)
+            base_labels = np.concatenate(all_labels)
+            self.augmented_features = base_features
+            self.augmented_labels = base_labels
+            self.augmented_generated_mask = np.zeros(
+                len(base_labels), dtype=bool)
+            train_features = base_features
+            train_labels = base_labels
 
-            # Create data loader
-            dataset = AugmentedFeatureDataset(self.augmented_features, self.augmented_labels)
+            decoy_features, decoy_labels = \
+                self._generate_local_decoy_features()
+            if decoy_features is not None and len(decoy_labels) > 0:
+                self.augmented_features = np.vstack([
+                    base_features, decoy_features])
+                self.augmented_labels = np.concatenate([
+                    base_labels, decoy_labels])
+                self.augmented_generated_mask = np.concatenate([
+                    np.zeros(len(base_labels), dtype=bool),
+                    np.ones(len(decoy_labels), dtype=bool),
+                ])
+                if bool(getattr(
+                        self._get_local_decoy_cfg(),
+                        'train_with_decoy', True)):
+                    train_features = self.augmented_features
+                    train_labels = self.augmented_labels
+
+            # Create data loader. Decoys enter training only when configured.
+            dataset = AugmentedFeatureDataset(train_features, train_labels)
             self.augmented_loader = DataLoader(
                 dataset,
                 batch_size=self._cfg.dataloader.batch_size,
@@ -1458,12 +1878,18 @@ class GGEURClient(Client):
             )
             timing_dataset_build += time.time() - _timing_t0
 
-            if no_augmentation:
+            if no_augmentation and not self._is_local_decoy_enabled():
                 logger.info(f"Client {self.ID}: Original data - {self.augmented_features.shape[0]} samples, "
                             f"{len(np.unique(self.augmented_labels))} classes")
             else:
-                logger.info(f"Client {self.ID}: Augmented data - {self.augmented_features.shape[0]} samples, "
-                            f"{len(np.unique(self.augmented_labels))} classes")
+                generated_count = int(np.sum(
+                    self.augmented_generated_mask))
+                logger.info(
+                    f"Client {self.ID}: Augmented/decoy data - "
+                    f"attack_samples={self.augmented_features.shape[0]}, "
+                    f"train_samples={len(train_labels)}, "
+                    f"generated_samples={generated_count}, "
+                    f"classes={len(np.unique(self.augmented_labels))}")
             augmentation_elapsed = time.time() - augmentation_start
             aug_qps = (
                 self.augmented_features.shape[0] / augmentation_elapsed
@@ -2020,6 +2446,10 @@ class GGEURClient(Client):
         sender = message.sender
         timestamp = message.timestamp
         content = message.content
+        if self._is_grnn_attack_enabled():
+            self._attack_last_batch_data = None
+            self._attack_cnn_gradients = None
+            self._attack_backbone_gradients = None
 
         # Update state
         self.state = round_idx
@@ -2130,9 +2560,26 @@ class GGEURClient(Client):
                     # Backward compatibility: content is just MLP parameters
                     mlp_para = content
 
+        if mlp_para is not None:
+            mlp_para = recursive_param2tensor(mlp_para)
+        if cnn_para is not None:
+            cnn_para = recursive_param2tensor(cnn_para)
+
+        fedmia_global_mlp_para = None
+        if self.distributed_fedmia_reporter is not None and \
+                self.distributed_fedmia_reporter.should_report(round_idx):
+            fedmia_global_mlp_para = copy.deepcopy(mlp_para)
+
+        ppa_global_mlp_para = None
+        if self.distributed_ppa_reporter is not None and \
+                self.distributed_ppa_reporter.should_report(round_idx):
+            ppa_global_mlp_para = copy.deepcopy(mlp_para)
+
         # Load global prompt ctx if PromptFL enabled
         if self.use_promptfl and content is not None and isinstance(content, dict):
             prompt_para = content.get('prompt')
+            if prompt_para is not None:
+                prompt_para = recursive_param2tensor(prompt_para)
             if prompt_para is not None and self.prompt_learner is not None:
                 try:
                     ctx_tensor = prompt_para.get('ctx')
@@ -2229,7 +2676,54 @@ class GGEURClient(Client):
             else:
                 combined_para = {'mlp': combined_para, 'prompt': prompt_para}
 
-        # Send model parameters
+        defended_mlp_para, defense_stats = self._protect_mlp_for_upload(
+            mlp_para, mlp_model_para, round_idx)
+        if defense_stats is not None:
+            if isinstance(combined_para, dict) and 'mlp' in combined_para:
+                combined_para = copy.deepcopy(combined_para)
+                combined_para['mlp'] = defended_mlp_para
+            else:
+                combined_para = defended_mlp_para
+
+        # Attack reporters evaluate the exact model visible to the server.
+        if self.distributed_fedmia_reporter is not None:
+            self.distributed_fedmia_reporter.report(
+                round_idx=round_idx,
+                server_id=sender,
+                timestamp=timestamp,
+                global_state=fedmia_global_mlp_para,
+                local_state=defended_mlp_para,
+            )
+
+        if self.distributed_ppa_reporter is not None:
+            self.distributed_ppa_reporter.report(
+                round_idx=round_idx,
+                server_id=sender,
+                timestamp=timestamp,
+                global_state=ppa_global_mlp_para,
+                local_state=defended_mlp_para,
+            )
+
+        # GRNN sees only the image branch payload. Under DP, expose a
+        # sanitized CNN state and let the server infer sanitized gradients.
+        if self._is_grnn_attack_enabled() and isinstance(combined_para, dict) and \
+                combined_para.get("cnn") is not None:
+            if self._get_ggeur_adaptive_dp_cfg() is not None:
+                combined_para = copy.deepcopy(combined_para)
+                protected_cnn, _ = self._protect_grnn_cnn_for_upload(
+                    cnn_para, combined_para["cnn"], round_idx)
+                combined_para["cnn"] = protected_cnn
+                upload_content = (sample_size, combined_para,
+                                  {"cnn": None}, None)
+            else:
+                upload_content = (sample_size, combined_para,
+                                  {"cnn": self._attack_cnn_gradients},
+                                  self._attack_last_batch_data)
+        elif defense_stats is not None:
+            upload_content = (sample_size, combined_para, defense_stats)
+        else:
+            upload_content = (sample_size, combined_para)
+
         self.comm_manager.send(
             Message(
                 msg_type='model_para',
@@ -2237,7 +2731,7 @@ class GGEURClient(Client):
                 receiver=[sender],
                 state=self.state,
                 timestamp=timestamp,
-                content=(sample_size, combined_para)
+                content=upload_content
             )
         )
 
@@ -2443,6 +2937,10 @@ class GGEURClient(Client):
         sender = message.sender
         timestamp = message.timestamp
         content = message.content
+        if self._is_grnn_attack_enabled():
+            self._attack_last_batch_data = None
+            self._attack_cnn_gradients = None
+            self._attack_backbone_gradients = None
 
         # Parse phase from content
         if isinstance(content, dict) and 'phase' in content:
@@ -2584,6 +3082,8 @@ class GGEURClient(Client):
         - CNN backbone must produce CLIP-like features for classifier to work
         - Without alignment, CNN features are in a completely different space
         """
+        ce_only_image_branch = bool(getattr(self.ggeur_cfg, "grnn_ce_only_image_branch", False))
+
         if self.cnn_backbone is None or self.pretrained_classifier is None:
             logger.warning(f"Client {self.ID}: CNN backbone or classifier not ready")
             return 0, {}, {}
@@ -2593,11 +3093,11 @@ class GGEURClient(Client):
             return 0, {}, {}
 
         # Load CLIP model for feature alignment (CRITICAL!)
-        if self.clip_model is None:
+        if not ce_only_image_branch and self.clip_model is None:
             logger.info(f"Client {self.ID}: Loading CLIP model for feature alignment...")
             self._load_clip_model()
 
-        if self.clip_model is None:
+        if not ce_only_image_branch and self.clip_model is None:
             logger.warning(f"Client {self.ID}: CLIP model not available, training without alignment")
 
         # Training settings
@@ -2810,6 +3310,9 @@ class GGEURClient(Client):
         total_samples = 0
 
         local_epochs = self._cfg.train.local_update_steps
+        dpfl_event_idx = 0
+        if self._is_dpfl_gradient_noise_enabled():
+            self._begin_dpfl_gradient_stats()
 
         for epoch in range(local_epochs):
             for features, labels in self.augmented_loader:
@@ -2919,6 +3422,8 @@ class GGEURClient(Client):
                 if use_moon:
                     loss = loss + moon_mu * moon_loss
                 loss.backward()
+                self._apply_dpfl_gradient_noise(self.mlp_classifier, dpfl_event_idx)
+                dpfl_event_idx += 1
                 optimizer.step()
 
                 batch_size = features.size(0)
@@ -2950,6 +3455,7 @@ class GGEURClient(Client):
         else:
             logger.info(f"Client {self.ID}: Train loss={avg_loss:.4f}, accuracy={accuracy:.4f}")
 
+        self._finalize_dpfl_gradient_stats()
         # Get model parameters
         model_para = copy.deepcopy(self.mlp_classifier.state_dict())
 
@@ -3050,12 +3556,14 @@ class GGEURClient(Client):
             cnn_para: CNN model parameters
             results: Training results dict
         """
+        ce_only_image_branch = bool(getattr(self.ggeur_cfg, "grnn_ce_only_image_branch", False))
+
         if self.cnn_model is None or self.original_image_loader is None:
             logger.warning(f"Client {self.ID}: CNN or image loader not ready")
             return 0, {}, {}
 
         # Ensure CLIP model is loaded (may not be loaded if features were cached)
-        if self.clip_model is None:
+        if not ce_only_image_branch and self.clip_model is None:
             logger.info(f"Client {self.ID}: Loading CLIP model for CNN distillation...")
             self._load_clip_model()
 
@@ -3072,7 +3580,8 @@ class GGEURClient(Client):
 
         self.cnn_model.train()
         self.mlp_classifier.eval()  # Teacher is frozen
-        self.clip_model.eval()
+        if self.clip_model is not None:
+            self.clip_model.eval()
 
         # Use differential learning rates: lower for backbone, higher for classifier
         backbone_params = []
@@ -3216,16 +3725,18 @@ class GGEURClient(Client):
             cnn_para: CNN model parameters
             results: Training results dict
         """
+        ce_only_image_branch = bool(getattr(self.ggeur_cfg, "grnn_ce_only_image_branch", False))
+
         if self.cnn_model is None or self.original_image_loader is None:
             logger.warning(f"Client {self.ID}: CNN or image loader not ready")
             return 0, {}, {}
 
         # Ensure CLIP model is loaded
-        if self.clip_model is None:
+        if not ce_only_image_branch and self.clip_model is None:
             logger.info(f"Client {self.ID}: Loading CLIP model for feature alignment...")
             self._load_clip_model()
 
-        if self.clip_model is None:
+        if not ce_only_image_branch and self.clip_model is None:
             logger.warning(f"Client {self.ID}: CLIP model not available")
             return 0, {}, {}
 
@@ -3237,7 +3748,8 @@ class GGEURClient(Client):
         prototype_weight = getattr(self.ggeur_cfg, 'prototype_align_weight', 0.5)
 
         self.cnn_model.train()
-        self.clip_model.eval()
+        if self.clip_model is not None:
+            self.clip_model.eval()
 
         # Optimizer
         optimizer = torch.optim.SGD(
@@ -3253,7 +3765,7 @@ class GGEURClient(Client):
 
         # Convert global prototypes to tensor
         prototype_tensor = None
-        if use_prototype_align and self.global_prototypes:
+        if not ce_only_image_branch and use_prototype_align and self.global_prototypes:
             num_classes = self._cfg.model.num_classes
             clip_dim = getattr(self.ggeur_cfg, 'embedding_dim', 512)
             prototype_tensor = torch.zeros(num_classes, clip_dim).to(self.device)
@@ -3289,11 +3801,14 @@ class GGEURClient(Client):
 
                 images = images.to(self.device)
                 labels = labels.to(self.device)
+                self._record_attack_last_batch(images, labels)
 
-                # Get CLIP features (target for alignment)
-                with torch.no_grad():
-                    clip_features = self.clip_model.encode_image(images).float()
-                    clip_features_norm = F.normalize(clip_features, p=2, dim=1)
+                clip_features_norm = None
+                if not ce_only_image_branch:
+                    # Get CLIP features only when alignment is enabled.
+                    with torch.no_grad():
+                        clip_features = self.clip_model.encode_image(images).float()
+                        clip_features_norm = F.normalize(clip_features, p=2, dim=1)
 
                 # Forward pass through CNN
                 optimizer.zero_grad()
@@ -3304,7 +3819,10 @@ class GGEURClient(Client):
                 ce_loss = ce_criterion(logits, labels)
 
                 # Feature alignment loss (align CNN features with CLIP features)
-                align_loss = mse_criterion(proj_features_norm, clip_features_norm)
+                if ce_only_image_branch:
+                    align_loss = torch.tensor(0.0, device=self.device)
+                else:
+                    align_loss = mse_criterion(proj_features_norm, clip_features_norm)
 
                 # Prototype alignment loss (optional)
                 proto_loss = torch.tensor(0.0).to(self.device)
@@ -3321,6 +3839,7 @@ class GGEURClient(Client):
 
                 # Backward and optimize
                 loss.backward()
+                self._record_attack_branch_gradients(self.cnn_model, "cnn")
                 torch.nn.utils.clip_grad_norm_(self.cnn_model.parameters(), max_norm=1.0)
                 optimizer.step()
 

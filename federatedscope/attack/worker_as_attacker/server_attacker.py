@@ -7,6 +7,9 @@ from federatedscope.attack.auxiliary.utils import get_data_sav_fn, \
     get_reconstructor
 
 import logging
+import json
+import math
+from pathlib import Path
 
 import torch
 import numpy as np
@@ -196,45 +199,126 @@ class PassiveServer(Server):
         self.state_to_reconstruct = state_to_reconstruct
         self.client_to_reconstruct = client_to_reconstruct
         self.reconstruct_data = dict()
+        self.data = data
+        self.full_msg_buffer = dict()
 
         # the loss function of the global model; the global model can be
         # obtained in self.aggregator.model
         self.model_criterion = get_criterion(self._cfg.criterion.type,
                                              device=self.device)
 
-        from federatedscope.attack.auxiliary.utils import get_data_info
-        self.data_dim, self.num_class, self.is_one_hot_label = get_data_info(
-            self._cfg.data.type)
-
-        self.reconstructor = self._get_reconstructor()
-
-        self.reconstructed_data_sav_fn = get_data_sav_fn(self._cfg.data.type)
+        if self.atk_method.lower() in ['fedmia', 'ggeur_fedmia']:
+            self.data_dim, self.num_class, self.is_one_hot_label = None, None, None
+            self.reconstructor = None
+            self.reconstructed_data_sav_fn = None
+        else:
+            from federatedscope.attack.auxiliary.utils import get_data_info
+            self.data_dim, self.num_class, self.is_one_hot_label = get_data_info(
+                self._cfg.data.type)
+            self.reconstructor = self._get_reconstructor()
+            self.reconstructed_data_sav_fn = get_data_sav_fn(self._cfg.data.type)
 
         self.reconstruct_data_summary = dict()
+        self.grnn_psnr_threshold = float(getattr(
+            self._cfg.attack, 'grnn_psnr_threshold', 0.9))
+        self.grnn_psnr_values = []
+
+    def _record_grnn_success(self, reconstruction, original):
+        """Record PSNR-based GRNN success as soon as a reference is available."""
+        if self.atk_method.lower() != 'grnn' or original is None:
+            return
+        try:
+            recon = reconstruction.detach().float().cpu()
+            ref = original.detach().float().cpu()
+            if recon.ndim == 3:
+                recon = recon.unsqueeze(0)
+            if ref.ndim == 3:
+                ref = ref.unsqueeze(0)
+            count = min(recon.shape[0], ref.shape[0])
+            if count == 0:
+                return
+            ref = ref[:count].clamp(0.0, 1.0)
+            recon = recon[:count].clamp(0.0, 1.0)
+            if ref.shape[-2:] != recon.shape[-2:]:
+                ref = torch.nn.functional.interpolate(
+                    ref, size=recon.shape[-2:], mode='bilinear',
+                    align_corners=False)
+            mse = (ref - recon).pow(2).flatten(1).mean(1)
+            psnr = 10.0 * torch.log10(1.0 / mse.clamp_min(1.0e-12))
+            self.grnn_psnr_values.extend(float(v) for v in psnr.tolist()
+                                         if math.isfinite(float(v)))
+            total = len(self.grnn_psnr_values)
+            successful = sum(v > self.grnn_psnr_threshold
+                             for v in self.grnn_psnr_values)
+            summary = {
+                'metric': 'psnr_db',
+                'success_rule': f'PSNR > {self.grnn_psnr_threshold}',
+                'threshold': self.grnn_psnr_threshold,
+                'total_reconstructions': total,
+                'successful_reconstructions': successful,
+                'failed_reconstructions': total - successful,
+                'attack_success_rate': successful / total,
+                'attack_success_rate_percent': successful / total * 100.0,
+                'mean_psnr_db': sum(self.grnn_psnr_values) / total,
+                'psnr_values_db': self.grnn_psnr_values,
+            }
+            path = Path(self._cfg.outdir) / 'grnn_attack_success_summary.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(summary, indent=2) + '\\n',
+                            encoding='utf-8')
+            logger.info('[GRNN] PSNR success: %s/%s (%.2f%%), threshold=%.3f',
+                        successful, total, summary['attack_success_rate_percent'],
+                        self.grnn_psnr_threshold)
+        except Exception as exc:
+            logger.warning('[GRNN] Failed to record PSNR success: %s', exc)
 
     def _get_reconstructor(self):
 
-        return get_reconstructor(
-            self.atk_method,
-            max_ite=self._cfg.attack.max_ite,
-            lr=self._cfg.attack.reconstruct_lr,
-            federate_loss_fn=self.model_criterion,
-            device=self.device,
-            federate_lr=self._cfg.train.optimizer.lr,
-            optim=self._cfg.attack.reconstruct_optim,
-            info_diff_type=self._cfg.attack.info_diff_type,
-            federate_method=self._cfg.federate.method,
-            alpha_TV=self._cfg.attack.alpha_TV)
+        if self.atk_method.lower() in ['fedmia', 'ggeur_fedmia']:
+            return None
 
-    def _reconstruct(self, model_para, batch_size, state, sender):
+        reconstructor_kwargs = {
+            'max_ite': self._cfg.attack.max_ite,
+            'lr': self._cfg.attack.reconstruct_lr,
+            'federate_loss_fn': self.model_criterion,
+            'device': self.device,
+            'federate_lr': self._cfg.train.optimizer.lr,
+            'optim': self._cfg.attack.reconstruct_optim,
+            'info_diff_type': self._cfg.attack.info_diff_type,
+            'federate_method': self._cfg.federate.method,
+            'alpha_TV': self._cfg.attack.alpha_TV
+        }
+        if self.atk_method.lower() == 'grnn':
+            reconstructor_kwargs.update({
+                'g_in': self._cfg.attack.get('grnn_g_in', 128),
+                'tv_weight': self._cfg.attack.get('grnn_tv_weight', 1e-6),
+                'use_wd': self._cfg.attack.get('grnn_use_wd', False),
+                'dataset_name': self._cfg.data.type
+            })
+
+        return get_reconstructor(self.atk_method, **reconstructor_kwargs)
+
+    def _reconstruct(self, model_para, batch_size, state, sender,
+                     gradients=None):
         logger.info('-------- reconstruct round:{}, client:{}---------'.format(
             state, sender))
+        if gradients is not None:
+            logger.info('Using real gradients from client for reconstruction')
+        else:
+            logger.info('No real gradients available; using parameter diff')
+
+        reconstruct_kwargs = {
+            'model': copy.deepcopy(self.model).to(torch.device(self.device)),
+            'original_info': model_para,
+            'data_feature_dim': self.data_dim,
+            'num_class': self.num_class,
+            'batch_size': batch_size
+        }
+        if self.atk_method.lower() == 'grnn':
+            reconstruct_kwargs['real_gradients'] = gradients
+
         dummy_data, dummy_label = self.reconstructor.reconstruct(
-            model=copy.deepcopy(self.model).to(torch.device(self.device)),
-            original_info=model_para,
-            data_feature_dim=self.data_dim,
-            num_class=self.num_class,
-            batch_size=batch_size)
+            **reconstruct_kwargs)
         if state not in self.reconstruct_data.keys():
             self.reconstruct_data[state] = dict()
         self.reconstruct_data[state][sender] = [
@@ -252,9 +336,26 @@ class PassiveServer(Server):
             if sender_list is None:
                 sender_list = self.msg_buffer['train'][state].keys()
             for sender in sender_list:
-                content = self.msg_buffer['train'][state][sender]
-                self._reconstruct(model_para=content[1],
-                                  batch_size=content[0],
+                if state in self.full_msg_buffer and \
+                        sender in self.full_msg_buffer[state]:
+                    full_content = self.full_msg_buffer[state][sender]
+                    sample_size = full_content[0]
+                    model_para = full_content[1]
+                    gradients = full_content[2] if len(full_content) > 2 else None
+                else:
+                    content = self.msg_buffer['train'][state][sender]
+                    sample_size = content[0]
+                    model_para = content[1]
+                    gradients = None
+
+                if self.atk_method.lower() == 'grnn':
+                    batch_size = min(sample_size, self._cfg.dataloader.batch_size)
+                else:
+                    batch_size = sample_size
+
+                self._reconstruct(model_para=model_para,
+                                  batch_size=batch_size,
+                                  gradients=gradients,
                                   state=state,
                                   sender=sender)
 
@@ -266,7 +367,14 @@ class PassiveServer(Server):
         self.sampler.change_state(sender, 'idle')
         if round not in self.msg_buffer['train']:
             self.msg_buffer['train'][round] = dict()
-        self.msg_buffer['train'][round][sender] = content
+        if round not in self.full_msg_buffer:
+            self.full_msg_buffer[round] = dict()
+        self.full_msg_buffer[round][sender] = content
+
+        if isinstance(content, (tuple, list)) and len(content) >= 2:
+            self.msg_buffer['train'][round][sender] = content[:2]
+        else:
+            self.msg_buffer['train'][round][sender] = content
 
         # run reconstruction before the clear of self.msg_buffer
         if 'DLG_loss' not in self.best_results.keys():
@@ -281,17 +389,104 @@ class PassiveServer(Server):
                 self.run_reconstruct(state_list=[message.state],
                                      sender_list=[message.sender])
                 logger.info(
-                    'Finish DLG attack; Final DLG reconstruction loss: {}'.
-                    format(self.reconstructor.dlg_recover_loss))
+                    'Finish {} attack; Final reconstruction loss: {}'.
+                    format(self.atk_method.upper(),
+                           self.reconstructor.dlg_recover_loss))
                 self.best_results['DLG_loss'][round][
                     sender] = self.reconstructor.dlg_recover_loss
                 if self.reconstructed_data_sav_fn is not None:
+                    dummy_data, dummy_label = self.reconstruct_data[message.state][message.sender]
+
+                    # 将标签转换成字符串（支持单个或多个标签）
+                    if dummy_label.numel() == 1:
+                        label_str = str(dummy_label.item())
+                    else:
+                        label_str = '_'.join(map(str, dummy_label.cpu().numpy()))
+
+                    filename = f'image_state_{message.state}_client_{message.sender}_label_{label_str}.png'
+
+                    # 尝试从客户端发送的数据中获取原始训练批次
+                    original_data = None
+                    try:
+                        # content格式: (sample_size, shared_model_para, gradients, last_batch_data)
+                        # last_batch_data是tuple: (data, labels) 或 None
+                        if len(content) >= 4 and content[3] is not None:
+                            last_batch_data = content[3]
+                            if isinstance(last_batch_data, tuple) and len(last_batch_data) == 2:
+                                original_data, original_labels = last_batch_data
+                                logger.info(f"[Original Data] Retrieved from client: shape={original_data.shape}, labels={original_labels}")
+                            else:
+                                logger.warning(f"[Original Data] Invalid format from client: {type(last_batch_data)}")
+                        else:
+                            logger.info(f"[Original Data] Client did not send original batch data, falling back to dataset search")
+
+                            # 后备方案：从数据集中查找同标签样本
+                            target_label = dummy_label.item() if dummy_label.numel() == 1 else dummy_label[0].item()
+
+                            if self.data is not None and sender in self.data:
+                                client_data = self.data[sender]
+
+                                if 'train' in client_data and client_data['train'] is not None:
+                                    train_loader = client_data['train']
+
+                                    # Try to find a sample with matching label
+                                    found_match = False
+                                    for batch in train_loader:
+                                        if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                                            batch_data, batch_labels = batch[0], batch[1]
+
+                                            # Look for matching label in this batch
+                                            for i in range(len(batch_labels)):
+                                                if batch_labels[i].item() == target_label:
+                                                    original_data = batch_data[i:i+1]
+                                                    found_match = True
+                                                    logger.info(f"[Original Data] Found matching label {target_label} in dataset")
+                                                    break
+
+                                            if found_match:
+                                                break
+
+                                    # Fallback to first sample if no match found
+                                    if not found_match and original_data is None:
+                                        # 尝试获取第一个batch的第一个样本
+                                        for batch in train_loader:
+                                            if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                                                batch_data, batch_labels = batch[0], batch[1]
+                                                if len(batch_data) > 0:
+                                                    original_data = batch_data[:1]
+                                                    logger.warning(f"[Original Data] No matching label {target_label}, using first sample")
+                                                    break
+
+                                    if original_data is not None:
+                                        logger.info(f"[Original Data] From dataset: shape={original_data.shape}")
+                    except Exception as e:
+                        logger.warning(f"[Original Data] Failed to retrieve: {e}")
+                        import traceback
+                        logger.warning(traceback.format_exc())
+                        original_data = None
+
+                    logger.info(f"[Save Image] original_data: {'provided' if original_data is not None else 'None'}")
+
+                    self._record_grnn_success(dummy_data, original_data)
+
                     self.reconstructed_data_sav_fn(
-                        data=self.reconstruct_data[message.state][
-                            message.sender][0],
+                        data=dummy_data,
                         sav_pth=self._cfg.outdir,
-                        name='image_state_{}_client_{}.png'.format(
-                            message.state, message.sender))
+                        name=filename,
+                        original_data=original_data)
+
+                    # 保存后立即清理，释放内存
+                    del dummy_data, dummy_label
+                    if original_data is not None:
+                        del original_data
+                    # 清理重构数据缓存
+                    if message.state in self.reconstruct_data:
+                        if message.sender in self.reconstruct_data[message.state]:
+                            del self.reconstruct_data[message.state][message.sender]
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
         self.check_and_move_on()
 

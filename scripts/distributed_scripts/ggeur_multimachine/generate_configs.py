@@ -220,6 +220,28 @@ def base_config(args, dataset, model, method):
     if args.head_only:
         apply_head_only(cfg, args)
 
+    if args.distributed_fedmia:
+        cfg['attack'] = {
+            'distributed_fedmia': True,
+            'fedmia_target_client_id': args.fedmia_target_client_id,
+            'fedmia_probe_size': args.fedmia_probe_size,
+            'fedmia_nonmember_size': args.fedmia_nonmember_size,
+            'fedmia_save_interval': args.fedmia_save_interval,
+            'fedmia_store_grad_cos': args.fedmia_store_grad_cos,
+            'fedmia_round_agg': args.fedmia_round_agg,
+            'fedmia_i_round_agg': args.fedmia_round_agg,
+            'fedmia_shadow_stat_mode': args.fedmia_shadow_stat_mode,
+            'fedmia_var_floor': args.fedmia_var_floor,
+            'fedmia_compute_all_clients': args.fedmia_compute_all_clients,
+            'mode': args.fedmia_mode,
+            'mix_length': args.fedmia_mix_length,
+            'ggeur_target_size': args.fedmia_ggeur_target_size,
+            'ggeur_normalize_fields': args.fedmia_normalize_fields,
+            'fedmia_use_augmented_nonmember': False,
+            'fedmia_use_image_aug_member': False,
+            'fedmia_cross_eval': args.fedmia_cross_eval,
+        }
+
     return cfg
 
 
@@ -455,6 +477,33 @@ def parse_args():
     parser.add_argument('--headonly-eval-mode',
                         choices=['server', 'client'],
                         default='server')
+    parser.add_argument('--distributed-fedmia', action='store_true',
+                        help='Enable multi-machine FedMIA-I/II reporting')
+    parser.add_argument('--fedmia-target-client-id', type=int, default=1)
+    parser.add_argument('--fedmia-probe-size', type=int, default=32)
+    parser.add_argument('--fedmia-nonmember-size', type=int, default=32)
+    parser.add_argument('--fedmia-save-interval', type=int, default=5)
+    parser.add_argument('--fedmia-store-grad-cos', action='store_true',
+                        default=True)
+    parser.add_argument('--no-fedmia-store-grad-cos',
+                        dest='fedmia_store_grad_cos', action='store_false')
+    parser.add_argument('--fedmia-round-agg',
+                        choices=['mean', 'min', 'max', 'last'],
+                        default='mean')
+    parser.add_argument('--fedmia-shadow-stat-mode',
+                        choices=['global', 'indexed'], default='global')
+    parser.add_argument('--fedmia-var-floor', type=float, default=1e-8)
+    parser.add_argument('--fedmia-compute-all-clients', action='store_true')
+    parser.add_argument('--fedmia-mode', choices=['test', 'mix'],
+                        default='mix')
+    parser.add_argument('--fedmia-mix-length', type=int, default=1000)
+    parser.add_argument('--fedmia-ggeur-target-size', type=int, default=200)
+    parser.add_argument('--fedmia-normalize-fields', nargs='*',
+                        default=['train_losses'])
+    parser.add_argument('--fedmia-cross-eval', action='store_true',
+                        default=True)
+    parser.add_argument('--no-fedmia-cross-eval',
+                        dest='fedmia_cross_eval', action='store_false')
     args = parser.parse_args()
     if args.feature_cache_version:
         args.headonly_cache_version = args.feature_cache_version

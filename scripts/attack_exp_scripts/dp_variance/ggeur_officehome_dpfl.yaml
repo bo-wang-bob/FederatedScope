@@ -1,0 +1,129 @@
+# True GGEUR OfficeHome DP baseline for FederatedScope-feature-GGEUR
+#
+# Attack hooks are disabled. This file is for defense/noise comparison only.
+
+use_gpu: True
+device: 0
+seed: 12345
+verbose: 1
+
+early_stop:
+  patience: 0
+
+federate:
+  method: 'ggeur'
+  mode: 'standalone'
+  client_num: 60
+  sample_client_num: 60
+  total_round_num: 100
+  make_global_eval: False
+
+data:
+  type: 'office-home'
+  root: '/root/autodl-tmp/zqq/OfficeHomeDataset_10072016'
+  splits: [0.7, 0.0, 0.3]
+
+dataloader:
+  batch_size: 8
+  num_workers: 0
+
+model:
+  type: 'ggeur_mlp'
+  num_classes: 65
+
+train:
+  local_update_steps: 1
+  batch_or_epoch: epoch
+  optimizer:
+    type: Adam
+    lr: 0.001
+    weight_decay: 0.0
+
+criterion:
+  type: CrossEntropyLoss
+
+trainer:
+  type: ggeur
+
+eval:
+  freq: 5
+  metrics: ['acc', 'correct']
+  best_res_update_round_wise_key: test_acc
+
+# DPFL baseline: client-side batch-gradient clipping and Gaussian noise.
+# Only this config opts into gradient perturbation; other DP paths are unchanged.
+# noise_multiplier=0.0 triggers sigma calibration from epsilon/delta/T/q.
+dp:
+  enabled: True
+  baseline: dpfl
+  dpfl_noise_location: gradient
+  level: client_update
+  mechanism: gaussian
+  accountant: rdp
+  epsilon: 6.0
+  delta: 1e-5
+  noise_multiplier: 0.0
+  accountant_sample_rate: 0.1
+  max_grad_norm: 1.0
+  protect_ggeur_update: True
+  private_clip_update: False
+  upload_private_stats: False
+  log_private_stats: True
+  seed: 12345
+  clipping:
+    type: fixed
+    initial_clip: 1.0
+
+# Explicitly disable attack hooks. FederatedScope defaults enable modular
+# FedMIA plugins, so this block is required for a DP-only comparison run.
+attack:
+  attack_method: ''
+  modular_attacks: False
+  attack_plugins: []
+
+# Real GGEUR settings
+# - use CLIP/CNN feature extraction on Office-Home images
+# - round 0 statistics collection happens here
+# - the client code now tolerates missing statistics_round via getattr,
+#   but we still set it explicitly for clarity.
+ggeur:
+  use: True
+  feature_extractor: 'cnn'
+  cnn_backbone: 'convnext_base'
+  cnn_pretrained: True
+  freeze_backbone: True
+  embedding_dim: 1024
+  use_feature_cache: False
+  feature_cache_dir: ''
+  num_generated_per_sample: 0
+  num_generated_per_prototype: 0
+  target_size_per_class: 0
+  mlp_hidden_dim: 0
+  mlp_dropout: 0
+  mlp_weight_decay: 0
+  mlp_label_smoothing: 0
+  mlp_l2_reg: 0.0
+  use_cross_client_prototypes: True
+  statistics_round: 0
+  use_fedproto: False
+  use_lds: True
+  lds_alpha: 0.1
+  lds_seed: 42
+  use_cnn_distillation: False
+  use_feature_alignment: False
+  use_separated_training: False
+  cnn_model: 'convnext_base'
+  cnn_lr: 0.01
+  cnn_local_epochs: 1
+  cnn_warmup_rounds: 0
+  local_decoy:
+    use: False
+    train_with_decoy: True
+    num_per_class: 60
+    noise_scale: 0.7
+    min_std: 0.0001
+    max_total: 0
+    seed_offset: 1701
+
+outdir: 'exp/dp_variance/dpfl'
+expname: 'ggeur_officehome_dpfl_client_calibrated_sigma'
