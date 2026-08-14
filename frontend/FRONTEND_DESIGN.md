@@ -8,7 +8,9 @@
 
 ## 2. 核心场景
 
-系统模拟多个军事域协同训练一个联合模型。每个域包含多个军事节点，并同时存在两层异构：
+系统模拟多个军事域协同训练一个联合模型。前端以“汇聚全域信息、形成统一认知、支撑智能协同”为核心叙事。这里的“汇聚”是对各域训练结果、统计摘要、状态和风险的统一呈现，不代表集中上传各节点原始数据。
+
+每个域包含一个模拟域子服务器和多个模拟军事节点，并同时存在两层异构：
 
 1. 域间特征异构：不同域采集的数据模态、特征维度、采样频率和语义空间不同。
 2. 域内分布异构：同一域内不同节点的样本量、类别比例、质量和时间分布不均衡。
@@ -24,11 +26,64 @@
 
 前端需要把“两层异构”作为首页视觉背景和所有实验页面的共同上下文，而不是只显示一组普通训练曲线。
 
+### 2.1 全域信息汇聚到智能协同
+
+页面叙事分为四层：
+
+1. 全域感知：汇总各域、各节点的数据特征、分布和运行状态。
+2. 分层汇聚：域内节点先汇聚到域子服务器，再由各域子服务器汇聚到中央服务器。
+3. 统一认知：中央视图形成跨域模型状态、异构态势、隐私风险和攻击风险摘要。
+4. 智能协同：将新的全局模型状态逐级下发，使所有域和节点进入下一轮协同训练。
+
+首页主标题建议使用“全域信息汇聚 · 跨域智能协同”，副标题说明系统在不汇集原始数据的前提下展示跨域联合学习能力。
+
+### 2.2 三级模拟结构
+
+三级结构只用于前端演示和态势表达：
+
+```mermaid
+flowchart TB
+    C[中央服务器]
+    S1[态势感知域子服务器]
+    S2[电磁感知域子服务器]
+    S3[无人平台域子服务器]
+    S4[指挥决策域子服务器]
+    N11[域内节点 01]
+    N12[域内节点 02]
+    N21[域内节点 01]
+    N22[域内节点 02]
+    N31[域内节点 01]
+    N32[域内节点 02]
+    N41[域内节点 01]
+    N42[域内节点 02]
+
+    C <--> S1
+    C <--> S2
+    C <--> S3
+    C <--> S4
+    S1 <--> N11
+    S1 <--> N12
+    S2 <--> N21
+    S2 <--> N22
+    S3 <--> N31
+    S3 <--> N32
+    S4 <--> N41
+    S4 <--> N42
+```
+
+- 第一级：一个中央服务器，展示全域聚合、全局状态和统一下发。
+- 第二级：每个军事域一个域子服务器，展示域内接收、域内聚合、向上上传和向下广播。
+- 第三级：每个域内多个逻辑节点，展示本地训练、上传进度、风险和防御状态。
+
+后端仍执行现有单机联邦训练，不增加分层聚合实现。前端通过“分层态势投影器”把扁平的客户端训练事件组织成三级展示事件。所有派生出的子服务器聚合结果必须标记为“前端模拟”，不得被解释为后端真实计算结果。
+
 ## 3. 产品目标
 
 ### 3.1 必须展示的能力
 
 - 多军事域、域内多节点的联邦拓扑。
+- 中央服务器、域子服务器、域内节点组成的三级拓扑。
+- 域内先聚合、中央再聚合，以及中央逐级下发的动态过程。
 - 域间数据模态和特征空间差异。
 - 域内样本量与标签分布不均衡。
 - 异构解决方案的两阶段过程。
@@ -37,6 +92,8 @@
 - 后门、标签污染和模型更新污染等攻击模拟。
 - 无防御、仅训练阶段防御、双阶段防御的对照。
 - 全局、域级和节点级指标联动。
+- 节点编号、在线状态、训练状态、通信状态和恶意真值。
+- 三类隐私攻击的独立效果面板和保护前后对比。
 - 实验配置、启动、暂停、回放、比较和报告导出。
 
 ### 3.2 明确不做的内容
@@ -45,6 +102,7 @@
 - 不接入真实军事数据、坐标、装备编号或任务计划。
 - 不展示可直接复用的攻击载荷或敏感操作细节。
 - 不在浏览器内执行模型训练；前端只负责配置、控制和展示。
+- 不要求后端实现域子服务器或真实分层聚合。
 
 ## 4. 实验主流程
 
@@ -62,6 +120,26 @@ flowchart LR
     F --> G[实时监控与节点追踪]
     G --> H[结果对比与报告]
 ```
+
+每轮训练在三级拓扑中的展示顺序：
+
+```mermaid
+sequenceDiagram
+    participant C as 中央服务器
+    participant S as 域子服务器
+    participant N as 域内节点
+    C->>S: 下发全局模型状态
+    S->>N: 向域内节点广播
+    N->>N: 本地训练或特征统计
+    N->>S: 上传节点更新与状态摘要
+    S->>S: 模拟域内聚合
+    S->>C: 上传域级聚合摘要
+    C->>C: 模拟全域聚合
+    C->>S: 下发新一轮全局状态
+    S->>N: 转发到域内节点
+```
+
+动画不能暗示浏览器完成了聚合计算。拓扑上固定显示“展示模拟”标识，详情面板同时给出后端原始轮次与前端派生阶段。
 
 模式约束：
 
@@ -81,6 +159,7 @@ flowchart LR
 | `/heterogeneity` | 异构分析 | 对比域间特征与域内分布，查看处理前后变化 |
 | `/experiments/new` | 实验配置 | 选择普通、隐私或后门模式，配置保护与防御 |
 | `/experiments/:id/live` | 运行监控 | 查看阶段、轮次、节点上传、过滤决策和指标 |
+| `/experiments/:id/privacy` | 隐私攻击效果 | 分别展示三类隐私攻击的模拟结果及保护效果 |
 | `/experiments/:id/compare` | 对照分析 | 比较无防御与有防御、保护前与保护后 |
 | `/reports` | 实验报告 | 查询历史任务、导出图表和配置摘要 |
 | `/settings` | 系统设置 | 设置 API 地址、刷新频率、主题和演示数据源 |
@@ -94,18 +173,67 @@ flowchart LR
 布局：
 
 1. 顶部任务栏：场景名称、实验模式、运行阶段、当前轮次、运行/暂停按钮。
-2. 左侧主区域：多军事域联邦拓扑图。
-3. 右侧摘要区：异构指数、隐私风险、攻击风险、异常节点数量。
-4. 底部趋势区：全局准确率、最差域准确率、攻击成功率和有效节点数。
+2. 顶部叙事带：从“全域信息”流向“统一认知”和“智能协同”的摘要动画。
+3. 左侧主区域：三级多军事域联邦拓扑图。
+4. 右侧摘要区：异构指数、隐私风险、攻击风险、异常节点数量。
+5. 底部趋势区：全局准确率、最差域准确率、攻击成功率和有效节点数。
+
+“全域信息汇聚”摘要卡至少包含：已接入域数、在线节点数、域级上传完成率、状态新鲜度、风险事件数和本轮有效信息量。点击任一摘要卡，应联动筛选拓扑、节点表和事件时间线。中央服务器旁增加“统一认知摘要”，用短文本解释当前异构程度、可用域覆盖、主要隐私风险和攻击风险；摘要必须由结构化指标模板生成，不使用真实任务判断或未经验证的自主决策描述。
 
 拓扑视觉：
 
-- 中心节点表示联邦协调器。
-- 第一层为军事域，每个域使用不同边框纹理，体现特征空间不同。
+- 中央服务器固定在画布中心或顶部中心，显示全域聚合进度和全局轮次。
+- 第一层为各军事域子服务器，每个域使用不同边框纹理，体现特征空间不同。
 - 第二层为域内节点，节点大小映射样本量，环形分段映射类别比例。
-- 连线颜色表示当前阶段：统计上传、结果下发、模型上传、模型下发。
+- 连线颜色表示当前阶段：中央下发、域内广播、节点上传、域内聚合摘要上传。
+- 上行时先点亮“节点 → 域子服务器”，域内节点全部完成后再点亮“域子服务器 → 中央服务器”。
+- 下行时先点亮“中央服务器 → 全部域子服务器”，再并行点亮“域子服务器 → 域内节点”。
 - 异常节点显示脉冲边框；被过滤节点使用灰色断开线，不直接从图中消失。
-- 点击域后联动右侧图表；点击节点后打开节点详情抽屉。
+- 点击域子服务器后显示域内聚合摘要；点击节点后打开节点详情抽屉。
+- 画布提供“显示模拟真值”开关，用于控制恶意节点真实身份是否可见。
+
+中央服务器状态：
+
+- 待机、全域下发、等待域级上传、全域聚合、结果评估、完成、异常。
+- 展示已完成域数、总域数、全局轮次、聚合进度和最近事件。
+
+域子服务器状态：
+
+- 待机、接收全局状态、域内广播、等待节点、域内聚合、向上上传、等待全局结果、完成、降级。
+- 展示模拟子服务器编号，例如 `DS-01`。
+- 展示所属域、域内节点总数、已上传节点数、被过滤节点数和域级进度。
+- “降级”表示部分节点失败但仍满足模拟聚合条件，不代表真实网络故障。
+
+节点状态信息：
+
+| 字段 | 示例 | 展示要求 |
+| --- | --- | --- |
+| 模拟节点编号 | `D01-N003` | 全局唯一，可搜索和复制 |
+| 所属域 | `态势感知域` | 使用域颜色和图标 |
+| 运行状态 | `本地训练` | 使用状态图标、文本和颜色 |
+| 通信状态 | `上传 68%` | 显示方向、进度和模拟延迟 |
+| 当前轮次 | `12 / 50` | 与中央轮次并列显示 |
+| 样本量 | `2,480` | 同时显示相对域均值的偏差 |
+| 标签分布 | 迷你堆叠环图 | 支持展开查看完整分布 |
+| 数据质量 | `82 / 100` | 明确标注为模拟分数 |
+| 风险分数 | `0.73` | 仅在攻击或防御实验中显示 |
+| 防御结论 | `通过/疑似/过滤` | 与恶意真值分开显示 |
+| 恶意真值 | `是/否` | 仅在后门模拟且打开真值开关时显示 |
+
+节点运行状态枚举：
+
+```text
+离线 → 待机 → 接收中 → 特征统计/本地训练 → 上传中 → 等待聚合 → 已完成
+                         ↘ 异常 / 已过滤 / 失败
+```
+
+后门攻击展示必须区分：
+
+- 恶意真值：模拟器预先设定的真实角色，仅用于实验复盘。
+- 防御判断：系统根据风险分数给出的“正常、疑似、过滤”结论。
+- 判断结果：真阳性、假阳性、真阴性或假阴性。
+
+不能因为节点被标记为恶意就自动显示为已检出，也不能把被误报的正常节点改成恶意节点。隐私攻击中的目标节点是受评估对象，不应显示为恶意节点。
 
 背景风格：
 
@@ -124,6 +252,7 @@ flowchart LR
 - 数据模态：图像、时序、文本、结构化或混合。
 - 原始特征维度、统一表示维度、特征偏移强度。
 - 域样本总量、类别集合、质量等级。
+- 自动生成一个域子服务器，并允许编辑模拟子服务器编号和显示名称。
 
 节点级配置：
 
@@ -132,6 +261,7 @@ flowchart LR
 - 标签分布浓度参数。
 - 缺失类别比例、噪声比例、时间漂移程度。
 - 是否为攻击节点；攻击节点只能在后门实验中生效。
+- 节点初始状态、模拟延迟、失败概率和显示编号前缀。
 
 快捷预设：
 
@@ -229,7 +359,9 @@ flowchart LR
 
 - 当前轮次和预计剩余时间。
 - 活跃、等待、失败、异常和已过滤节点数量。
-- 拓扑数据流动画。
+- 中央服务器、域子服务器和域内节点的三级状态总览。
+- 分层拓扑数据流动画。
+- 各域“已上传节点/总节点”、域内模拟聚合进度和域级上传状态。
 - 全局、各域和各节点准确率趋势。
 - 本地更新范数、裁剪阈值和噪声方差趋势。
 - 攻击成功率与干净准确率趋势。
@@ -238,7 +370,84 @@ flowchart LR
 
 防御决策表至少包含：阶段、轮次、域、节点、风险分数、处理结果、解释字段。
 
-### 6.6 对照分析页
+运行时间线需要把一个后端训练轮次投影为以下前端子阶段：
+
+```text
+中央下发 → 域子服务器接收 → 域内广播 → 节点处理 → 节点上传
+→ 域内模拟聚合 → 域级上传 → 全域模拟聚合 → 进入下一轮
+```
+
+如果后端只提供轮次级快照，前端按照固定种子和配置的展示时长生成子阶段事件；如果后端提供客户端级事件，则优先使用真实事件时间，只补充子服务器派生状态。
+
+### 6.6 隐私攻击效果页
+
+隐私攻击效果页采用“攻击类型导航 + 效果总览 + 目标详情 + 保护对照”四区布局。三类隐私攻击分别运行和展示，不能将多个攻击结果混成一个综合成功率。
+
+攻击效果应由独立实验记录产生。保护前与保护后对照可以并列展示，但不能在同一次训练中动态切换保护开关，也不能与后门攻击实验合并执行。
+
+共同信息：
+
+- 攻击观察方：模拟为能够看到上传参数或统计摘要的好奇聚合方。
+- 目标范围：目标域、目标节点、目标样本数量和目标轮次。
+- 数据可见性：明确列出攻击只使用了哪些服务端可见信息。
+- 保护状态：未保护或已启用本地隐私保护。
+- 结果来源：真实训练结果、前端模拟结果或混合派生结果。
+
+#### 6.6.1 成员关系推断效果
+
+用于模拟判断某个样本是否参与过目标节点训练。
+
+展示组件：
+
+- 成员与非成员得分分布双直方图。
+- 阈值滑块及真阳性、假阳性、真阴性、假阴性数量。
+- ROC 曲线和精确率—召回率曲线。
+- 目标样本表：匿名样本编号、真实成员状态、预测概率、预测结果和是否判断正确。
+- 域级和节点级攻击效果热力图。
+
+核心指标：攻击准确率、AUC、精确率、召回率、假阳性率和攻击优势值。保护对照区显示这些指标的下降幅度及模型准确率代价。
+
+#### 6.6.2 属性推断效果
+
+用于模拟根据节点上传信息推断其数据属性。属性名称必须使用合成标签，例如“任务类型 A/B/C”或“环境类别 1/2/3”，不得出现真实敏感属性。
+
+展示组件：
+
+- 真实属性与预测属性混淆矩阵。
+- 各属性类别的精确率、召回率和 F1。
+- 节点列表：节点编号、所属域、真实属性、预测属性、置信度和结果。
+- 各域属性泄露风险雷达图。
+- 保护前后置信度分布对比。
+
+核心指标：属性推断准确率、宏平均 F1、最高类别置信度和域间风险差异。
+
+#### 6.6.3 数据重建效果
+
+用于模拟从训练过程中可见的信息恢复目标数据特征。
+
+展示组件：
+
+- 合成参考样本、模拟重建结果和差异热力图三联视图。
+- 重建过程时间轴，只显示效果变化，不展示可直接复用的攻击实现步骤。
+- 每个目标样本的相似度、结构相似度、峰值信噪比和标签恢复结果。
+- 不同目标节点与不同轮次的重建质量矩阵。
+- 保护前后的重建图像和质量指标并排对照。
+
+所有图像必须来自合成数据、公开测试数据或经过脱敏的演示素材。若没有可展示图像，则使用抽象特征图和占位缩略图。
+
+#### 6.6.4 隐私攻击效果摘要
+
+页面顶部使用三张卡片分别显示：
+
+| 隐私攻击类别 | 主要效果指标 | 保护有效时的预期趋势 |
+| --- | --- | --- |
+| 成员关系推断 | AUC、攻击准确率、假阳性率 | AUC 和准确率接近随机基线 |
+| 属性推断 | 属性准确率、宏平均 F1、置信度 | 准确率和置信度下降 |
+| 数据重建 | 相似度、结构相似度、标签恢复率 | 重建质量和标签恢复率下降 |
+
+摘要必须同时显示模型任务准确率，避免只降低攻击效果却忽略模型可用性损失。
+
+### 6.7 对照分析页
 
 支持以下成对或多组比较：
 
@@ -266,7 +475,7 @@ flowchart LR
 | 防御效果 | 检出率、误报率、漏报率、过滤节点数、防御后攻击成功率 |
 | 系统开销 | 阶段耗时、每轮耗时、上传字节数、有效参与率 |
 
-### 6.7 报告页
+### 6.8 报告页
 
 报告页支持：
 
@@ -336,6 +545,9 @@ flowchart TB
     API[统一 API 客户端]
     MOCK[模拟数据适配器]
     LIVE[单机训练适配器]
+    NORMALIZER[训练事件标准化]
+    PROJECTOR[三级态势投影器]
+    PRIVACY[隐私攻击效果模拟器]
     ENGINE[FederatedScope 单机训练进程]
 
     UI --> STORE
@@ -344,6 +556,12 @@ flowchart TB
     API --> MOCK
     API --> LIVE
     LIVE --> ENGINE
+    MOCK --> NORMALIZER
+    LIVE --> NORMALIZER
+    NORMALIZER --> PROJECTOR
+    NORMALIZER --> PRIVACY
+    PROJECTOR --> STORE
+    PRIVACY --> STORE
 ```
 
 前端必须支持两种数据源：
@@ -352,6 +570,16 @@ flowchart TB
 2. 联调模式：连接单机训练 API，接收真实配置、轮次指标和防御决策。
 
 通过同一套 TypeScript 接口屏蔽两种数据源差异，页面组件不得直接导入模拟数据。
+
+三级态势投影规则：
+
+1. 根据场景定义把逻辑节点分组到各军事域。
+2. 为每个域生成一个只存在于前端的域子服务器。
+3. 根据域内节点状态推导子服务器状态和进度。
+4. 根据所有子服务器状态推导中央服务器展示状态。
+5. 域级指标可使用节点样本量加权生成展示摘要，但必须附带 `simulated: true`。
+6. 投影结果只能用于界面，不得反写训练配置、聚合参数或模型状态。
+7. 相同实验、相同轮次和相同随机种子必须生成一致的模拟时间和状态。
 
 ## 10. 核心数据模型
 
@@ -362,6 +590,38 @@ type RunStatus = 'draft' | 'queued' | 'running' | 'paused' |
 type TrainingStage = 'initializing' | 'feature_extraction' |
   'statistics_upload' | 'statistics_filtering' | 'local_expansion' |
   'federated_training' | 'evaluation';
+type NodeOperationalStatus = 'offline' | 'idle' | 'receiving' |
+  'feature_statistics' | 'local_training' | 'uploading' |
+  'waiting_aggregation' | 'completed' | 'anomalous' |
+  'filtered' | 'failed';
+type ServerOperationalStatus = 'idle' | 'broadcasting' |
+  'waiting_children' | 'aggregating' | 'uploading' |
+  'waiting_parent' | 'evaluating' | 'completed' | 'degraded' | 'failed';
+type DefenseAssessment = 'normal' | 'suspected' | 'filtered' | 'unknown';
+type PrivacyAttackKind = 'membership' | 'property' | 'reconstruction';
+
+interface CentralServer {
+  id: string;
+  displayName: string;
+  status: ServerOperationalStatus;
+  currentRound: number;
+  completedDomainCount: number;
+  totalDomainCount: number;
+  aggregationProgress: number;
+  simulated: true;
+}
+
+interface DomainServer {
+  id: string;
+  domainId: string;
+  displayName: string;
+  status: ServerOperationalStatus;
+  uploadedNodeCount: number;
+  totalNodeCount: number;
+  filteredNodeCount: number;
+  aggregationProgress: number;
+  simulated: true;
+}
 
 interface MilitaryDomain {
   id: string;
@@ -370,23 +630,33 @@ interface MilitaryDomain {
   sourceFeatureDimension: number;
   unifiedFeatureDimension: number;
   featureShift: number;
+  server: DomainServer;
   nodes: MilitaryNode[];
 }
 
 interface MilitaryNode {
   id: string;
+  simulatedNodeCode: string;
   domainId: string;
+  status: NodeOperationalStatus;
+  communicationProgress: number;
+  simulatedLatencyMs: number;
+  currentRound: number;
   sampleCount: number;
   labelHistogram: Record<string, number>;
   missingClassRatio: number;
   qualityScore: number;
-  isAttacker: boolean;
+  maliciousGroundTruth: boolean;
+  defenseAssessment: DefenseAssessment;
+  riskScore?: number;
+  lastEventAt: string;
 }
 
 interface Scenario {
   id: string;
   name: string;
   seed: number;
+  centralServer: CentralServer;
   domains: MilitaryDomain[];
   createdAt: string;
   updatedAt: string;
@@ -410,8 +680,20 @@ interface RoundSnapshot {
   globalMetrics: Record<string, number>;
   domainMetrics: Record<string, Record<string, number>>;
   nodeMetrics: Record<string, Record<string, number>>;
+  hierarchy: HierarchySnapshot;
+  privacyResults?: PrivacyAttackResult[];
   decisions: DefenseDecision[];
   timestamp: string;
+}
+
+interface HierarchySnapshot {
+  centralServer: CentralServer;
+  domainServers: DomainServer[];
+  nodes: MilitaryNode[];
+  displayPhase: 'central_downlink' | 'domain_broadcast' | 'node_processing' |
+    'node_uplink' | 'domain_aggregation' | 'domain_uplink' |
+    'central_aggregation';
+  simulated: true;
 }
 
 interface DefenseDecision {
@@ -423,6 +705,75 @@ interface DefenseDecision {
   action: 'accepted' | 'filtered' | 'fallback';
   reasons: string[];
 }
+
+interface PrivacyAttackResultBase {
+  kind: PrivacyAttackKind;
+  experimentId: string;
+  targetDomainId: string;
+  targetNodeIds: string[];
+  protected: boolean;
+  resultSource: 'backend' | 'frontend_simulation' | 'hybrid';
+  simulated: boolean;
+}
+
+interface MembershipSampleDecision {
+  sampleId: string;
+  memberGroundTruth: boolean;
+  membershipProbability: number;
+  predictedMember: boolean;
+  correct: boolean;
+}
+
+interface PropertyNodePrediction {
+  nodeId: string;
+  propertyGroundTruth: string;
+  predictedProperty: string;
+  confidence: number;
+  correct: boolean;
+}
+
+interface ReconstructionTarget {
+  targetId: string;
+  referenceAsset?: string;
+  reconstructedAsset?: string;
+  differenceAsset?: string;
+  similarity: number;
+  structuralSimilarity: number;
+  peakSignalToNoiseRatio: number;
+  labelRecovered: boolean;
+}
+
+interface MembershipAttackResult extends PrivacyAttackResultBase {
+  kind: 'membership';
+  auc: number;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  falsePositiveRate: number;
+  memberScores: number[];
+  nonMemberScores: number[];
+  sampleDecisions: MembershipSampleDecision[];
+}
+
+interface PropertyAttackResult extends PrivacyAttackResultBase {
+  kind: 'property';
+  accuracy: number;
+  macroF1: number;
+  labels: string[];
+  confusionMatrix: number[][];
+  nodePredictions: PropertyNodePrediction[];
+}
+
+interface ReconstructionAttackResult extends PrivacyAttackResultBase {
+  kind: 'reconstruction';
+  targets: ReconstructionTarget[];
+  meanSimilarity: number;
+  meanStructuralSimilarity: number;
+  labelRecoveryRate: number;
+}
+
+type PrivacyAttackResult = MembershipAttackResult |
+  PropertyAttackResult | ReconstructionAttackResult;
 ```
 
 ## 11. API 约定
@@ -447,6 +798,10 @@ interface DefenseDecision {
 | `GET` | `/api/experiments/:id/events` | 使用 SSE 推送阶段、轮次和日志事件 |
 | `GET` | `/api/experiments/:id/report` | 获取报告数据 |
 
+三级结构不增加子服务器 API。前端不得请求 `/api/domain-servers` 或把域内聚合结果提交给后端。域子服务器、域内聚合进度、中央二次聚合进度和逐级下发事件均由前端态势投影器生成。
+
+隐私攻击效果按渐进方式接入：后端有结构化结果时直接展示；只有日志时由适配器解析为统一结果；没有后端结果时使用带 `frontend_simulation` 标记的固定种子模拟数据。
+
 接口响应统一包含：
 
 ```ts
@@ -470,11 +825,16 @@ interface ApiEnvelope<T> {
 
 场景与拓扑组件：
 
-- `FederationTopology`：中心协调器、军事域和节点拓扑。
-- `DomainNode`：域级自定义节点。
-- `ClientNode`：逻辑客户端节点。
-- `CommunicationEdge`：按阶段变化的通信边。
-- `DomainInspector`、`ClientInspector`：详情抽屉。
+- `FederationTopology`：中央服务器、域子服务器和域内节点三级拓扑。
+- `CentralServerNode`：全域聚合和下发状态。
+- `DomainServerNode`：域内接收、聚合、上传和广播状态。
+- `MilitaryClientNode`：编号、状态、样本量、风险和角色信息。
+- `HierarchyFlowAnimator`：上行聚合和下行广播的分层动画。
+- `CommunicationEdge`：按阶段、方向和状态变化的通信边。
+- `GroundTruthToggle`：控制是否展示恶意节点模拟真值。
+- `DomainAggregationSummary`：域级模拟聚合摘要。
+- `CentralServerInspector`、`DomainServerInspector`、`ClientInspector`：三级详情抽屉。
+- `NodeStatusLegend`：节点状态、真值和防御判断图例。
 - `ScenarioWizard`：场景创建向导。
 
 异构分析组件：
@@ -495,6 +855,12 @@ interface ApiEnvelope<T> {
 - `DefenseDecisionTable`。
 - `RiskScoreDistribution`。
 - `AttackDefenseComparison`。
+- `PrivacyAttackNavigator`：三类隐私攻击切换。
+- `MembershipEffectPanel`：得分分布、阈值、曲线和样本决策。
+- `PropertyEffectPanel`：混淆矩阵、节点预测和类别指标。
+- `ReconstructionEffectPanel`：参考、重建、差异和质量指标。
+- `PrivacyProtectionComparison`：保护前后攻击效果与模型代价。
+- `ResultSourceBadge`：后端结果、前端模拟或混合派生标识。
 
 训练监控组件：
 
@@ -505,6 +871,9 @@ interface ApiEnvelope<T> {
 - `AttackTrendChart`。
 - `ClientUpdateNormChart`。
 - `EventTimeline`。
+- `HierarchyStageTimeline`。
+- `DomainUploadProgress`。
+- `NodeStatusTable`。
 
 ## 13. 建议文件结构
 
@@ -539,9 +908,22 @@ frontend/
 │   │   ├── layout/
 │   │   ├── common/
 │   │   ├── topology/
+│   │   │   ├── FederationTopology.tsx
+│   │   │   ├── CentralServerNode.tsx
+│   │   │   ├── DomainServerNode.tsx
+│   │   │   ├── MilitaryClientNode.tsx
+│   │   │   ├── CommunicationEdge.tsx
+│   │   │   ├── HierarchyFlowAnimator.tsx
+│   │   │   ├── GroundTruthToggle.tsx
+│   │   │   └── NodeStatusLegend.tsx
 │   │   ├── charts/
 │   │   ├── scenario/
 │   │   ├── security/
+│   │   │   ├── MembershipEffectPanel.tsx
+│   │   │   ├── PropertyEffectPanel.tsx
+│   │   │   ├── ReconstructionEffectPanel.tsx
+│   │   │   ├── PrivacyProtectionComparison.tsx
+│   │   │   └── DefenseDecisionTable.tsx
 │   │   └── training/
 │   ├── features/
 │   │   ├── overview/
@@ -549,16 +931,29 @@ frontend/
 │   │   ├── heterogeneity/
 │   │   ├── experimentBuilder/
 │   │   ├── liveMonitor/
+│   │   ├── privacyEffects/
 │   │   ├── comparison/
 │   │   └── reports/
 │   ├── hooks/
 │   ├── mock/
 │   │   ├── fixtures/
 │   │   ├── generators/
+│   │   │   ├── hierarchy.ts
+│   │   │   ├── nodeStatuses.ts
+│   │   │   ├── membershipEffects.ts
+│   │   │   ├── propertyEffects.ts
+│   │   │   └── reconstructionEffects.ts
 │   │   └── handlers.ts
 │   ├── stores/
 │   ├── types/
+│   │   ├── scenario.ts
+│   │   ├── hierarchy.ts
+│   │   ├── experiment.ts
+│   │   └── privacy.ts
 │   ├── utils/
+│   │   ├── hierarchyProjection.ts
+│   │   ├── defenseConfusion.ts
+│   │   └── metricFormatters.ts
 │   └── styles/
 ├── tests/
 │   ├── unit/
@@ -572,6 +967,8 @@ frontend/
 - `features/` 按页面业务组织状态和容器组件。
 - `components/` 保存可跨页面复用的展示组件。
 - `mock/` 生成确定性的多域、异构、攻防演示数据。
+- `hierarchyProjection.ts` 把扁平客户端事件投影为三级展示状态，不参与训练计算。
+- `privacyEffects/` 分别承载三类隐私攻击效果页面和保护前后对照。
 - `types/` 维护与 Python 后端一致的数据契约。
 - `tests/e2e/` 覆盖从场景创建到报告导出的主流程。
 
@@ -582,11 +979,24 @@ frontend/
 1. `balanced-demo`：域间有轻微特征差异，域内样本均衡。
 2. `cross-domain-shift`：域间特征距离明显，域内分布中等不均衡。
 3. `long-tail-nodes`：同域节点样本量和标签分布呈长尾。
-4. `privacy-comparison`：生成保护前后可比较的上传统计和风险结果。
-5. `backdoor-no-defense`：攻击成功率随轮次上升。
-6. `backdoor-two-stage-defense`：第一阶段和第二阶段分别产生过滤决策。
+4. `hierarchical-flow`：完整播放中央、域子服务器和域内节点的上行与下行状态。
+5. `membership-privacy`：生成成员与非成员得分、曲线和样本判断结果。
+6. `property-privacy`：生成合成属性、预测置信度和混淆矩阵。
+7. `reconstruction-privacy`：生成合成参考样本、重建结果和质量指标。
+8. `privacy-protected-comparison`：为三类隐私攻击生成保护前后成对结果。
+9. `backdoor-no-defense`：恶意节点攻击成功率随轮次上升，并保留真值标签。
+10. `backdoor-two-stage-defense`：两个阶段分别产生检测结论和混淆结果。
 
 所有模拟数据由固定随机种子生成，使截图、测试和演示可以重复。
+
+节点状态生成要求：
+
+- 每个节点拥有稳定的模拟编号、所属域、初始延迟和状态时间线。
+- 同一域节点上传完成后，才进入该域子服务器的模拟聚合动画。
+- 所有满足条件的域子服务器完成上传后，才进入中央模拟聚合动画。
+- 允许注入离线、延迟、失败和过滤事件，用于展示降级状态。
+- 后门场景同时生成恶意真值和防御判断，支持真阳性、假阳性、真阴性和假阴性四种情况。
+- 隐私场景不生成恶意客户端真值，只生成攻击观察方、目标节点和攻击效果。
 
 ## 15. 视觉规范
 
@@ -610,7 +1020,22 @@ frontend/
 - 默认面向 1440px 及以上桌面屏幕，最低支持 1280px。
 - 表格使用紧凑模式，图表保留足够留白。
 
-### 15.3 可访问性
+### 15.3 三级拓扑语义
+
+| 层级 | 固定形状 | 状态表达 | 角色信息 |
+| --- | --- | --- | --- |
+| 中央服务器 | 六边形或双环圆 | 外环进度与状态文字 | 不显示恶意属性 |
+| 域子服务器 | 圆角矩形 | 顶部状态条与域内进度 | 固定显示“前端模拟” |
+| 域内节点 | 圆形 | 边框、状态图标与通信进度 | 后门实验可显示真值和防御判断 |
+
+- 上行边使用实线箭头，下行边使用虚线箭头；同一时刻只突出当前方向。
+- 域子服务器聚合和中央聚合均显示“展示模拟”角标。
+- 恶意真值使用角色图标，防御判断使用盾牌图标，二者不得共用同一颜色或标签。
+- 真值关闭时不通过颜色、排序、提示文字或动画泄露恶意节点身份。
+- 节点离线、失败、被过滤是不同状态，分别使用断线、故障和阻断图标。
+- 拓扑收起某个域时，域子服务器保留域内节点状态计数，避免状态信息丢失。
+
+### 15.4 可访问性
 
 - 正文和背景对比度符合 WCAG AA。
 - 风险状态不能只靠颜色表达。
@@ -625,6 +1050,9 @@ frontend/
 - SSE 事件按帧批量写入状态，避免每条日志触发整页渲染。
 - 大型热力图和散点图使用增量或渐进渲染。
 - 页面切换保留当前域、节点和实验筛选上下文。
+- 节点表使用虚拟滚动；拓扑缩放到低倍率时自动折叠节点，只保留域级状态汇总。
+- 高频上传事件合并为不高于每秒 10 次的视觉更新，事件原始时间仍保留在详情中。
+- 暂停或切到后台标签页时停止非必要动画，恢复后直接投影到最新状态。
 
 ## 17. 测试与验收
 
@@ -639,6 +1067,15 @@ frontend/
 - 能比较无防御和有防御实验。
 - 能下钻到域和节点并保持图表联动。
 - 演示模式在无 Python 服务时仍可完整使用。
+- 每个域恰好生成一个域子服务器，中央服务器能够连接全部域子服务器。
+- 上行演示遵循“节点上传—域内模拟聚合—域级上传—全域模拟聚合”的顺序。
+- 下行演示遵循“中央下发—域子服务器接收—域内广播”的顺序。
+- 能查看中央服务器、域子服务器和节点各自的编号、状态、进度与最近事件。
+- 后门实验能通过开关显示或隐藏恶意真值，并分别展示防御判断及真阳性、假阳性、真阴性、假阴性。
+- 隐私实验不会把目标节点标记为恶意节点，也不会同时启动后门攻击。
+- 成员关系推断、属性推断和数据重建均有独立效果页面、独立指标和保护前后对照。
+- 所有域子服务器状态和聚合结果均标记为“前端模拟”，前端不会调用或伪造后端分层聚合接口。
+- 相同场景、轮次和随机种子能够复现相同的节点时间线与三级状态。
 
 ### 17.2 自动化测试
 
@@ -648,6 +1085,13 @@ frontend/
 - 拓扑节点选择与图表联动测试。
 - SSE 断流和重连测试。
 - 实验对照和报告导出端到端测试。
+- 三级态势投影器的确定性、状态转换和异常降级测试。
+- 节点上传未完成时不得提前进入域级上传的时序测试。
+- 恶意真值开关的隐藏测试，确保关闭后不在 DOM、提示或无障碍文本中泄露真值。
+- 恶意真值与防御判断的混淆统计测试。
+- 三类隐私攻击结果的数据契约、空状态和保护对照测试。
+- 隐私与后门模式互斥的接口提交测试。
+- 前端投影状态只读测试，确保不会产生域子服务器写请求或修改训练配置。
 
 ## 18. 实施阶段
 
@@ -655,12 +1099,15 @@ frontend/
 
 - 搭建前端工程、主题和路由。
 - 使用模拟数据完成综合态势、场景编排、异构分析和实验配置。
-- 完成多域拓扑与核心图表。
+- 完成中央服务器、域子服务器、域内节点三级拓扑与分层动画。
+- 完成节点编号、节点状态、域级状态、真值开关和核心图表。
 
 ### 第二阶段：实验闭环
 
 - 完成运行监控、对照分析和报告页。
 - 增加普通、隐私和后门三类模拟数据。
+- 完成三类隐私攻击效果页、保护前后对照和结果来源标识。
+- 完成后门恶意真值、防御判断和混淆结果展示。
 - 完成模式约束和自动化测试。
 
 ### 第三阶段：单机训练联调
@@ -670,7 +1117,7 @@ frontend/
 - 将配置表单映射到现有单机配置。
 - 校验前端指标与训练日志的一致性。
 
-## 19. 后续需要的后端配合
+## 19. 前后端边界与后续配合
 
 前端实现不要求立即修改训练核心，但完整联调需要增加一个轻量 API 层：
 
@@ -682,3 +1129,12 @@ frontend/
 - 对输出目录和配置字段执行白名单校验。
 
 API 层必须保持单机模拟边界，不暴露真实分布式客户端注册或网络控制能力。
+
+以下能力明确由前端承担，不纳入后端改造：
+
+- 生成域子服务器和中央服务器的展示对象。
+- 将扁平客户端事件投影为三级状态与分层动画。
+- 生成域内聚合、域级上传、中央聚合和逐级下发的模拟进度。
+- 在后端缺少结构化隐私评估结果时生成可复现的效果演示数据。
+
+后端只需维持现有单机训练语义，并尽可能提供实验配置、逻辑节点、训练阶段、轮次指标、节点指标和安全判断。前端派生结果不得作为训练输入，也不得写回后端结果目录。
