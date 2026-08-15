@@ -5,14 +5,15 @@ import type {
   PrivacyMetric,
   RoundMetric,
 } from '../types';
+import { generateScenarioPartition } from '../utils/partition';
 
 const domainDefinitions = [
   {
-    id: 'recon' as const,
-    serverId: 'DS-01',
-    name: '态势感知域',
-    shortName: '态势感知',
-    modality: '图像 / 目标特征',
+    id: 'Art' as const,
+    serverId: 'OH-DT-S01',
+    name: '数字孪生域',
+    shortName: '数字孪生',
+    modality: '仿真建模 / 三维渲染',
     featureDimension: 2048,
     unifiedDimension: 256,
     featureShift: 0.72,
@@ -20,11 +21,11 @@ const domainDefinitions = [
     icon: '◎',
   },
   {
-    id: 'spectrum' as const,
-    serverId: 'DS-02',
-    name: '电磁感知域',
-    shortName: '电磁感知',
-    modality: '频谱 / 时序特征',
+    id: 'Clipart' as const,
+    serverId: 'OH-TS-S02',
+    name: '战术符号域',
+    shortName: '战术符号',
+    modality: '战术图标 / 态势标绘',
     featureDimension: 1024,
     unifiedDimension: 256,
     featureShift: 0.58,
@@ -32,11 +33,11 @@ const domainDefinitions = [
     icon: '⌁',
   },
   {
-    id: 'unmanned' as const,
-    serverId: 'DS-03',
-    name: '无人平台域',
-    shortName: '无人平台',
-    modality: '遥测 / 多传感器',
+    id: 'Product' as const,
+    serverId: 'OH-ED-S03',
+    name: '装备数据库域',
+    shortName: '装备数据库',
+    modality: '档案图像 / 标准采集',
     featureDimension: 768,
     unifiedDimension: 256,
     featureShift: 0.64,
@@ -44,11 +45,11 @@ const domainDefinitions = [
     icon: '◇',
   },
   {
-    id: 'command' as const,
-    serverId: 'DS-04',
-    name: '指挥决策域',
-    shortName: '指挥决策',
-    modality: '文本 / 结构化特征',
+    id: 'Real_World' as const,
+    serverId: 'OH-FR-S04',
+    name: '实景侦察域',
+    shortName: '实景侦察',
+    modality: '无人机 / 地面智能体图像',
     featureDimension: 1536,
     unifiedDimension: 256,
     featureShift: 0.81,
@@ -65,28 +66,41 @@ const statuses: MilitaryNode['status'][] = [
   '接收中',
 ];
 
+export const defaultPartitionPreview = generateScenarioPartition(0.3, 20_260_815);
+
 export const domains: MilitaryDomain[] = domainDefinitions.map((domain, domainIndex) => ({
   ...domain,
   status: domainIndex === 1 ? '等待节点' : '域内聚合',
-  nodes: Array.from({ length: 5 }, (_, nodeIndex): MilitaryNode => {
+  source: 'frontend_simulation',
+  nodes: defaultPartitionPreview.domains[domainIndex].clients.map((partition, nodeIndex): MilitaryNode => {
     const malicious = (domainIndex === 0 && nodeIndex === 3) ||
       (domainIndex === 2 && nodeIndex === 1);
-    const labels = Array.from({ length: 5 }, (_, labelIndex) =>
-      10 + ((domainIndex * 17 + nodeIndex * 23 + labelIndex * 13) % 75));
+    const labels = partition.classProportions
+      .map((value) => Math.round(value * 100))
+      .sort((a, b) => b - a)
+      .slice(0, 5);
     return {
-      id: `D0${domainIndex + 1}-N${String(nodeIndex + 1).padStart(3, '0')}`,
+      id: partition.clientId,
       domainId: domain.id,
       name: `${domain.shortName}节点 ${nodeIndex + 1}`,
       status: malicious && nodeIndex === 3 ? '已过滤' : statuses[(nodeIndex + domainIndex) % statuses.length],
       progress: malicious && nodeIndex === 3 ? 100 : 42 + ((nodeIndex * 11 + domainIndex * 9) % 53),
       latency: 18 + domainIndex * 11 + nodeIndex * 7,
-      sampleCount: 860 + domainIndex * 410 + nodeIndex * 337,
+      sampleCount: partition.sampleCount,
       quality: 72 + ((domainIndex * 7 + nodeIndex * 5) % 25),
       risk: malicious ? 0.86 + nodeIndex * 0.02 : 0.08 + ((domainIndex + nodeIndex) % 5) * 0.07,
       malicious,
       assessment: malicious ? (nodeIndex === 1 ? '疑似' : '过滤') :
         (domainIndex === 3 && nodeIndex === 4 ? '疑似' : '通过'),
       labels,
+      classHistogram: partition.classHistogram,
+      classProportions: partition.classProportions,
+      coveredClassCount: partition.coveredClassCount,
+      missingClassCount: partition.missingClassCount,
+      dominantClassIndex: partition.dominantClassIndex,
+      dominantClassRatio: partition.dominantClassRatio,
+      labelEntropy: partition.labelEntropy,
+      source: 'frontend_simulation',
     };
   }),
 }));
@@ -104,18 +118,18 @@ export const roundMetrics: RoundMetric[] = Array.from({ length: 30 }, (_, index)
 
 export const events: EventItem[] = [
   { id: 1, time: '14:32:08', level: 'success', source: '中央服务器', message: '第 18 轮全域状态已下发至 4 个域子服务器' },
-  { id: 2, time: '14:32:11', level: 'info', source: 'DS-01', message: '态势感知域已完成域内广播，5 个节点开始处理' },
-  { id: 3, time: '14:32:16', level: 'warning', source: 'D03-N002', message: '更新偏移超过动态阈值，进入复核队列' },
-  { id: 4, time: '14:32:19', level: 'danger', source: 'D01-N004', message: '训练更新已被防御策略过滤' },
-  { id: 5, time: '14:32:23', level: 'success', source: 'DS-04', message: '指挥决策域完成模拟域内聚合' },
+  { id: 2, time: '14:32:11', level: 'info', source: 'OH-DT-S01', message: '数字孪生域已完成域内广播，15 个客户端开始处理' },
+  { id: 3, time: '14:32:16', level: 'warning', source: 'OH-ED-C02', message: '更新偏移超过动态阈值，进入复核队列' },
+  { id: 4, time: '14:32:19', level: 'danger', source: 'OH-DT-C04', message: '训练更新已被防御策略过滤' },
+  { id: 5, time: '14:32:23', level: 'success', source: 'OH-FR-S04', message: '实景侦察域完成模拟域内聚合' },
   { id: 6, time: '14:32:25', level: 'info', source: '系统', message: '当前有效域覆盖率 100%，满足全域聚合条件' },
 ];
 
 export const domainAccuracy = [
-  { name: '态势感知域', before: 71.4, after: 85.8, samples: 7400 },
-  { name: '电磁感知域', before: 65.2, after: 82.6, samples: 10200 },
-  { name: '无人平台域', before: 68.8, after: 84.2, samples: 8900 },
-  { name: '指挥决策域', before: 59.3, after: 80.7, samples: 13100 },
+  { name: '数字孪生域', before: 71.4, after: 85.8, samples: 12_350 },
+  { name: '战术符号域', before: 65.2, after: 82.6, samples: 11_920 },
+  { name: '装备数据库域', before: 68.8, after: 84.2, samples: 13_180 },
+  { name: '实景侦察域', before: 59.3, after: 80.7, samples: 12_860 },
 ];
 
 export const featureDistances = [

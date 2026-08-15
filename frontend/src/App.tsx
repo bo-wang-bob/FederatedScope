@@ -4,8 +4,7 @@ import { Spin } from 'antd';
 import { AppShell } from './components/AppShell';
 
 const OverviewPage = lazy(() => import('./pages/OverviewPage').then((module) => ({ default: module.OverviewPage })));
-const ScenarioPage = lazy(() => import('./pages/ScenarioPage').then((module) => ({ default: module.ScenarioPage })));
-const HeterogeneityPage = lazy(() => import('./pages/HeterogeneityPage').then((module) => ({ default: module.HeterogeneityPage })));
+const ScenarioAnalysisPage = lazy(() => import('./pages/ScenarioAnalysisPage').then((module) => ({ default: module.ScenarioAnalysisPage })));
 const ExperimentPage = lazy(() => import('./pages/ExperimentPage').then((module) => ({ default: module.ExperimentPage })));
 const LiveMonitorPage = lazy(() => import('./pages/LiveMonitorPage').then((module) => ({ default: module.LiveMonitorPage })));
 const PrivacyPage = lazy(() => import('./pages/PrivacyPage').then((module) => ({ default: module.PrivacyPage })));
@@ -19,8 +18,9 @@ export default function App() {
       <Suspense fallback={<div className="route-loading"><Spin size="large" /><span>正在加载态势组件…</span></div>}>
         <Routes>
           <Route path="/overview" element={<OverviewPage />} />
-          <Route path="/scenario" element={<ScenarioPage />} />
-          <Route path="/heterogeneity" element={<HeterogeneityPage />} />
+          <Route path="/scenario-analysis" element={<ScenarioAnalysisPage />} />
+          <Route path="/scenario" element={<Navigate to="/scenario-analysis" replace />} />
+          <Route path="/heterogeneity" element={<Navigate to="/scenario-analysis" replace />} />
           <Route path="/experiments/new" element={<ExperimentPage />} />
           <Route path="/experiments/:id/live" element={<LiveMonitorPage />} />
           <Route path="/experiments/:id/privacy" element={<PrivacyPage />} />

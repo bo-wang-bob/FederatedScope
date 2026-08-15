@@ -54,7 +54,7 @@ function MembershipContent() {
 }
 
 function PropertyContent() {
-  const rows = ['D01-N002','D01-N005','D02-N003','D03-N001','D03-N004','D04-N002'].map((id, index) => ({ id, truth: `任务类型 ${['A','B','C'][index % 3]}`, prediction: `任务类型 ${['A','B','C','B','A','C'][index]}`, confidence: [91,82,78,66,54,48][index] }));
+  const rows = ['OH-DT-C02','OH-DT-C05','OH-TS-C03','OH-ED-C01','OH-ED-C04','OH-FR-C02'].map((id, index) => ({ id, truth: `任务类型 ${['A','B','C'][index % 3]}`, prediction: `任务类型 ${['A','B','C','B','A','C'][index]}`, confidence: [91,82,78,66,54,48][index] }));
   return <div className="privacy-content-grid"><Panel title="合成属性混淆矩阵" subtitle="仅使用任务类型 A / B / C 等抽象属性"><Chart option={confusionOption} height={300} /></Panel><Panel title="节点属性推断结果" subtitle="保护前模拟结果"><Table rowKey="id" size="small" pagination={false} dataSource={rows} columns={[{ title: '目标节点', dataIndex: 'id' },{ title: '真实属性', dataIndex: 'truth' },{ title: '预测属性', dataIndex: 'prediction' },{ title: '置信度', dataIndex: 'confidence', render: (v: number) => `${v}%` },{ title: '结果', render: (_: unknown, row: typeof rows[number]) => <Tag color={row.truth === row.prediction ? 'warning' : 'success'}>{row.truth === row.prediction ? '泄露' : '未命中'}</Tag> }]} /></Panel></div>;
 }
 

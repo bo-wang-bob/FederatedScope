@@ -19,7 +19,9 @@ describe('三级态势投影', () => {
   it('只在对应阶段激活中央或域内链路', () => {
     expect(isCentralLinkActive('中央下发')).toBe(true);
     expect(isCentralLinkActive('节点处理')).toBe(false);
+    expect(isCentralLinkActive('全域聚合')).toBe(false);
     expect(isClientLinkActive('域内广播')).toBe(true);
+    expect(isClientLinkActive('节点处理')).toBe(false);
     expect(isClientLinkActive('全域聚合')).toBe(false);
     expect(phases).toHaveLength(7);
   });

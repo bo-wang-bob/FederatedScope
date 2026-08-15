@@ -1,9 +1,7 @@
 import { expect, test } from '@playwright/test';
 
-const routes = [
-  ['/overview', '全域信息汇聚 · 跨域智能协同'],
-  ['/scenario', '跨域场景编排'],
-  ['/heterogeneity', '跨域异构态势分析'],
+const workspaceRoutes = [
+  ['/scenario-analysis', '场景与异构分析'],
   ['/experiments/new', '实验配置与模式编排'],
   ['/experiments/demo/live', '实验运行监控'],
   ['/experiments/demo/privacy', '隐私攻击效果评估'],
@@ -13,7 +11,7 @@ const routes = [
 ] as const;
 
 test.describe('核心页面', () => {
-  for (const [route, heading] of routes) {
+  for (const [route, heading] of workspaceRoutes) {
     test(`${heading} 可渲染`, async ({ page }) => {
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
@@ -25,17 +23,61 @@ test.describe('核心页面', () => {
   }
 });
 
-test('三级拓扑、节点状态和真值开关可交互', async ({ page }) => {
+test('全屏地图、四域、60 客户端和隐藏导航符合首页设计', async ({ page }) => {
   await page.goto('/overview');
-  await expect(page.getByText('中央主服务器', { exact: true })).toBeVisible();
-  await expect(page.getByText('西北沙漠区', { exact: true })).toBeVisible();
-  await expect(page.getByText('中部城镇区', { exact: true })).toBeVisible();
-  await expect(page.getByText('东部沿海区', { exact: true })).toBeVisible();
-  await expect(page.getByText('态势感知域', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('D01-N004', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('恶意', { exact: true }).first()).toBeVisible();
-  await page.getByRole('switch').first().click();
-  await expect(page.locator('.truth-flag')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '全域信息汇聚 · 跨域智能协同' })).toBeVisible();
+  await expect(page.locator('.app-sider')).toHaveCount(0);
+  await expect(page.locator('.app-header')).toHaveCount(0);
+  await expect(page.locator('.immersive-overview-page')).toHaveCSS('position', 'fixed');
+  await expect(page.locator('.map-central-copy b')).toHaveText('中央主服务器');
+  for (const domain of ['数字孪生域', '战术符号域', '装备数据库域', '实景侦察域']) {
+    await expect(page.getByText(domain, { exact: true }).first()).toBeVisible();
+  }
+  await expect(page.locator('.map-client-marker')).toHaveCount(60);
+  await page.getByRole('button', { name: '打开导航' }).click();
+  await expect(page.getByText('场景与异构分析', { exact: true })).toBeVisible();
+});
+
+test('训练流程使用高对比双层链路、箭头和真实方向反转', async ({ page }) => {
+  await page.goto('/overview');
+  await page.getByRole('button', { name: '暂停' }).click();
+
+  await page.locator('.process-step').filter({ hasText: '中央下发' }).click();
+  await expect(page.locator('.map-central-backbone')).toHaveCount(4);
+  await expect(page.locator('.map-central-link.active')).toHaveCount(4);
+  await expect(page.locator('.map-central-link.active').first()).toHaveAttribute('marker-mid', 'url(#map-arrow-cyan)');
+  await expect(page.locator('[data-link="central"][data-direction="downlink"]')).toHaveCount(4);
+  await expect(page.locator('.map-central-link.active').first()).toHaveCSS('stroke-width', '4px');
+
+  await page.locator('.process-step').filter({ hasText: '域级上传' }).click();
+  await expect(page.locator('[data-link="central"][data-direction="uplink"]')).toHaveCount(4);
+  await expect(page.locator('.map-central-link.active')).toHaveCount(4);
+
+  await page.locator('.process-step').filter({ hasText: '节点上传' }).click();
+  await expect(page.locator('.map-client-link.active')).toHaveCount(60);
+  await expect(page.locator('.map-client-link.active').first()).toHaveAttribute('marker-mid', /map-arrow/);
+  await expect(page.getByText('24 / 60 已上传')).toBeVisible();
+});
+
+test('场景与异构分析只调 alpha 并展示逐客户端分布', async ({ page }) => {
+  await page.goto('/scenario-analysis');
+  await expect(page.getByText('域间特征偏移为数据集固有属性，只读不可调')).toBeVisible();
+  await expect(page.getByText('客户端 × 类别分布热力图')).toBeVisible();
+  await expect(page.getByText('客户端分布表')).toBeVisible();
+  await expect(page.locator('.scenario-analysis-page .ant-table-row')).toHaveCount(15);
+  await expect(page.getByText('OH-DT-C01', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'α 0.1' }).click();
+  await expect(page.getByRole('button', { name: '确认应用当前预览' })).toBeEnabled();
+  await page.getByRole('tab', { name: /战术符号域/ }).click();
+  await expect(page.getByText('OH-TS-C01', { exact: true })).toBeVisible();
+});
+
+test('旧分析路由统一重定向到合并页面', async ({ page }) => {
+  for (const route of ['/scenario', '/heterogeneity']) {
+    await page.goto(route);
+    await expect(page).toHaveURL(/\/scenario-analysis$/);
+    await expect(page.getByRole('heading', { name: '场景与异构分析' })).toBeVisible();
+  }
 });
 
 test('三类隐私攻击效果可分别切换', async ({ page }) => {

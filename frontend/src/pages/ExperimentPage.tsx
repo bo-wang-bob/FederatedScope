@@ -53,7 +53,7 @@ export function ExperimentPage() {
           <Alert type="warning" showIcon message="后门模式已自动关闭隐私攻击与隐私保护" />
           <div className="config-grid">
             <label><span>攻击类别</span><Select defaultValue="后门注入" options={['后门注入', '标签污染', '模型更新污染'].map((value) => ({ value }))} /></label>
-            <label><span>模拟恶意节点</span><Select mode="multiple" defaultValue={['D01-N004', 'D03-N002']} options={['D01-N004', 'D03-N002', 'D04-N005'].map((value) => ({ value }))} /></label>
+            <label><span>模拟恶意客户端</span><Select mode="multiple" defaultValue={['OH-DT-C04', 'OH-ED-C02']} options={['OH-DT-C04', 'OH-ED-C02', 'OH-FR-C05'].map((value) => ({ value }))} /></label>
             <label><span>注入起始轮次</span><InputNumber defaultValue={4} min={1} /></label>
             <label><span>攻击强度</span><Slider defaultValue={65} /></label>
           </div>
@@ -64,7 +64,7 @@ export function ExperimentPage() {
       </div>
       <aside className="experiment-summary">
         <Panel title="运行摘要" subtitle="提交前校验">
-          <div className="summary-scene"><span>跨域联合认知演示</span><Tag color="cyan">4 域 / 20 节点</Tag></div>
+          <div className="summary-scene"><span>跨域联合认知演示</span><Tag color="cyan">4 域 / 60 客户端</Tag></div>
           <div className="summary-list"><div><span>实验模式</span><b>{modeCards.find((item) => item.key === mode)?.title}</b></div><div><span>异构解决</span><b>两阶段启用</b></div><div><span>隐私保护</span><b>{mode === 'privacy' && protection ? '启用' : '关闭'}</b></div><div><span>后门攻击</span><b>{mode === 'backdoor' ? '启用' : '关闭'}</b></div><div><span>攻击防御</span><b>{mode === 'backdoor' && (featureDefense || trainingDefense) ? '启用' : '关闭'}</b></div><div><span>运行方式</span><b>单机逻辑模拟</b></div></div>
           <div className="validation-pass"><CheckCircleFilled />模式互斥校验通过</div>
           <Button type="primary" size="large" block icon={<CloudUploadOutlined />}>创建并启动实验</Button>

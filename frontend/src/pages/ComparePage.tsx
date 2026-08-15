@@ -19,7 +19,7 @@ const compareTrend = {
 export function ComparePage() {
   return <div className="page">
     <PageHeader eyebrow="EXPERIMENT COMPARISON" title="攻防与保护效果对照" description="将独立实验按相同场景、随机种子和训练参数对齐，比较收益、代价和域级差异。" />
-    <div className="compare-selector"><div><small>实验 A · 基准</small><Select value="后门攻击 / 无防御" options={[{ value: '后门攻击 / 无防御' }]} /><Tag color="error">RUN-0821-A</Tag></div><SwapOutlined /><div><small>实验 B · 对照</small><Select value="后门攻击 / 两阶段防御" options={[{ value: '后门攻击 / 两阶段防御' }]} /><Tag color="green">RUN-0821-B</Tag></div><div className="compare-context"><small>共同条件</small><b>4 域 · 20 节点 · 30 轮</b><span>随机种子 20260815</span></div></div>
+    <div className="compare-selector"><div><small>实验 A · 基准</small><Select value="后门攻击 / 无防御" options={[{ value: '后门攻击 / 无防御' }]} /><Tag color="error">RUN-0821-A</Tag></div><SwapOutlined /><div><small>实验 B · 对照</small><Select value="后门攻击 / 两阶段防御" options={[{ value: '后门攻击 / 两阶段防御' }]} /><Tag color="green">RUN-0821-B</Tag></div><div className="compare-context"><small>共同条件</small><b>4 域 · 60 客户端 · 30 轮</b><span>随机种子 20260815</span></div></div>
     <div className="compare-kpis">{[
       ['攻击成功率','78.2%','31.4%','-46.8%','good'],['干净准确率','86.3%','84.9%','-1.4%','cost'],['恶意检出率','—','91.7%','+91.7%','good'],['正常节点误报率','—','4.1%','+4.1%','cost'],['最差域准确率','61.8%','80.7%','+18.9%','good'],
     ].map(([label,a,b,change,tone]) => <div key={label}><span>{label}</span><div><em>{a}</em><i>→</i><b>{b}</b></div><small className={tone === 'good' ? 'good' : 'cost'}>{String(change).startsWith('-') ? <ArrowDownOutlined /> : <ArrowUpOutlined />}{change}</small></div>)}</div>

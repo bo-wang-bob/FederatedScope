@@ -25,7 +25,7 @@ export function LiveMonitorPage() {
   return <div className="page">
     <PageHeader eyebrow="LIVE EXPERIMENT MONITOR" title="实验运行监控" description="将后端单机训练轮次投影为中央、域级和节点级事件，实时跟踪训练与防御状态。" actions={<Space><Tag color="processing"><span className="live-dot" /> LIVE</Tag><Button icon={running ? <PauseOutlined /> : <PlayCircleOutlined />} onClick={toggleRunning}>{running ? '暂停' : '继续'}</Button></Space>} />
     <div className="stage-strip">{phases.map((phase, index) => <button key={phase} className={index === phaseIndex ? 'active' : index < phaseIndex ? 'done' : ''} onClick={() => setPhaseIndex(index)}><i>{index < phaseIndex ? '✓' : index + 1}</i><span>{phase}</span></button>)}</div>
-    <div className="metrics-grid five"><MetricCard label="当前轮次" value={round} suffix=" / 30" delta="预计剩余 06:42" /><MetricCard label="活跃节点" value="16" suffix=" / 20" delta="3 等待 · 1 过滤" tone="green" /><MetricCard label="域级上传" value="3" suffix=" / 4" delta="指挥决策域等待中" tone="violet" /><MetricCard label="全局准确率" value="85.7" suffix="%" delta="本轮 +0.8%" tone="cyan" /><MetricCard label="攻击成功率" value="31.4" suffix="%" delta="防御后下降 42.7%" tone="amber" /></div>
+    <div className="metrics-grid five"><MetricCard label="当前轮次" value={round} suffix=" / 30" delta="预计剩余 06:42" /><MetricCard label="活跃客户端" value="52" suffix=" / 60" delta="7 等待 · 1 过滤" tone="green" /><MetricCard label="域级上传" value="3" suffix=" / 4" delta="实景侦察域等待中" tone="violet" /><MetricCard label="全局准确率" value="85.7" suffix="%" delta="本轮 +0.8%" tone="cyan" /><MetricCard label="攻击成功率" value="31.4" suffix="%" delta="防御后下降 42.7%" tone="amber" /></div>
     <div className="live-grid">
       <Panel title="地图分层数据流" subtitle={`当前：${phases[phaseIndex]} · 第 ${round} 轮`} className="live-topology"><FederationTopology compact /></Panel>
       <Panel title="实时事件" subtitle="最近的训练与安全事件" extra={<ClockCircleOutlined />}>
@@ -35,7 +35,7 @@ export function LiveMonitorPage() {
     <div className="live-bottom-grid">
       <Panel title="训练与攻击趋势" subtitle="轮次级真实指标 / 模拟效果"><Chart option={trendOption} height={300} /></Panel>
       <Panel title="域级上传进度" subtitle="域内节点先聚合，再上传中央服务器">
-        <div className="upload-list">{domains.map((domain, index) => <div key={domain.id}><div><span><i style={{ background: domain.color }} />{domain.name}</span><em>{index === 3 ? '等待节点' : '已完成'}</em></div><Progress percent={index === 3 ? 68 : 100} strokeColor={domain.color} /><small>{index === 3 ? '4 / 5 个节点已上传' : '域级摘要已发送至中央服务器'}</small></div>)}</div>
+        <div className="upload-list">{domains.map((domain, index) => <div key={domain.id}><div><span><i style={{ background: domain.color }} />{domain.name}</span><em>{index === 3 ? '等待客户端' : '已完成'}</em></div><Progress percent={index === 3 ? 67 : 100} strokeColor={domain.color} /><small>{index === 3 ? '10 / 15 个客户端已上传' : '域级摘要已发送至中央服务器'}</small></div>)}</div>
       </Panel>
     </div>
     <Panel title="防御决策明细" subtitle="模拟真值不参与风险判断" extra={<Segmented size="small" options={['全部阶段', '特征统计阶段', '正常训练阶段']} />}>

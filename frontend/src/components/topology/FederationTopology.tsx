@@ -16,7 +16,6 @@ type RegionLayout = {
   label: MapPoint;
   radius: { x: number; y: number };
   server: MapPoint;
-  nodes: MapPoint[];
 };
 
 const centralPoint: MapPoint = { x: 51, y: 45 };
@@ -25,24 +24,50 @@ const regionLayouts: RegionLayout[] = [
   {
     name: '西北沙漠区', terrain: '沙漠 / 高原', code: 'REGION-A',
     center: { x: 23, y: 34 }, label: { x: 24, y: 18 }, radius: { x: 14, y: 14 }, server: { x: 24, y: 34 },
-    nodes: [{ x: 14, y: 27 }, { x: 13, y: 36 }, { x: 31, y: 26 }, { x: 34, y: 38 }, { x: 18, y: 44 }],
   },
   {
     name: '北部山地区', terrain: '山地 / 林区', code: 'REGION-B',
     center: { x: 68, y: 24 }, label: { x: 68, y: 8 }, radius: { x: 13, y: 13 }, server: { x: 67, y: 26 },
-    nodes: [{ x: 58, y: 17 }, { x: 58, y: 31 }, { x: 78, y: 18 }, { x: 80, y: 30 }, { x: 69, y: 36 }],
   },
   {
     name: '中部城镇区', terrain: '城镇 / 交通网', code: 'REGION-C',
     center: { x: 48, y: 64 }, label: { x: 38, y: 51 }, radius: { x: 14, y: 13 }, server: { x: 49, y: 61 },
-    nodes: [{ x: 37, y: 58 }, { x: 42, y: 70 }, { x: 50, y: 76 }, { x: 59, y: 70 }, { x: 60, y: 57 }],
   },
   {
     name: '东部沿海区', terrain: '沿海 / 岛链', code: 'REGION-D',
     center: { x: 78, y: 62 }, label: { x: 77, y: 42 }, radius: { x: 13, y: 17 }, server: { x: 76, y: 59 },
-    nodes: [{ x: 69, y: 52 }, { x: 82, y: 48 }, { x: 88, y: 60 }, { x: 83, y: 73 }, { x: 71, y: 76 }],
   },
 ];
+
+function createClientPoints(layout: RegionLayout, count: number): MapPoint[] {
+  return Array.from({ length: count }, (_, index) => {
+    const ring = index < 7 ? 0.58 : 0.9;
+    const ringIndex = index < 7 ? index : index - 7;
+    const ringCount = index < 7 ? 7 : count - 7;
+    const angle = (Math.PI * 2 * ringIndex) / ringCount - Math.PI / 2 + (index < 7 ? 0.18 : 0);
+    return {
+      x: layout.center.x + Math.cos(angle) * layout.radius.x * ring,
+      y: layout.center.y + Math.sin(angle) * layout.radius.y * ring,
+    };
+  });
+}
+
+function linePath(from: MapPoint, to: MapPoint): string {
+  const middleX = (from.x + to.x) / 2;
+  const middleY = ((from.y + to.y) / 2) * 0.7;
+  return `M ${from.x} ${from.y * 0.7} L ${middleX} ${middleY} L ${to.x} ${to.y * 0.7}`;
+}
+
+function centralPath(from: MapPoint, to: MapPoint, index: number): string {
+  const bend = index % 2 === 0 ? -2.4 : 2.4;
+  const middleX = (from.x + to.x) / 2 + bend;
+  const middleY = ((from.y + to.y) / 2) * 0.7;
+  const firstControlX = (from.x + middleX) / 2 + bend;
+  const firstControlY = (from.y * 0.7 + middleY) / 2;
+  const secondControlX = (middleX + to.x) / 2 + bend;
+  const secondControlY = (middleY + to.y * 0.7) / 2;
+  return `M ${from.x} ${from.y * 0.7} Q ${firstControlX} ${firstControlY} ${middleX} ${middleY} Q ${secondControlX} ${secondControlY} ${to.x} ${to.y * 0.7}`;
+}
 
 function pointStyle(point: MapPoint, color?: string): CSSProperties {
   return { left: `${point.x}%`, top: `${point.y}%`, '--domain-color': color } as CSSProperties;
@@ -77,7 +102,7 @@ const ClientMarker = memo(({ node, point, color, revealTruth, onSelect }: {
       aria-label={`${node.id}，${node.status}${maliciousVisible ? '，恶意节点' : ''}`}
       title={`${node.id} · ${node.status} · 风险 ${node.risk.toFixed(2)}`}
     >
-      <span>{node.id.split('-N')[1]}</span>
+      <span>{node.id.split('-').at(-1)}</span>
       <small>{node.id}</small>
       <i />
       {maliciousVisible && <em>恶意</em>}
@@ -96,22 +121,39 @@ function FlowLines({ phaseIndex }: { phaseIndex: number }) {
   return (
     <svg className="map-flow-layer" viewBox="0 0 100 70" preserveAspectRatio="none" aria-hidden="true">
       <defs>
-        <marker id="map-arrow-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#44d8ff" /></marker>
-        {domains.map((domain) => <marker key={domain.id} id={`map-arrow-${domain.id}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill={domain.color} /></marker>)}
+        <marker id="map-arrow-cyan" viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="1.6" markerHeight="1.6" orient="auto"><path d="M 1 1 L 11 6 L 1 11 L 3.5 6 z" fill="#44d8ff" stroke="#03101b" strokeWidth="1" /></marker>
+        {domains.map((domain) => <marker key={domain.id} id={`map-arrow-${domain.id}`} viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="1.05" markerHeight="1.05" orient="auto"><path d="M 1 1 L 11 6 L 1 11 L 3.5 6 z" fill={domain.color} stroke="#03101b" strokeWidth="1.2" /></marker>)}
       </defs>
       {domains.map((domain, domainIndex) => {
         const layout = regionLayouts[domainIndex];
         const from = upperDirection ? layout.server : centralPoint;
         const to = upperDirection ? centralPoint : layout.server;
-        return <line key={`central-${domain.id}`} x1={from.x} y1={from.y * .7} x2={to.x} y2={to.y * .7} className={`map-central-link ${centralActive ? 'active' : ''}`} markerEnd="url(#map-arrow-cyan)" />;
+        const path = centralPath(from, to, domainIndex);
+        return <g key={`central-${domain.id}`} data-link="central" data-direction={upperDirection ? 'uplink' : 'downlink'}>
+          <path d={path} className="map-link-backbone map-central-backbone" />
+          <path d={path} className={`map-central-link ${centralActive ? 'active' : ''}`} markerMid={centralActive ? 'url(#map-arrow-cyan)' : undefined} markerEnd={centralActive ? 'url(#map-arrow-cyan)' : undefined} />
+        </g>;
       })}
       {domains.flatMap((domain, domainIndex) => {
         const layout = regionLayouts[domainIndex];
+        const clientPoints = createClientPoints(layout, domain.nodes.length);
         return domain.nodes.map((node, nodeIndex) => {
-          const client = layout.nodes[nodeIndex];
+          const client = clientPoints[nodeIndex];
           const from = upperDirection ? client : layout.server;
           const to = upperDirection ? layout.server : client;
-          return <line key={`${domain.id}-${node.id}`} x1={from.x} y1={from.y * .7} x2={to.x} y2={to.y * .7} className={`map-client-link ${clientActive ? 'active' : ''}`} style={{ '--line-color': domain.color, animationDelay: `${nodeIndex * 110}ms` } as CSSProperties} markerEnd={`url(#map-arrow-${domain.id})`} />;
+          const path = linePath(from, to);
+          const filtered = node.status === '已过滤';
+          return <g key={`${domain.id}-${node.id}`} data-link="client" data-direction={upperDirection ? 'uplink' : 'downlink'}>
+            <path d={path} className="map-link-backbone map-client-backbone" />
+            <path
+              d={path}
+              className={`map-client-link ${clientActive ? 'active' : ''} ${filtered ? 'filtered' : ''}`}
+              style={{ '--line-color': domain.color, animationDelay: `${nodeIndex * 70}ms` } as CSSProperties}
+              markerMid={clientActive && !filtered ? `url(#map-arrow-${domain.id})` : undefined}
+              markerEnd={clientActive && !filtered ? `url(#map-arrow-${domain.id})` : undefined}
+            />
+            {filtered && clientActive && <circle className="map-link-blocked" cx={(from.x + to.x) / 2} cy={((from.y + to.y) / 2) * 0.7} r="0.6" />}
+          </g>;
         });
       })}
     </svg>
@@ -123,21 +165,21 @@ export function FederationTopology({ compact = false }: { compact?: boolean }) {
   const revealTruth = useAppStore((state) => state.revealTruth);
   const selectNode = useAppStore((state) => state.selectNode);
   const phase = phases[phaseIndex];
-  const regionData = useMemo(() => domains.map((domain, index) => ({ domain, layout: regionLayouts[index] })), []);
+  const regionData = useMemo(() => domains.map((domain, index) => ({ domain, layout: regionLayouts[index], clientPoints: createClientPoints(regionLayouts[index], domain.nodes.length) })), []);
 
   return (
     <div className={`topology-canvas map-topology ${compact ? 'compact' : ''}`}>
       <img className="map-background" src={mapImage} alt="中国行政区域演示底图" />
       <div className="map-tone" />
       <FlowLines phaseIndex={phaseIndex} />
-      {regionData.map(({ domain, layout }) => (
+      {regionData.map(({ domain, layout, clientPoints }) => (
         <div key={domain.id} className="map-region-layer">
           <div className="map-region-boundary" style={{ left: `${layout.center.x}%`, top: `${layout.center.y}%`, width: `${layout.radius.x * 2}%`, height: `${layout.radius.y * 2}%`, '--domain-color': domain.color } as CSSProperties} />
           <div className="map-region-label" style={pointStyle(layout.label, domain.color)}>
-            <span>{layout.code}</span><b>{layout.name}</b><small>{layout.terrain}</small>
+            <span>{layout.code}</span><b>{domain.name}</b><small>{layout.name} · {layout.terrain}</small>
           </div>
           <DomainServerMarker domain={domain} layout={layout} />
-          {domain.nodes.map((node, nodeIndex) => <ClientMarker key={node.id} node={node} point={layout.nodes[nodeIndex]} color={domain.color} revealTruth={revealTruth} onSelect={() => selectNode(node.id)} />)}
+          {domain.nodes.map((node, nodeIndex) => <ClientMarker key={node.id} node={node} point={clientPoints[nodeIndex]} color={domain.color} revealTruth={revealTruth} onSelect={() => selectNode(node.id)} />)}
         </div>
       ))}
       <div className="map-central-server" style={pointStyle(centralPoint)}>
