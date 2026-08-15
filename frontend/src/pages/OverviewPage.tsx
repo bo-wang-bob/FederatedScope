@@ -80,8 +80,8 @@ export function OverviewPage() {
 
       <div className="overview-main-grid">
         <Panel
-          title="三级联邦协同拓扑"
-          subtitle="中央服务器 → 域子服务器 → 域内逻辑节点"
+          title="全域地理部署与三级协同"
+          subtitle="中心主服务器 → 地区域子服务器 → 区域内逻辑节点"
           extra={<Segmented size="small" options={phases} value={phases[phaseIndex]} onChange={(value) => setPhaseIndex(phases.indexOf(value as typeof phases[number]))} />}
           className="topology-panel"
         >

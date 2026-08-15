@@ -27,7 +27,10 @@ test.describe('核心页面', () => {
 
 test('三级拓扑、节点状态和真值开关可交互', async ({ page }) => {
   await page.goto('/overview');
-  await expect(page.getByText('中央服务器', { exact: true })).toBeVisible();
+  await expect(page.getByText('中央主服务器', { exact: true })).toBeVisible();
+  await expect(page.getByText('西北沙漠区', { exact: true })).toBeVisible();
+  await expect(page.getByText('中部城镇区', { exact: true })).toBeVisible();
+  await expect(page.getByText('东部沿海区', { exact: true })).toBeVisible();
   await expect(page.getByText('态势感知域', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('D01-N004', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('恶意', { exact: true }).first()).toBeVisible();

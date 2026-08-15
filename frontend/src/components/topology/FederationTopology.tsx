@@ -1,167 +1,159 @@
-import { memo, useMemo } from 'react';
-import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  MarkerType,
-  MiniMap,
-  ReactFlow,
-  type Edge,
-  type Node,
-  type NodeProps,
-} from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
+import { memo, useMemo, type CSSProperties } from 'react';
 import { Progress } from 'antd';
+import mapImage from '../../../resource/4o28b0625501ad13015501ad2bfc0135.jpg';
 import { domains } from '../../mock/data';
 import { phases, useAppStore } from '../../store/useAppStore';
 import { isCentralLinkActive, isClientLinkActive, isUpperDirection } from '../../utils/hierarchyProjection';
+import type { MilitaryDomain, MilitaryNode } from '../../types';
 
-type TopologyData = {
-  kind: 'central' | 'domain' | 'client';
-  label: string;
-  subtitle: string;
-  status: string;
-  progress?: number;
-  color?: string;
-  malicious?: boolean;
-  assessment?: string;
-  revealTruth?: boolean;
+type MapPoint = { x: number; y: number };
+
+type RegionLayout = {
+  name: string;
+  terrain: string;
+  code: string;
+  center: MapPoint;
+  label: MapPoint;
+  radius: { x: number; y: number };
+  server: MapPoint;
+  nodes: MapPoint[];
 };
 
-type TopologyNode = Node<TopologyData, 'topology'>;
+const centralPoint: MapPoint = { x: 51, y: 45 };
 
-const TopologyNodeView = memo(({ data, selected }: NodeProps<TopologyNode>) => {
-  if (data.kind === 'central') {
-    return (
-      <div className={`topology-central ${selected ? 'selected' : ''}`}>
-        <div className="central-orbit"><span /><span /><span /></div>
-        <div className="central-core">⌾</div>
-        <strong>{data.label}</strong>
-        <small>{data.subtitle}</small>
-        <div className="topology-status"><i />{data.status}</div>
-      </div>
-    );
-  }
-  if (data.kind === 'domain') {
-    return (
-      <div className={`topology-domain ${selected ? 'selected' : ''}`} style={{ '--domain-color': data.color } as React.CSSProperties}>
-        <div className="domain-node-head"><span className="domain-server-icon">▣</span><b>{data.label}</b></div>
-        <small>{data.subtitle}</small>
-        <Progress percent={data.progress} size="small" showInfo={false} strokeColor={data.color} />
-        <div className="domain-node-foot"><span>{data.status}</span><em>前端模拟</em></div>
-      </div>
-    );
-  }
-  const maliciousVisible = data.revealTruth && data.malicious;
-  return (
-    <div
-      className={`topology-client ${selected ? 'selected' : ''} ${data.assessment === '过滤' ? 'filtered' : ''} ${maliciousVisible ? 'malicious' : ''}`}
-      style={{ '--domain-color': data.color } as React.CSSProperties}
-    >
-      <div className="client-ring"><span>{data.label.split('-N')[1]}</span></div>
-      <div className="client-copy"><b>{data.label}</b><small>{data.status}</small></div>
-      {maliciousVisible && <span className="truth-flag">恶意</span>}
-      {data.assessment === '疑似' && <span className="suspect-flag">疑似</span>}
+const regionLayouts: RegionLayout[] = [
+  {
+    name: '西北沙漠区', terrain: '沙漠 / 高原', code: 'REGION-A',
+    center: { x: 23, y: 34 }, label: { x: 24, y: 18 }, radius: { x: 14, y: 14 }, server: { x: 24, y: 34 },
+    nodes: [{ x: 14, y: 27 }, { x: 13, y: 36 }, { x: 31, y: 26 }, { x: 34, y: 38 }, { x: 18, y: 44 }],
+  },
+  {
+    name: '北部山地区', terrain: '山地 / 林区', code: 'REGION-B',
+    center: { x: 68, y: 24 }, label: { x: 68, y: 8 }, radius: { x: 13, y: 13 }, server: { x: 67, y: 26 },
+    nodes: [{ x: 58, y: 17 }, { x: 58, y: 31 }, { x: 78, y: 18 }, { x: 80, y: 30 }, { x: 69, y: 36 }],
+  },
+  {
+    name: '中部城镇区', terrain: '城镇 / 交通网', code: 'REGION-C',
+    center: { x: 48, y: 64 }, label: { x: 38, y: 51 }, radius: { x: 14, y: 13 }, server: { x: 49, y: 61 },
+    nodes: [{ x: 37, y: 58 }, { x: 42, y: 70 }, { x: 50, y: 76 }, { x: 59, y: 70 }, { x: 60, y: 57 }],
+  },
+  {
+    name: '东部沿海区', terrain: '沿海 / 岛链', code: 'REGION-D',
+    center: { x: 78, y: 62 }, label: { x: 77, y: 42 }, radius: { x: 13, y: 17 }, server: { x: 76, y: 59 },
+    nodes: [{ x: 69, y: 52 }, { x: 82, y: 48 }, { x: 88, y: 60 }, { x: 83, y: 73 }, { x: 71, y: 76 }],
+  },
+];
+
+function pointStyle(point: MapPoint, color?: string): CSSProperties {
+  return { left: `${point.x}%`, top: `${point.y}%`, '--domain-color': color } as CSSProperties;
+}
+
+const DomainServerMarker = memo(({ domain, layout }: { domain: MilitaryDomain; layout: RegionLayout }) => (
+  <div className="map-domain-server" style={pointStyle(layout.server, domain.color)}>
+    <div className="map-server-beacon"><span>▣</span><i /></div>
+    <div className="map-server-card">
+      <div><b>{domain.serverId}</b><em>域子服务器</em></div>
+      <strong>{domain.name}</strong>
+      <Progress percent={68 + domains.indexOf(domain) * 6} size="small" showInfo={false} strokeColor={domain.color} />
     </div>
+  </div>
+));
+
+DomainServerMarker.displayName = 'DomainServerMarker';
+
+const ClientMarker = memo(({ node, point, color, revealTruth, onSelect }: {
+  node: MilitaryNode;
+  point: MapPoint;
+  color: string;
+  revealTruth: boolean;
+  onSelect: () => void;
+}) => {
+  const maliciousVisible = revealTruth && node.malicious;
+  return (
+    <button
+      className={`map-client-marker ${node.status === '已过滤' ? 'filtered' : ''} ${node.assessment === '疑似' ? 'suspected' : ''} ${maliciousVisible ? 'malicious' : ''}`}
+      style={pointStyle(point, color)}
+      onClick={onSelect}
+      aria-label={`${node.id}，${node.status}${maliciousVisible ? '，恶意节点' : ''}`}
+      title={`${node.id} · ${node.status} · 风险 ${node.risk.toFixed(2)}`}
+    >
+      <span>{node.id.split('-N')[1]}</span>
+      <small>{node.id}</small>
+      <i />
+      {maliciousVisible && <em>恶意</em>}
+      {!maliciousVisible && node.assessment === '疑似' && <em className="suspect">疑似</em>}
+    </button>
   );
 });
 
-TopologyNodeView.displayName = 'TopologyNodeView';
+ClientMarker.displayName = 'ClientMarker';
 
-const nodeTypes = { topology: TopologyNodeView };
+function FlowLines({ phaseIndex }: { phaseIndex: number }) {
+  const phase = phases[phaseIndex];
+  const upperDirection = isUpperDirection(phase);
+  const centralActive = isCentralLinkActive(phase);
+  const clientActive = isClientLinkActive(phase);
+  return (
+    <svg className="map-flow-layer" viewBox="0 0 100 70" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <marker id="map-arrow-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#44d8ff" /></marker>
+        {domains.map((domain) => <marker key={domain.id} id={`map-arrow-${domain.id}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill={domain.color} /></marker>)}
+      </defs>
+      {domains.map((domain, domainIndex) => {
+        const layout = regionLayouts[domainIndex];
+        const from = upperDirection ? layout.server : centralPoint;
+        const to = upperDirection ? centralPoint : layout.server;
+        return <line key={`central-${domain.id}`} x1={from.x} y1={from.y * .7} x2={to.x} y2={to.y * .7} className={`map-central-link ${centralActive ? 'active' : ''}`} markerEnd="url(#map-arrow-cyan)" />;
+      })}
+      {domains.flatMap((domain, domainIndex) => {
+        const layout = regionLayouts[domainIndex];
+        return domain.nodes.map((node, nodeIndex) => {
+          const client = layout.nodes[nodeIndex];
+          const from = upperDirection ? client : layout.server;
+          const to = upperDirection ? layout.server : client;
+          return <line key={`${domain.id}-${node.id}`} x1={from.x} y1={from.y * .7} x2={to.x} y2={to.y * .7} className={`map-client-link ${clientActive ? 'active' : ''}`} style={{ '--line-color': domain.color, animationDelay: `${nodeIndex * 110}ms` } as CSSProperties} markerEnd={`url(#map-arrow-${domain.id})`} />;
+        });
+      })}
+    </svg>
+  );
+}
 
 export function FederationTopology({ compact = false }: { compact?: boolean }) {
   const phaseIndex = useAppStore((state) => state.phaseIndex);
   const revealTruth = useAppStore((state) => state.revealTruth);
   const selectNode = useAppStore((state) => state.selectNode);
   const phase = phases[phaseIndex];
-
-  const { nodes, edges } = useMemo(() => {
-    const resultNodes: TopologyNode[] = [{
-      id: 'central',
-      type: 'topology',
-      position: { x: 520, y: 12 },
-      data: { kind: 'central', label: '中央服务器', subtitle: 'CS-00 · 全域协调', status: phase },
-    }];
-    const resultEdges: Edge[] = [];
-    const domainX = [25, 345, 665, 985];
-    const upperDirection = isUpperDirection(phase);
-    const centralActive = isCentralLinkActive(phase);
-    const clientActive = isClientLinkActive(phase);
-
-    domains.forEach((domain, domainIndex) => {
-      const domainId = `domain-${domain.id}`;
-      resultNodes.push({
-        id: domainId,
-        type: 'topology',
-        position: { x: domainX[domainIndex], y: 190 },
-        data: {
-          kind: 'domain',
-          label: domain.name,
-          subtitle: `${domain.serverId} · ${domain.nodes.length} 个节点`,
-          status: domain.status,
-          progress: 62 + domainIndex * 7,
-          color: domain.color,
-        },
-      });
-      resultEdges.push({
-        id: `central-${domainId}`,
-        source: upperDirection ? domainId : 'central',
-        target: upperDirection ? 'central' : domainId,
-        animated: centralActive,
-        markerEnd: { type: MarkerType.ArrowClosed, color: centralActive ? '#44d8ff' : '#36546c' },
-        style: { stroke: centralActive ? '#44d8ff' : '#284258', strokeWidth: centralActive ? 2 : 1 },
-      });
-
-      if (!compact) {
-        domain.nodes.forEach((node, nodeIndex) => {
-          const nodeId = `client-${node.id}`;
-          resultNodes.push({
-            id: nodeId,
-            type: 'topology',
-            position: { x: domainX[domainIndex] - 6 + nodeIndex * 55, y: 365 + (nodeIndex % 2) * 72 },
-            data: {
-              kind: 'client', label: node.id, subtitle: node.name, status: node.status,
-              color: domain.color, malicious: node.malicious,
-              assessment: node.assessment, revealTruth,
-            },
-          });
-          resultEdges.push({
-            id: `${domainId}-${nodeId}`,
-            source: upperDirection ? nodeId : domainId,
-            target: upperDirection ? domainId : nodeId,
-            animated: clientActive && (nodeIndex % 2 === phaseIndex % 2 || phase === '域内聚合'),
-            markerEnd: { type: MarkerType.ArrowClosed, color: clientActive ? domain.color : '#30465b' },
-            style: { stroke: clientActive ? domain.color : '#253d50', strokeWidth: clientActive ? 1.5 : 1 },
-          });
-        });
-      }
-    });
-    return { nodes: resultNodes, edges: resultEdges };
-  }, [compact, phase, phaseIndex, revealTruth]);
+  const regionData = useMemo(() => domains.map((domain, index) => ({ domain, layout: regionLayouts[index] })), []);
 
   return (
-    <div className={`topology-canvas ${compact ? 'compact' : ''}`}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodeClick={(_, node) => {
-          if (node.id.startsWith('client-')) selectNode(node.id.replace('client-', ''));
-        }}
-        fitView
-        fitViewOptions={{ padding: compact ? 0.15 : 0.08 }}
-        minZoom={0.55}
-        maxZoom={1.5}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#26465e" />
-        <Controls showInteractive={false} />
-        {!compact && <MiniMap pannable zoomable nodeColor="#23455e" maskColor="rgba(3, 10, 20, .72)" />}
-      </ReactFlow>
-      <div className="simulation-badge"><span /> 三级链路展示模拟</div>
+    <div className={`topology-canvas map-topology ${compact ? 'compact' : ''}`}>
+      <img className="map-background" src={mapImage} alt="中国行政区域演示底图" />
+      <div className="map-tone" />
+      <FlowLines phaseIndex={phaseIndex} />
+      {regionData.map(({ domain, layout }) => (
+        <div key={domain.id} className="map-region-layer">
+          <div className="map-region-boundary" style={{ left: `${layout.center.x}%`, top: `${layout.center.y}%`, width: `${layout.radius.x * 2}%`, height: `${layout.radius.y * 2}%`, '--domain-color': domain.color } as CSSProperties} />
+          <div className="map-region-label" style={pointStyle(layout.label, domain.color)}>
+            <span>{layout.code}</span><b>{layout.name}</b><small>{layout.terrain}</small>
+          </div>
+          <DomainServerMarker domain={domain} layout={layout} />
+          {domain.nodes.map((node, nodeIndex) => <ClientMarker key={node.id} node={node} point={layout.nodes[nodeIndex]} color={domain.color} revealTruth={revealTruth} onSelect={() => selectNode(node.id)} />)}
+        </div>
+      ))}
+      <div className="map-central-server" style={pointStyle(centralPoint)}>
+        <div className="map-central-radar"><i /><i /><i /></div>
+        <div className="map-central-core">⌾</div>
+        <div className="map-central-copy"><span>MASTER NODE</span><b>中央主服务器</b><small>CS-00 · {phase}</small></div>
+      </div>
+      <div className="map-compass"><b>N</b><i /><span>全域态势底图</span></div>
+      <div className="simulation-badge"><span /> 地图与三级链路均为前端模拟</div>
+      <div className="map-legend">
+        <span><i className="legend-central" />主服务器</span>
+        <span><i className="legend-domain" />域子服务器</span>
+        <span><i className="legend-client" />逻辑节点</span>
+        <span><i className="legend-risk" />恶意真值</span>
+        <em>{phase}</em>
+      </div>
     </div>
   );
 }
