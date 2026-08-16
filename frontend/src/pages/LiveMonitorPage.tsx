@@ -1,50 +1,185 @@
-import { ClockCircleOutlined, PauseOutlined, PlayCircleOutlined } from '@ant-design/icons';
-import { Button, Progress, Segmented, Space, Table, Tag, Timeline } from 'antd';
+import { ClockCircleOutlined, StopOutlined } from '@ant-design/icons';
+import { Alert, Button, Empty, Popconfirm, Progress, Space, Spin, Table, Tag, Timeline, message } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { apiBaseUrl, experimentApi } from '../api/experimentApi';
+import { createBackendTrainingAdapter } from '../api/trainingAdapter';
 import { Chart, chartGrid, chartText, Panel } from '../components/ChartPanel';
 import { MetricCard } from '../components/MetricCard';
 import { PageHeader } from '../components/PageHeader';
 import { FederationTopology } from '../components/topology/FederationTopology';
-import { domains, events, nodeRows, roundMetrics } from '../mock/data';
+import { domains, nodeRows } from '../mock/data';
 import { phases, useAppStore } from '../store/useAppStore';
+import type { ExperimentMetricPoint, ExperimentRecord, TrainingConnectionState, TrainingEvent, TrainingSnapshot } from '../types';
+import { mergeTrainingEvent, recoverTrainingSnapshot } from '../utils/eventReducer';
 
-const trendOption = {
-  tooltip: { trigger: 'axis' },
-  legend: { data: ['全局准确率', '更新范数', '攻击成功率'], textStyle: { color: chartText } },
-  grid: { left: 44, right: 44, top: 38, bottom: 25 },
-  xAxis: { type: 'category', data: roundMetrics.map((item) => item.round), axisLabel: { color: chartText }, axisLine: { lineStyle: { color: chartGrid } } },
-  yAxis: [{ type: 'value', axisLabel: { color: chartText, formatter: '{value}%' }, splitLine: { lineStyle: { color: chartGrid } } }, { type: 'value', axisLabel: { color: chartText }, splitLine: { show: false } }],
-  series: [
-    { name: '全局准确率', type: 'line', smooth: true, symbol: 'none', data: roundMetrics.map((d) => d.accuracy), lineStyle: { color: '#44d8ff', width: 3 } },
-    { name: '更新范数', type: 'line', yAxisIndex: 1, symbol: 'none', data: roundMetrics.map((_, i) => (1.8 + Math.sin(i) * .35).toFixed(2)), lineStyle: { color: '#8b7cff' } },
-    { name: '攻击成功率', type: 'line', smooth: true, symbol: 'none', data: roundMetrics.map((d) => d.attackSuccess), lineStyle: { color: '#ffbd52', type: 'dashed' } },
-  ],
+const statusLabels: Record<string, string> = {
+  queued: '排队中', running: '运行中', stopping: '停止中', stopped: '已停止',
+  completed: '已完成', failed: '失败', disconnected: '连接断开',
 };
 
+const typeLabels = { heterogeneity: '异构协同', privacy: '隐私保护', backdoor: '后门攻防' };
+const methodLabels = { fedavg: 'FedAvg', fedprox: 'FedProx', heterogeneous_solution: '异构解决方案' };
+const terminal = new Set(['completed', 'failed', 'stopped']);
+
+function percentMetric(value: number | undefined) {
+  if (value === undefined) return '--';
+  return value <= 1 ? (value * 100).toFixed(2) : value.toFixed(2);
+}
+
 export function LiveMonitorPage() {
-  const { phaseIndex, running, toggleRunning, setPhaseIndex, round } = useAppStore();
-  return <div className="page">
-    <PageHeader eyebrow="LIVE EXPERIMENT MONITOR" title="实验运行监控" description="将后端单机训练轮次投影为中央、域级和节点级事件，实时跟踪训练与防御状态。" actions={<Space><Tag color="processing"><span className="live-dot" /> LIVE</Tag><Button icon={running ? <PauseOutlined /> : <PlayCircleOutlined />} onClick={toggleRunning}>{running ? '暂停' : '继续'}</Button></Space>} />
-    <div className="stage-strip">{phases.map((phase, index) => <button key={phase} className={index === phaseIndex ? 'active' : index < phaseIndex ? 'done' : ''} onClick={() => setPhaseIndex(index)}><i>{index < phaseIndex ? '✓' : index + 1}</i><span>{phase}</span></button>)}</div>
-    <div className="metrics-grid five"><MetricCard label="当前轮次" value={round} suffix=" / 30" delta="预计剩余 06:42" /><MetricCard label="活跃客户端" value="52" suffix=" / 60" delta="7 等待 · 1 过滤" tone="green" /><MetricCard label="域级上传" value="3" suffix=" / 4" delta="实景侦察域等待中" tone="violet" /><MetricCard label="全局准确率" value="85.7" suffix="%" delta="本轮 +0.8%" tone="cyan" /><MetricCard label="攻击成功率" value="31.4" suffix="%" delta="防御后下降 42.7%" tone="amber" /></div>
+  const { id = '' } = useParams();
+  const navigate = useNavigate();
+  const [record, setRecord] = useState<ExperimentRecord>();
+  const [snapshot, setSnapshot] = useState<TrainingSnapshot>();
+  const [events, setEvents] = useState<TrainingEvent[]>([]);
+  const [connectionState, setConnectionState] = useState<TrainingConnectionState>('connecting');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [stopping, setStopping] = useState(false);
+  const setPhaseIndex = useAppStore((state) => state.setPhaseIndex);
+  const setActiveExperiment = useAppStore((state) => state.setActiveExperiment);
+
+  useEffect(() => {
+    if (!id || id === 'current') {
+      setError('当前没有可打开的实验，请先创建实验或从实验记录中选择。');
+      setLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    const adapter = createBackendTrainingAdapter(apiBaseUrl());
+    let subscription: ReturnType<typeof adapter.subscribe> | undefined;
+    Promise.all([
+      experimentApi.get(id, controller.signal),
+      adapter.getSnapshot(id, controller.signal),
+    ]).then(([experiment, initial]) => {
+      setRecord(experiment);
+      setSnapshot(initial);
+      setEvents([...(initial.recentEvents ?? [])].reverse());
+      setPhaseIndex(initial.phaseIndex);
+      setActiveExperiment(id);
+      setError('');
+      if (!terminal.has(initial.status)) {
+        subscription = adapter.subscribe(
+          id,
+          initial.sequence,
+          (event) => {
+            setEvents((current) => [event, ...current].slice(0, 100));
+            setSnapshot((current) => {
+              const next = current ? mergeTrainingEvent(current, event) : current;
+              if (next) setPhaseIndex(next.phaseIndex);
+              return next;
+            });
+          },
+          setConnectionState,
+        );
+      } else {
+        setConnectionState('connected');
+      }
+    }).catch((reason: Error) => setError(reason.message)).finally(() => setLoading(false));
+    return () => {
+      controller.abort();
+      subscription?.close();
+    };
+  }, [id, setActiveExperiment, setPhaseIndex]);
+
+  useEffect(() => {
+    if (!snapshot || terminal.has(snapshot.status) || connectionState !== 'recovering') return;
+    const controller = new AbortController();
+    createBackendTrainingAdapter(apiBaseUrl()).getSnapshot(id, controller.signal)
+      .then((next) => setSnapshot((current) => current ? recoverTrainingSnapshot(current, next) : next))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [connectionState, id, snapshot?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const stopExperiment = async () => {
+    if (!id) return;
+    setStopping(true);
+    try {
+      const updated = await experimentApi.stop(id);
+      setRecord(updated);
+      setSnapshot((current) => current ? { ...current, status: updated.status } : current);
+      message.success('停止请求已提交');
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : '停止实验失败');
+    } finally {
+      setStopping(false);
+    }
+  };
+
+  const metrics = snapshot?.metrics ?? record?.metrics ?? [];
+  const latest: ExperimentMetricPoint = metrics.at(-1) ?? { round: 0 };
+  const trendOption = useMemo(() => {
+    const series = [
+      { key: 'accuracy', name: '全局准确率', color: '#44d8ff' },
+      { key: 'loss', name: '损失', color: '#8b7cff' },
+      ...(record?.type === 'privacy' ? [{ key: 'privacyRisk', name: '隐私攻击指标', color: '#ffbd52' }] : []),
+      ...(record?.type === 'backdoor' ? [{ key: 'attackSuccess', name: '攻击成功率', color: '#f0526d' }] : []),
+      ...(record?.type === 'heterogeneity' ? [{ key: 'worstDomain', name: '最弱域准确率', color: '#29e3ae' }] : []),
+    ];
+    return {
+      tooltip: { trigger: 'axis' },
+      legend: { data: series.map((item) => item.name), textStyle: { color: chartText } },
+      grid: { left: 48, right: 28, top: 42, bottom: 30 },
+      xAxis: { type: 'category', data: metrics.map((item) => item.round), axisLabel: { color: chartText }, axisLine: { lineStyle: { color: chartGrid } } },
+      yAxis: { type: 'value', axisLabel: { color: chartText }, splitLine: { lineStyle: { color: chartGrid } } },
+      series: series.map((item) => ({ name: item.name, type: 'line', smooth: true, connectNulls: true, symbol: 'none', data: metrics.map((metric) => metric[item.key]), lineStyle: { color: item.color, width: 2 } })),
+    };
+  }, [metrics, record?.type]);
+
+  const privacyConfig = record?.config.type === 'privacy' ? record.config.privacy : null;
+  const backdoorConfig = record?.config.type === 'backdoor' ? record.config.backdoor : null;
+  const maliciousSet = useMemo(() => new Set(backdoorConfig?.maliciousClients ?? []), [backdoorConfig]);
+  const clientRows = nodeRows.map((node) => {
+    const runtime = snapshot?.clients[node.id];
+    return {
+      ...node,
+      status: runtime?.status ?? (snapshot?.status === 'running' ? '等待聚合' : '待机'),
+      progress: runtime?.progress ?? (snapshot?.status === 'completed' ? 100 : 0),
+      malicious: maliciousSet.has(node.id),
+    };
+  });
+
+  if (loading) return <div className="page route-loading"><Spin size="large" /><span>正在连接实验任务…</span></div>;
+  if (error || !record || !snapshot) return <div className="page"><PageHeader eyebrow="LIVE EXPERIMENT MONITOR" title="实验运行监控" description="查看后端单机任务的实时状态。" /><Alert type="error" showIcon message="无法打开实验" description={error || '实验数据不完整'} action={<Space><Button onClick={() => navigate('/experiments/new')}>创建实验</Button><Button onClick={() => navigate('/reports')}>实验记录</Button></Space>} /></div>;
+
+  const phaseIndex = Math.min(phases.length - 1, Math.max(0, snapshot.phaseIndex));
+  const status = snapshot.status;
+  return <div className="page live-monitor-page">
+    <PageHeader eyebrow="LIVE EXPERIMENT MONITOR" title="实验运行监控" description={`${record.name} · ${record.experimentId}`} actions={<Space><Tag color={connectionState === 'connected' ? 'processing' : 'warning'}>{connectionState === 'connected' ? '实时连接' : connectionState === 'recovering' ? '正在恢复' : connectionState}</Tag><Tag color={status === 'failed' ? 'error' : terminal.has(status) ? 'default' : 'success'}>{statusLabels[status] || status}</Tag>{!terminal.has(status) && <Popconfirm title="停止当前实验？" description="停止后不能从当前轮次恢复。" onConfirm={stopExperiment}><Button danger icon={<StopOutlined />} loading={stopping}>停止实验</Button></Popconfirm>}</Space>} />
+
+    {snapshot.error && <Alert type="error" showIcon message="实验运行失败" description={snapshot.error.message} />}
+    <div className="stage-strip">{phases.map((phase, index) => <div key={phase} className={index === phaseIndex ? 'active' : index < phaseIndex ? 'done' : ''}><i>{index < phaseIndex ? '✓' : index + 1}</i><span>{phase}</span></div>)}</div>
+    <div className="metrics-grid five">
+      <MetricCard label="当前轮次" value={snapshot.round} suffix={` / ${snapshot.totalRounds ?? record.totalRounds}`} delta={`${typeLabels[record.type]} · ${methodLabels[record.method]}`} />
+      <MetricCard label="任务进度" value={Math.round((snapshot.round / Math.max(1, snapshot.totalRounds ?? record.totalRounds)) * 100)} suffix="%" delta={statusLabels[status] || status} tone="green" />
+      <MetricCard label="全局准确率" value={percentMetric(latest.accuracy)} suffix="%" delta={latest.accuracy === undefined ? '等待后端指标' : `第 ${latest.round} 轮`} tone="cyan" />
+      {record.type === 'heterogeneity' && <><MetricCard label="最弱域准确率" value={percentMetric(latest.worstDomain)} suffix="%" delta="跨域性能下界" tone="violet" /><MetricCard label="域间性能差距" value={percentMetric(latest.domainGap)} suffix="%" delta="越低越均衡" tone="amber" /></>}
+      {record.type === 'privacy' && <><MetricCard label="隐私攻击指标" value={percentMetric(latest.privacyRisk)} suffix="%" delta={privacyConfig?.defenseEnabled ? '本地保护已启用' : '无保护实验'} tone="violet" /><MetricCard label="实际噪声标准差" value={(latest.noiseStd ?? latest.noiseMultiplier)?.toFixed(3) ?? '--'} delta="以后端上传统计为准" tone="amber" /></>}
+      {record.type === 'backdoor' && <><MetricCard label="攻击成功率" value={percentMetric(latest.attackSuccess)} suffix="%" delta={backdoorConfig?.defenseEnabled ? '攻击防御已启用' : '无防御实验'} tone="red" /><MetricCard label="检测 TPR / FPR" value={`${percentMetric(latest.truePositiveRate)} / ${percentMetric(latest.falsePositiveRate)}`} suffix="%" delta="真值仅用于复盘" tone="amber" /></>}
+    </div>
+
     <div className="live-grid">
-      <Panel title="地图分层数据流" subtitle={`当前：${phases[phaseIndex]} · 第 ${round} 轮`} className="live-topology"><FederationTopology compact /></Panel>
-      <Panel title="实时事件" subtitle="最近的训练与安全事件" extra={<ClockCircleOutlined />}>
-        <Timeline className="event-timeline" items={events.map((event) => ({ color: event.level === 'danger' ? 'red' : event.level === 'warning' ? 'orange' : event.level === 'success' ? 'green' : 'blue', children: <div className="event-item"><span>{event.time} · {event.source}</span><p>{event.message}</p></div> }))} />
+      <Panel title="三级运行态势" subtitle={`当前：${phases[phaseIndex]} · 第 ${snapshot.round} 轮`} className="live-topology"><FederationTopology compact /></Panel>
+      <Panel title="实时事件" subtitle="后端任务事件与运行日志" extra={<ClockCircleOutlined />}>
+        {events.length ? <Timeline className="event-timeline" items={events.slice(0, 20).map((event) => ({ color: event.type.includes('failed') ? 'red' : event.type.includes('completed') ? 'green' : 'blue', children: <div className="event-item"><span>{new Date(event.timestamp).toLocaleTimeString()} · {event.type}</span><p>{String((event.payload as { message?: string }).message || `序号 ${event.sequence}`)}</p></div> }))} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="等待后端事件" />}
       </Panel>
     </div>
+
     <div className="live-bottom-grid">
-      <Panel title="训练与攻击趋势" subtitle="轮次级真实指标 / 模拟效果"><Chart option={trendOption} height={300} /></Panel>
-      <Panel title="域级上传进度" subtitle="域内节点先聚合，再上传中央服务器">
-        <div className="upload-list">{domains.map((domain, index) => <div key={domain.id}><div><span><i style={{ background: domain.color }} />{domain.name}</span><em>{index === 3 ? '等待客户端' : '已完成'}</em></div><Progress percent={index === 3 ? 67 : 100} strokeColor={domain.color} /><small>{index === 3 ? '10 / 15 个客户端已上传' : '域级摘要已发送至中央服务器'}</small></div>)}</div>
-      </Panel>
+      <Panel title="运行指标趋势" subtitle="按实验类型展示后端真实指标">{metrics.length ? <Chart option={trendOption} height={310} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="训练产生指标后将在此显示" />}</Panel>
+      <Panel title="四域客户端进度" subtitle="三级结构为单机客户端状态投影"><div className="upload-list">{domains.map((domain) => { const rows = clientRows.filter((client) => client.domainId === domain.id); const completed = rows.filter((client) => client.progress >= 100).length; const percent = Math.round(rows.reduce((sum, client) => sum + client.progress, 0) / rows.length); return <div key={domain.id}><div><span><i style={{ background: domain.color }} />{domain.name}</span><em>{completed} / 15 完成</em></div><Progress percent={percent} strokeColor={domain.color} /><small>{rows.filter((client) => client.status === '已过滤').length} 个客户端已过滤</small></div>; })}</div></Panel>
     </div>
-    <Panel title="防御决策明细" subtitle="模拟真值不参与风险判断" extra={<Segmented size="small" options={['全部阶段', '特征统计阶段', '正常训练阶段']} />}>
-      <Table rowKey="id" size="small" pagination={false} dataSource={nodeRows.filter((node) => node.assessment !== '通过')} columns={[
-        { title: '阶段', render: (_: unknown, __: unknown, i: number) => i % 2 ? '正常训练阶段' : '特征统计阶段' },
-        { title: '轮次', render: () => round }, { title: '域', dataIndex: 'domainId', render: (id: string) => domains.find((d) => d.id === id)?.name },
-        { title: '节点', dataIndex: 'id' }, { title: '风险分数', dataIndex: 'risk', render: (value: number) => <b className="text-danger">{value.toFixed(2)}</b> },
-        { title: '处理结果', dataIndex: 'assessment', render: (value: string) => <Tag color={value === '过滤' ? 'error' : 'warning'}>{value}</Tag> },
-        { title: '判定依据', render: () => '更新方向偏移 · 跨指标一致性异常' },
+
+    <Panel title="客户端运行明细" subtitle="样本信息来自场景，运行状态来自后端快照">
+      <Table rowKey="id" size="small" pagination={{ pageSize: 15 }} dataSource={clientRows} columns={[
+        { title: '客户端', dataIndex: 'id' },
+        { title: '域', dataIndex: 'domainId', render: (value: string) => domains.find((domain) => domain.id === value)?.name },
+        { title: '样本数', dataIndex: 'sampleCount' },
+        { title: '状态', dataIndex: 'status', render: (value: string) => <Tag>{value}</Tag> },
+        { title: '进度', dataIndex: 'progress', render: (value: number) => <Progress percent={value} size="small" /> },
+        ...(record.type === 'backdoor' ? [{ title: '模拟角色', dataIndex: 'malicious', render: (value: boolean) => <Tag color={value ? 'error' : 'default'}>{value ? '恶意' : '正常'}</Tag> }] : []),
+        ...(record.type === 'backdoor' ? [{ title: '防御判断', dataIndex: 'assessment', render: (value: string) => <Tag color={value === '过滤' ? 'error' : value === '疑似' ? 'warning' : 'success'}>{value}</Tag> }] : []),
       ]} />
     </Panel>
   </div>;

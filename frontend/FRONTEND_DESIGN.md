@@ -1,5 +1,7 @@
 # 跨军事域联邦学习演示平台——前端功能设计
 
+> 历史设计文档：仅用于追溯早期方案，不再作为当前实现依据。当前实现以 [`NEXT_STAGE_REALTIME_INTEGRATION_PLAN.md`](NEXT_STAGE_REALTIME_INTEGRATION_PLAN.md) 为准。
+
 ## 1. 文档目的
 
 本文档定义 `frontend/` 前端工程的产品目标、信息架构、页面功能、交互流程、数据模型、接口约定和文件结构，作为后续页面实现与联调验收的依据。

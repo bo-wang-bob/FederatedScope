@@ -11,10 +11,10 @@ export const officeHomeClassNames = Array.from(
 );
 
 export const officeHomeDomainTotals: Record<DomainKey, number> = {
-  Art: 12_350,
-  Clipart: 11_920,
-  Product: 13_180,
-  Real_World: 12_860,
+  Art: 1_698,
+  Clipart: 3_055,
+  Product: 3_107,
+  Real_World: 3_049,
 };
 
 const domainOrder: DomainKey[] = ['Art', 'Clipart', 'Product', 'Real_World'];
@@ -169,6 +169,7 @@ export function generateScenarioPartition(
     seed,
     partitionVersion: `office-home-a${alpha.toFixed(2)}-s${seed}`,
     source: 'frontend_simulation',
+    basis: 'built_in_simulation',
     domains: domainOrder.map((domainKey) => buildDomainPartition(domainKey, alpha, seed)),
   };
 }

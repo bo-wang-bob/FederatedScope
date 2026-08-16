@@ -45,6 +45,20 @@ describe('训练事件适配与归并', () => {
     expect(recoverTrainingSnapshot(baseSnapshot, recovered)).toEqual(recovered);
   });
 
+  it('合并指标并正确处理停止终态', () => {
+    const metric = mergeTrainingEvent(baseSnapshot, {
+      id: 'evt-11', sequence: 11, experimentId: 'demo', type: 'metric.updated',
+      timestamp: '2026-08-15T00:00:02Z', source: 'backend',
+      payload: { round: 3, accuracy: 0.75 },
+    });
+    expect(metric.metrics).toEqual([{ round: 3, accuracy: 0.75 }]);
+    const stopped = mergeTrainingEvent(metric, {
+      id: 'evt-12', sequence: 12, experimentId: 'demo', type: 'experiment.stopped',
+      timestamp: '2026-08-15T00:00:03Z', source: 'backend', payload: {},
+    });
+    expect(stopped.status).toBe('stopped');
+  });
+
   it('演示适配器按顺序输出阶段事件并报告连接状态', () => {
     vi.useFakeTimers();
     const events: TrainingEvent[] = [];

@@ -21,6 +21,9 @@ interface AppState {
   connectionState: TrainingConnectionState;
   dataSource: DataSourceKind;
   selectedNodeId?: string;
+  scenarioId?: string;
+  scenarioVersion?: string;
+  activeExperimentId?: string;
   setMode: (mode: ExperimentMode) => void;
   setPhaseIndex: (index: number) => void;
   nextPhase: () => void;
@@ -30,12 +33,25 @@ interface AppState {
   applyTrainingEvent: (event: TrainingEvent) => void;
   setConnectionState: (state: TrainingConnectionState) => void;
   setDataSource: (source: DataSourceKind) => void;
+  setScenario: (scenarioId: string, scenarioVersion: string) => void;
+  setActiveExperiment: (experimentId?: string) => void;
 }
 
 export { phases };
 
+function readSession(key: string) {
+  if (typeof sessionStorage === 'undefined') return undefined;
+  return sessionStorage.getItem(key) || undefined;
+}
+
+function writeSession(key: string, value?: string) {
+  if (typeof sessionStorage === 'undefined') return;
+  if (value) sessionStorage.setItem(key, value);
+  else sessionStorage.removeItem(key);
+}
+
 export const useAppStore = create<AppState>((set) => ({
-  mode: 'backdoor',
+  mode: 'heterogeneity',
   phaseIndex: 4,
   round: 18,
   running: true,
@@ -44,6 +60,9 @@ export const useAppStore = create<AppState>((set) => ({
   connectionState: 'connected',
   dataSource: 'frontend_simulation',
   selectedNodeId: undefined,
+  scenarioId: readSession('fs-scenario-id'),
+  scenarioVersion: readSession('fs-scenario-version'),
+  activeExperimentId: readSession('fs-active-experiment-id'),
   setMode: (mode) => set({ mode }),
   setPhaseIndex: (phaseIndex) => set({ phaseIndex }),
   nextPhase: () => set((state) => {
@@ -67,4 +86,13 @@ export const useAppStore = create<AppState>((set) => ({
   }),
   setConnectionState: (connectionState) => set({ connectionState }),
   setDataSource: (dataSource) => set({ dataSource }),
+  setScenario: (scenarioId, scenarioVersion) => {
+    writeSession('fs-scenario-id', scenarioId);
+    writeSession('fs-scenario-version', scenarioVersion);
+    set({ scenarioId, scenarioVersion });
+  },
+  setActiveExperiment: (activeExperimentId) => {
+    writeSession('fs-active-experiment-id', activeExperimentId);
+    set({ activeExperimentId });
+  },
 }));

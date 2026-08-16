@@ -55,11 +55,31 @@
 
 运行前需要根据本机环境修改配置中的数据集目录、预训练模型目录和设备编号。
 
+## 前后端实验控制
+
+本分支前端通过轻量单机 API 启动和停止现有训练入口、读取实验记录，并使用快照与 SSE 接收真实进度。API 不创建真实分布式客户端。
+
+```bash
+export FEDERATEDSCOPE_DATA_ROOT=/path/to/OfficeHomeDataset_10072016
+export FEDERATEDSCOPE_MODEL_PATH=/path/to/open_clip_vitb16.bin
+/root/.local/share/mamba/envs/pfedba/bin/python -m \
+  federatedscope.standalone_api.app --host 127.0.0.1 --port 8000
+```
+
+另开终端启动前端：
+
+```bash
+cd frontend
+npm run dev
+```
+
+控制服务提供场景预览与固化、配置预检、实验创建与停止、实验记录、运行快照、指标和 SSE 事件接口。数据集不存在时只允许配置和预览，启动实验会在预检阶段失败，不会生成模拟训练结果。
+
 ## 测试
 
 ```bash
 /root/.local/share/mamba/envs/pfedba/bin/python -m pytest -q \
-  tests/test_unified_security.py
+  tests/test_unified_security.py tests/test_standalone_api.py
 ```
 
 该测试验证模式互斥、本地自适应加噪、隐私评估钩子、图像分支保护，以及两个训练阶段的异常客户端过滤。
@@ -68,6 +88,7 @@
 
 ```text
 federatedscope/                 核心框架和统一训练实现
+federatedscope/standalone_api/  单机实验控制 API 与任务管理
 scripts/standalone_configs/     单机实验配置
 tests/                          核心回归测试
 docs/                           使用说明

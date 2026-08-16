@@ -1,6 +1,16 @@
 export type DomainKey = 'Art' | 'Clipart' | 'Product' | 'Real_World';
-export type ExperimentMode = 'baseline' | 'privacy' | 'backdoor';
+export type ExperimentMode = 'heterogeneity' | 'privacy' | 'backdoor';
+export type ExperimentMethod = 'fedavg' | 'fedprox' | 'heterogeneous_solution';
 export type DataSourceKind = 'backend' | 'frontend_simulation';
+export type ExperimentStatus =
+  | 'created'
+  | 'validating'
+  | 'queued'
+  | 'running'
+  | 'stopping'
+  | 'stopped'
+  | 'completed'
+  | 'failed';
 export type NodeStatus =
   | '待机'
   | '接收中'
@@ -79,6 +89,7 @@ export interface ScenarioPartitionPreview {
   seed: number;
   partitionVersion: string;
   source: DataSourceKind;
+  basis?: 'actual_dataset' | 'built_in_simulation';
   domains: DomainPartitionPreview[];
 }
 
@@ -93,13 +104,151 @@ export interface ScenarioPreviewRequest {
   };
 }
 
+export interface ScenarioRecord {
+  scenarioId: string;
+  createdAt: string;
+  request: ScenarioPreviewRequest;
+  preview: ScenarioPartitionPreview;
+}
+
+export interface ExperimentCommonConfig {
+  method: ExperimentMethod;
+  rounds: number;
+  localEpochs: number;
+  participationRate: number;
+  batchSize: number;
+  learningRate: number;
+  seed: number;
+  device: 'cpu' | 'cuda';
+  fedproxMu?: number;
+}
+
+export interface HeterogeneityConfig {
+  expansionTarget: number;
+}
+
+export interface PrivacyConfig {
+  attack: 'membership' | 'property' | 'reconstruction';
+  defenseEnabled: boolean;
+  initialClip?: number;
+  targetQuantile?: number;
+  noiseMultiplier?: number;
+  epsilon?: number;
+}
+
+export interface BackdoorConfig {
+  attack: 'trigger_injection' | 'label_poisoning' | 'model_update_poisoning';
+  defenseEnabled: boolean;
+  maliciousRatio: number;
+  maliciousClients: string[];
+  startRound: number;
+  poisonRatio: number;
+  targetLabel: number;
+  featureStageDefense: boolean;
+  trainingStageDefense: boolean;
+}
+
+interface ExperimentConfigBase {
+  schemaVersion: '1.0';
+  idempotencyKey: string;
+  name: string;
+  scenarioId: string;
+  common: ExperimentCommonConfig;
+}
+
+export type ExperimentConfig =
+  | ExperimentConfigBase & {
+      type: 'heterogeneity';
+      heterogeneity: HeterogeneityConfig;
+      privacy: null;
+      backdoor: null;
+    }
+  | ExperimentConfigBase & {
+      type: 'privacy';
+      heterogeneity: null;
+      privacy: PrivacyConfig;
+      backdoor: null;
+    }
+  | ExperimentConfigBase & {
+      type: 'backdoor';
+      heterogeneity: null;
+      privacy: null;
+      backdoor: BackdoorConfig;
+    };
+
+export interface ExperimentMetricPoint {
+  round: number;
+  accuracy?: number;
+  loss?: number;
+  worstDomain?: number;
+  domainGap?: number;
+  attackSuccess?: number;
+  privacyRisk?: number;
+  noiseMultiplier?: number;
+  noiseStd?: number;
+  truePositiveRate?: number;
+  falsePositiveRate?: number;
+  [key: string]: number | undefined;
+}
+
+export interface ExperimentRecord {
+  experimentId: string;
+  name: string;
+  type: ExperimentMode;
+  method: ExperimentMethod;
+  scenarioId: string;
+  scenarioSummary: {
+    dataset: string;
+    alpha: number;
+    seed: number;
+    partitionVersion: string;
+  };
+  config: ExperimentConfig;
+  status: ExperimentStatus;
+  createdAt: string;
+  startedAt?: string;
+  endedAt?: string;
+  updatedAt: string;
+  sequence: number;
+  round: number;
+  totalRounds: number;
+  metrics: ExperimentMetricPoint[];
+  finalMetrics: Record<string, number>;
+  error?: { code: string; message: string };
+}
+
+export interface Capabilities {
+  apiVersion: string;
+  datasets: Array<{
+    key: string;
+    name: string;
+    domains: DomainKey[];
+    clientsPerDomain: number;
+    available: boolean;
+  }>;
+  devices: Array<'cpu' | 'cuda'>;
+  methods: ExperimentMethod[];
+  experimentTypes: ExperimentMode[];
+  runner: {
+    ready: boolean;
+    dataReady: boolean;
+    modelReady: boolean;
+    templatesReady: boolean;
+  };
+}
+
 export type TrainingEventType =
   | 'experiment.started'
+  | 'experiment.stopping'
+  | 'experiment.stopped'
   | 'stage.changed'
   | 'round.started'
   | 'client.status.changed'
   | 'client.metric.updated'
   | 'round.completed'
+  | 'metric.updated'
+  | 'warning.raised'
+  | 'log.received'
   | 'experiment.completed'
   | 'experiment.failed';
 
@@ -127,29 +276,21 @@ export interface TrainingSnapshot {
   sequence: number;
   phaseIndex: number;
   round: number;
-  status: 'running' | 'paused' | 'completed' | 'failed' | 'disconnected';
+  status: ExperimentStatus | 'disconnected';
   clients: Record<string, ClientTrainingState>;
+  totalRounds?: number;
+  metrics?: ExperimentMetricPoint[];
+  recentEvents?: TrainingEvent[];
+  type?: ExperimentMode;
+  method?: ExperimentMethod;
+  name?: string;
+  finalMetrics?: Record<string, number>;
+  error?: { code: string; message: string };
   source: DataSourceKind;
   updatedAt: string;
 }
 
 export type TrainingConnectionState = 'connecting' | 'connected' | 'recovering' | 'disconnected';
-
-export interface RoundMetric {
-  round: number;
-  accuracy: number;
-  worstDomain: number;
-  attackSuccess: number;
-  privacyRisk: number;
-}
-
-export interface EventItem {
-  id: number;
-  time: string;
-  level: 'info' | 'success' | 'warning' | 'danger';
-  source: string;
-  message: string;
-}
 
 export type HierarchyPhase =
   | '中央下发'
@@ -159,11 +300,3 @@ export type HierarchyPhase =
   | '域内聚合'
   | '域级上传'
   | '全域聚合';
-
-export interface PrivacyMetric {
-  name: string;
-  before: number;
-  after: number;
-  unit?: string;
-  lowerIsBetter?: boolean;
-}

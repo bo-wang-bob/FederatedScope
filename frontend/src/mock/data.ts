@@ -1,10 +1,4 @@
-import type {
-  EventItem,
-  MilitaryDomain,
-  MilitaryNode,
-  PrivacyMetric,
-  RoundMetric,
-} from '../types';
+import type { MilitaryDomain, MilitaryNode } from '../types';
 import { generateScenarioPartition } from '../utils/partition';
 
 const domainDefinitions = [
@@ -104,60 +98,5 @@ export const domains: MilitaryDomain[] = domainDefinitions.map((domain, domainIn
     };
   }),
 }));
-
-export const roundMetrics: RoundMetric[] = Array.from({ length: 30 }, (_, index) => {
-  const round = index + 1;
-  return {
-    round,
-    accuracy: Number((48 + 39 * (1 - Math.exp(-round / 9)) + Math.sin(round / 2) * 0.8).toFixed(2)),
-    worstDomain: Number((40 + 38 * (1 - Math.exp(-round / 10)) + Math.cos(round / 3)).toFixed(2)),
-    attackSuccess: Number(Math.max(2, 72 - round * 1.85 + Math.sin(round) * 2).toFixed(2)),
-    privacyRisk: Number(Math.max(12, 68 - round * 1.5).toFixed(2)),
-  };
-});
-
-export const events: EventItem[] = [
-  { id: 1, time: '14:32:08', level: 'success', source: '中央服务器', message: '第 18 轮全域状态已下发至 4 个域子服务器' },
-  { id: 2, time: '14:32:11', level: 'info', source: 'OH-DT-S01', message: '数字孪生域已完成域内广播，15 个客户端开始处理' },
-  { id: 3, time: '14:32:16', level: 'warning', source: 'OH-ED-C02', message: '更新偏移超过动态阈值，进入复核队列' },
-  { id: 4, time: '14:32:19', level: 'danger', source: 'OH-DT-C04', message: '训练更新已被防御策略过滤' },
-  { id: 5, time: '14:32:23', level: 'success', source: 'OH-FR-S04', message: '实景侦察域完成模拟域内聚合' },
-  { id: 6, time: '14:32:25', level: 'info', source: '系统', message: '当前有效域覆盖率 100%，满足全域聚合条件' },
-];
-
-export const domainAccuracy = [
-  { name: '数字孪生域', before: 71.4, after: 85.8, samples: 12_350 },
-  { name: '战术符号域', before: 65.2, after: 82.6, samples: 11_920 },
-  { name: '装备数据库域', before: 68.8, after: 84.2, samples: 13_180 },
-  { name: '实景侦察域', before: 59.3, after: 80.7, samples: 12_860 },
-];
-
-export const featureDistances = [
-  [0, 0.72, 0.64, 0.81],
-  [0.72, 0, 0.56, 0.69],
-  [0.64, 0.56, 0, 0.61],
-  [0.81, 0.69, 0.61, 0],
-];
-
-export const membershipMetrics: PrivacyMetric[] = [
-  { name: '攻击准确率', before: 78.6, after: 54.2, unit: '%', lowerIsBetter: true },
-  { name: 'AUC', before: 0.84, after: 0.55, lowerIsBetter: true },
-  { name: '攻击优势值', before: 0.53, after: 0.08, lowerIsBetter: true },
-  { name: '任务准确率', before: 86.3, after: 83.9, unit: '%' },
-];
-
-export const propertyMetrics: PrivacyMetric[] = [
-  { name: '属性准确率', before: 74.1, after: 42.8, unit: '%', lowerIsBetter: true },
-  { name: '宏平均 F1', before: 0.71, after: 0.39, lowerIsBetter: true },
-  { name: '平均置信度', before: 0.82, after: 0.51, lowerIsBetter: true },
-  { name: '任务准确率', before: 86.3, after: 83.9, unit: '%' },
-];
-
-export const reconstructionMetrics: PrivacyMetric[] = [
-  { name: '特征相似度', before: 0.81, after: 0.27, lowerIsBetter: true },
-  { name: '结构相似度', before: 0.76, after: 0.21, lowerIsBetter: true },
-  { name: '标签恢复率', before: 68.4, after: 17.2, unit: '%', lowerIsBetter: true },
-  { name: '任务准确率', before: 86.3, after: 83.9, unit: '%' },
-];
 
 export const nodeRows = domains.flatMap((domain) => domain.nodes);

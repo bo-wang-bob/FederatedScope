@@ -37,6 +37,7 @@ export function createBackendTrainingAdapter(apiBaseUrl: string): TrainingDataAd
       let lastSequence = afterSequence;
       let reconnectTimer: number | undefined;
       let retryCount = 0;
+      let terminal = false;
 
       const connect = () => {
         if (closed) return;
@@ -52,10 +53,15 @@ export function createBackendTrainingAdapter(apiBaseUrl: string): TrainingDataAd
           if (event.sequence <= lastSequence) return;
           lastSequence = event.sequence;
           onEvent({ ...event, source: 'backend' });
+          if (['experiment.completed', 'experiment.failed', 'experiment.stopped'].includes(event.type)) {
+            terminal = true;
+            stream?.close();
+            onConnectionState?.('connected');
+          }
         };
         stream.onerror = () => {
           stream?.close();
-          if (closed) return;
+          if (closed || terminal) return;
           onConnectionState?.('recovering');
           const controller = new AbortController();
           getSnapshot(experimentId, controller.signal)
@@ -134,8 +140,7 @@ export function createDemoTrainingAdapter(
 
 export function resolveTrainingDataAdapter(initialSnapshot: TrainingSnapshot): TrainingDataAdapter {
   const requestedSource = import.meta.env.VITE_DATA_SOURCE;
-  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
-  return requestedSource === 'backend' && apiBaseUrl
-    ? createBackendTrainingAdapter(apiBaseUrl)
-    : createDemoTrainingAdapter(initialSnapshot);
+  return requestedSource === 'frontend_simulation'
+    ? createDemoTrainingAdapter(initialSnapshot)
+    : createBackendTrainingAdapter(import.meta.env.VITE_API_BASE_URL || '');
 }

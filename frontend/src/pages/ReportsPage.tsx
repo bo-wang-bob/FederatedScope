@@ -1,24 +1,89 @@
-import { DownloadOutlined, FileExcelOutlined, FileImageOutlined, FileTextOutlined, SearchOutlined } from '@ant-design/icons';
-import { Button, Input, Select, Space, Table, Tag } from 'antd';
+import { EyeOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Alert, Button, Descriptions, Drawer, Empty, Space, Table, Tag } from 'antd';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { experimentApi } from '../api/experimentApi';
 import { Panel } from '../components/ChartPanel';
 import { MetricCard } from '../components/MetricCard';
 import { PageHeader } from '../components/PageHeader';
+import { useAppStore } from '../store/useAppStore';
+import type { ExperimentRecord } from '../types';
 
-const reportRows = [
-  ['RUN-0821-B','跨域联合认知演示','后门防御模拟','已完成','2026-08-15 14:18','30 轮'],
-  ['RUN-0821-A','跨域联合认知演示','后门攻击模拟','已完成','2026-08-15 13:42','30 轮'],
-  ['RUN-0819-P','隐私保护对照','隐私保护评估','已完成','2026-08-15 11:06','24 轮'],
-  ['RUN-0819-R','隐私风险基线','隐私风险评估','已完成','2026-08-15 10:24','24 轮'],
-  ['RUN-0818-H','重度异构场景','异构基线','已完成','2026-08-14 22:16','30 轮'],
-  ['RUN-0817-M','中度异构场景','异构基线','已完成','2026-08-14 20:31','30 轮'],
-].map(([id,scene,mode,status,time,rounds]) => ({ id,scene,mode,status,time,rounds }));
+const typeLabels = { heterogeneity: '异构协同', privacy: '隐私保护', backdoor: '后门攻防' };
+const methodLabels = { fedavg: 'FedAvg', fedprox: 'FedProx', heterogeneous_solution: '异构解决方案' };
+const statusLabels: Record<string, string> = { queued: '排队中', running: '运行中', stopping: '停止中', stopped: '已停止', completed: '已完成', failed: '失败' };
+const statusColors: Record<string, string> = { queued: 'default', running: 'processing', stopping: 'warning', stopped: 'default', completed: 'success', failed: 'error' };
+
+function formatTime(value?: string) {
+  return value ? new Date(value).toLocaleString() : '--';
+}
+
+function finalMetric(record: ExperimentRecord) {
+  const entries = Object.entries(record.finalMetrics || {});
+  if (!entries.length) return '暂无';
+  return entries.slice(0, 2).map(([key, value]) => `${key}: ${Number(value).toFixed(3)}`).join(' · ');
+}
 
 export function ReportsPage() {
-  return <div className="page">
-    <PageHeader eyebrow="EXPERIMENT REPORTS" title="实验档案与报告" description="检索历史实验，导出经过脱敏的配置、指标、图表和结论摘要。" actions={<Button type="primary" icon={<FileTextOutlined />}>生成对照报告</Button>} />
-    <div className="metrics-grid four"><MetricCard label="实验总数" value="26" delta="本周新增 12" /><MetricCard label="已完成" value="23" delta="完成率 88.5%" tone="green" /><MetricCard label="安全实验" value="16" delta="隐私 8 · 后门 8" tone="violet" /><MetricCard label="报告归档" value="9" delta="最近更新 14:35" tone="amber" /></div>
-    <Panel title="实验记录" subtitle="所有节点标识均为模拟逻辑编号" extra={<Space><Input prefix={<SearchOutlined />} placeholder="搜索实验或场景" /><Select value="全部模式" options={[{ value:'全部模式'},{ value:'异构基线'},{ value:'隐私评估'},{ value:'后门防御' }]} /></Space>}>
-      <Table rowKey="id" dataSource={reportRows} columns={[{ title:'实验编号',dataIndex:'id',render:(v:string)=><button className="link-button">{v}</button>},{title:'场景',dataIndex:'scene'},{title:'模式',dataIndex:'mode',render:(v:string)=><Tag color={v.includes('后门')?'orange':v.includes('隐私')?'purple':'cyan'}>{v}</Tag>},{title:'状态',dataIndex:'status',render:(v:string)=><Tag color="success">{v}</Tag>},{title:'开始时间',dataIndex:'time'},{title:'训练轮次',dataIndex:'rounds'},{title:'导出',render:()=><Space><Button size="small" icon={<FileImageOutlined />}>PNG</Button><Button size="small" icon={<FileExcelOutlined />}>CSV</Button><Button size="small" icon={<DownloadOutlined />}>JSON</Button></Space>}]} />
+  const navigate = useNavigate();
+  const setActiveExperiment = useAppStore((state) => state.setActiveExperiment);
+  const [records, setRecords] = useState<ExperimentRecord[]>([]);
+  const [selected, setSelected] = useState<ExperimentRecord>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    experimentApi.list()
+      .then((result) => { setRecords(result); setError(''); })
+      .catch((reason: Error) => setError(reason.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(load, []);
+  const completed = records.filter((record) => record.status === 'completed').length;
+  const running = records.filter((record) => ['queued', 'running', 'stopping'].includes(record.status)).length;
+  const security = records.filter((record) => record.type !== 'heterogeneity').length;
+
+  const openMonitor = (record: ExperimentRecord) => {
+    setActiveExperiment(record.experimentId);
+    navigate(`/experiments/${encodeURIComponent(record.experimentId)}/live`);
+  };
+
+  return <div className="page reports-page">
+    <PageHeader eyebrow="EXPERIMENT RECORDS" title="实验记录" description="记录每次实验的配置、运行状态和最终指标。" actions={<Button icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新</Button>} />
+    {error && <Alert type="error" showIcon message="实验记录加载失败" description={error} action={<Button size="small" onClick={load}>重试</Button>} />}
+    <div className="metrics-grid four"><MetricCard label="实验总数" value={records.length} delta="后端持久化记录" /><MetricCard label="已完成" value={completed} delta={`完成率 ${records.length ? ((completed / records.length) * 100).toFixed(1) : '0.0'}%`} tone="green" /><MetricCard label="正在运行" value={running} delta="含排队与停止中" tone="cyan" /><MetricCard label="安全实验" value={security} delta="隐私与后门实验" tone="violet" /></div>
+    <Panel title="全部实验" subtitle="按创建时间倒序排列">
+      {records.length || loading ? <Table rowKey="experimentId" loading={loading} dataSource={records} pagination={{ pageSize: 12 }} columns={[
+        { title: '实验编号', dataIndex: 'experimentId', width: 210, render: (value: string, row: ExperimentRecord) => <button className="link-button" onClick={() => setSelected(row)}>{value}</button> },
+        { title: '实验名称', dataIndex: 'name' },
+        { title: '类型', dataIndex: 'type', render: (value: ExperimentRecord['type']) => <Tag color={value === 'backdoor' ? 'orange' : value === 'privacy' ? 'purple' : 'cyan'}>{typeLabels[value]}</Tag> },
+        { title: '方案', dataIndex: 'method', render: (value: ExperimentRecord['method']) => methodLabels[value] },
+        { title: '状态', dataIndex: 'status', render: (value: string) => <Tag color={statusColors[value]}>{statusLabels[value] || value}</Tag> },
+        { title: '创建时间', dataIndex: 'createdAt', render: formatTime },
+        { title: '轮次', render: (_: unknown, row: ExperimentRecord) => `${row.round} / ${row.totalRounds}` },
+        { title: '核心结果', render: (_: unknown, row: ExperimentRecord) => finalMetric(row) },
+        { title: '操作', fixed: 'right' as const, width: 110, render: (_: unknown, row: ExperimentRecord) => <Button size="small" icon={<EyeOutlined />} onClick={() => openMonitor(row)}>运行记录</Button> },
+      ]} /> : <Empty description="尚无实验记录" />}
     </Panel>
+
+    <Drawer title={`实验配置 · ${selected?.experimentId ?? ''}`} width={660} open={Boolean(selected)} onClose={() => setSelected(undefined)} extra={selected && <Button type="primary" onClick={() => openMonitor(selected)}>查看运行记录</Button>}>
+      {selected && <>
+        <Descriptions column={2} bordered size="small" items={[
+          { key: 'name', label: '实验名称', children: selected.name },
+          { key: 'status', label: '状态', children: <Tag color={statusColors[selected.status]}>{statusLabels[selected.status]}</Tag> },
+          { key: 'type', label: '类型', children: typeLabels[selected.type] },
+          { key: 'method', label: '运行方案', children: methodLabels[selected.method] },
+          { key: 'scenario', label: '场景快照', children: selected.scenarioId },
+          { key: 'alpha', label: '狄利克雷参数', children: selected.scenarioSummary.alpha },
+          { key: 'created', label: '创建时间', children: formatTime(selected.createdAt) },
+          { key: 'ended', label: '结束时间', children: formatTime(selected.endedAt) },
+        ]} />
+        {selected.error && <Alert type="error" showIcon message={selected.error.code} description={selected.error.message} style={{ marginTop: 16 }} />}
+        <Panel title="规范化配置" subtitle="任务实际接收的公开配置" className="record-config-panel"><pre>{JSON.stringify(selected.config, null, 2)}</pre></Panel>
+        <Panel title="最终指标" subtitle="后端最后一次有效指标"><pre>{JSON.stringify(selected.finalMetrics, null, 2)}</pre></Panel>
+      </>}
+    </Drawer>
   </div>;
 }

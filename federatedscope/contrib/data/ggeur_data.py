@@ -17,6 +17,8 @@ from torchvision import transforms
 
 from federatedscope.register import register_data
 from federatedscope.core.data.utils import convert_data_mode
+from federatedscope.core.data.dirichlet_partition import \
+    partition_indices_by_label
 
 logger = logging.getLogger(__name__)
 
@@ -572,15 +574,16 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
             f"within_client_replacement={random_sample_with_replacement}")
         dirichlet_matrix = None
     elif use_lds:
-        # LDS mode: use Dirichlet distribution for non-IID data split
+        # Keep every OfficeHome feature domain intact and introduce label
+        # imbalance only among clients within that domain.
         lds_alpha = getattr(config.ggeur, 'lds_alpha', 0.1)
         lds_seed = getattr(config.ggeur, 'lds_seed', 42)
 
-        logger.info(f"GGEUR_Clip Office-Home with LDS: alpha={lds_alpha}, "
-                   f"{total_clients} clients ({clients_per_domain} per domain)")
-
-        # Generate Dirichlet matrix for domain-level LDS
-        dirichlet_matrix = _generate_dirichlet_matrix(num_domains, num_classes, lds_alpha, lds_seed)
+        logger.info(
+            "Office-Home within-domain Dirichlet partition: "
+            f"alpha={lds_alpha}, {total_clients} clients "
+            f"({clients_per_domain} per fixed domain)")
+        dirichlet_matrix = None
     else:
         logger.info(f"GGEUR_Clip Office-Home: {total_clients} clients, {clients_per_domain} per domain")
         dirichlet_matrix = None
@@ -597,12 +600,16 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
         logger.info(f"Loading Office-Home domain '{domain}'")
 
         try:
+            # The scenario partition seed controls both the deterministic
+            # train/test split and the within-domain client allocation.  The
+            # experiment seed remains available for model training randomness.
+            domain_split_seed = lds_seed if use_lds else config.seed
             domain_data = load_office_home_domain_data(
                 root=root,
                 domain=domain,
                 splits=splits,
                 transform=transform,
-                seed=config.seed
+                seed=domain_split_seed
             )
 
             train_dataset = domain_data['train']
@@ -627,20 +634,23 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
                     "within_client_replacement="
                     f"{random_summary['sample_with_replacement']}")
             elif use_lds:
-                # LDS mode: first apply Dirichlet distribution to get domain's portion
-                lds_subset, class_counts = _split_dataset_with_lds(
-                    train_dataset,
-                    dirichlet_matrix[domain_idx],
-                    seed=config.seed + domain_idx
-                )
-
-                # Then split among multiple clients if needed
-                if clients_per_domain > 1:
-                    train_subsets = _split_subset_for_clients(
-                        lds_subset, clients_per_domain, seed=config.seed + domain_idx
-                    )
-                else:
-                    train_subsets = [lds_subset]
+                client_indices = partition_indices_by_label(
+                    train_dataset.targets,
+                    clients_per_domain,
+                    lds_alpha,
+                    lds_seed + domain_idx * 1009)
+                train_subsets = [
+                    Subset(train_dataset, indices)
+                    for indices in client_indices
+                ]
+                allocated = sum(len(subset) for subset in train_subsets)
+                if allocated != len(train_dataset):
+                    raise RuntimeError(
+                        f"OfficeHome domain {domain} partition lost samples: "
+                        f"{allocated}/{len(train_dataset)}")
+                logger.info(
+                    f"  Domain {domain}: partitioned all {allocated} train "
+                    f"samples among {clients_per_domain} clients")
             else:
                 # Standard mode: uniform split
                 if clients_per_domain > 1:
@@ -696,10 +706,12 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
         logger.info(f"  Logical train samples: {total_train_samples}")
         logger.info(f"  Original train samples: {total_original_samples}")
     elif use_lds:
-        logger.info(f"GGEUR_Clip Office-Home LDS Summary:")
+        logger.info("Office-Home within-domain partition summary:")
         logger.info(f"  Total clients: {total_clients}")
+        logger.info(f"  Fixed domains: {domains}")
         logger.info(f"  Original train samples: {total_original_samples}")
-        logger.info(f"  LDS allocated samples: {total_train_samples} ({100*total_train_samples/total_original_samples:.1f}%)")
+        logger.info(f"  Partitioned train samples: {total_train_samples} "
+                    f"({100*total_train_samples/total_original_samples:.1f}%)")
         logger.info(f"  Alpha: {lds_alpha}")
     else:
         logger.info(f"GGEUR_Clip Office-Home data loaded: {len(data_dict)} clients, "

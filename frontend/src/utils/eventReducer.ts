@@ -38,6 +38,16 @@ export function mergeTrainingEvent(
       },
     };
   }
+  if (event.type === 'metric.updated') {
+    const metric = event.payload as import('../types').ExperimentMetricPoint;
+    const metrics = [...(base.metrics ?? [])];
+    const existing = metrics.findIndex((item) => item.round === metric.round);
+    if (existing >= 0) metrics[existing] = { ...metrics[existing], ...metric };
+    else metrics.push(metric);
+    return { ...base, round: Math.max(base.round, metric.round ?? 0), metrics };
+  }
+  if (event.type === 'experiment.stopping') return { ...base, status: 'stopping' };
+  if (event.type === 'experiment.stopped') return { ...base, status: 'stopped' };
   if (event.type === 'experiment.completed') return { ...base, status: 'completed' };
   if (event.type === 'experiment.failed') return { ...base, status: 'failed' };
   return base;

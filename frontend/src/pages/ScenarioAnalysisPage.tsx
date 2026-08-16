@@ -1,7 +1,6 @@
 import {
   CheckOutlined,
   DatabaseOutlined,
-  EyeOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
 import {
@@ -22,7 +21,8 @@ import { resolveScenarioDataAdapter } from '../api/scenarioAdapter';
 import { Chart, chartGrid, chartText, Panel } from '../components/ChartPanel';
 import { MetricCard } from '../components/MetricCard';
 import { PageHeader } from '../components/PageHeader';
-import { featureDistances, domains } from '../mock/data';
+import { domains } from '../mock/data';
+import { useAppStore } from '../store/useAppStore';
 import type {
   ClientPartitionPreview,
   DomainKey,
@@ -64,65 +64,52 @@ export function ScenarioAnalysisPage() {
   const [draftAlpha, setDraftAlpha] = useState(0.3);
   const [appliedAlpha, setAppliedAlpha] = useState(0.3);
   const [seed, setSeed] = useState(20_260_815);
+  const [appliedSeed, setAppliedSeed] = useState(20_260_815);
   const [selectedDomainKey, setSelectedDomainKey] = useState<DomainKey>('Art');
-  const [featureView, setFeatureView] = useState<'处理前' | '处理后'>('处理前');
   const [distributionMode, setDistributionMode] = useState<'样本数量' | '类别比例'>('样本数量');
   const [preview, setPreview] = useState<ScenarioPartitionPreview>(() => generateScenarioPartition());
+  const [appliedPreview, setAppliedPreview] = useState<ScenarioPartitionPreview>(() => generateScenarioPartition());
   const [loading, setLoading] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [previewError, setPreviewError] = useState('');
   const [selectedClient, setSelectedClient] = useState<ClientPartitionPreview>();
+  const { scenarioId, setScenario } = useAppStore();
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     scenarioAdapter.preview(makeRequest(draftAlpha, seed), controller.signal)
-      .then((result) => setPreview(result))
+      .then((result) => {
+        setPreview(result);
+        setPreviewError('');
+      })
+      .catch((error: Error) => {
+        if (error.name !== 'AbortError') setPreviewError(error.message);
+      })
       .finally(() => setLoading(false));
     return () => controller.abort();
   }, [draftAlpha, seed]);
 
-  const appliedPreview = useMemo(
-    () => generateScenarioPartition(appliedAlpha, seed),
-    [appliedAlpha, seed],
-  );
   const currentSummary = useMemo(() => distributionSummary(appliedPreview), [appliedPreview]);
   const draftSummary = useMemo(() => distributionSummary(preview), [preview]);
   const selectedDomain = preview.domains.find((domain) => domain.domainKey === selectedDomainKey)!;
   const domainDefinition = domains.find((domain) => domain.id === selectedDomainKey)!;
 
-  const featureHeatmap = useMemo(() => featureDistances.flatMap((row, y) =>
-    row.map((value, x) => [x, y, featureView === '处理后' ? Number((value * 0.52).toFixed(2)) : value])), [featureView]);
-  const featureScatter = useMemo(() => domains.flatMap((domain, domainIndex) =>
-    Array.from({ length: 34 }, (_, index) => {
-      const compact = featureView === '处理后' ? 0.5 : 1;
-      const centerX = [17, 39, 63, 82][domainIndex];
-      const centerY = [65, 28, 70, 34][domainIndex];
-      return [
-        centerX + Math.sin(index * 2.1 + domainIndex) * 13 * compact,
-        centerY + Math.cos(index * 1.6) * 11 * compact,
-        domainIndex,
-      ];
-    })), [featureView]);
-
-  const scatterOption = {
-    tooltip: { formatter: (params: { value: number[] }) => `${domains[params.value[2]].name}<br/>只读特征投影` },
-    grid: { left: 28, right: 18, top: 20, bottom: 28 },
-    xAxis: { min: 0, max: 100, axisLabel: { show: false }, axisLine: { lineStyle: { color: chartGrid } }, splitLine: { lineStyle: { color: chartGrid } } },
-    yAxis: { min: 0, max: 100, axisLabel: { show: false }, axisLine: { lineStyle: { color: chartGrid } }, splitLine: { lineStyle: { color: chartGrid } } },
-    series: domains.map((domain, domainIndex) => ({
-      name: domain.name,
-      type: 'scatter',
-      data: featureScatter.filter((point) => point[2] === domainIndex),
-      symbolSize: 8,
-      itemStyle: { color: domain.color, opacity: 0.78 },
-    })),
-  };
-  const distanceOption = {
-    tooltip: { formatter: (params: { value: number[] }) => `${domains[params.value[1]].name} ↔ ${domains[params.value[0]].name}<br/>距离 ${params.value[2]}` },
-    grid: { left: 88, right: 18, top: 14, bottom: 68 },
-    xAxis: { type: 'category', data: domains.map((domain) => domain.shortName), axisLabel: { color: chartText, rotate: 18 }, axisLine: { lineStyle: { color: chartGrid } } },
-    yAxis: { type: 'category', data: domains.map((domain) => domain.shortName), axisLabel: { color: chartText }, axisLine: { lineStyle: { color: chartGrid } } },
-    visualMap: { min: 0, max: 1, orient: 'horizontal', left: 'center', bottom: 0, textStyle: { color: chartText }, inRange: { color: ['#10283b', '#317da8', '#44d8ff', '#ffbd52'] } },
-    series: [{ type: 'heatmap', data: featureHeatmap, label: { show: true, color: '#eef9ff' }, itemStyle: { borderColor: '#0c1a29', borderWidth: 3 } }],
+  const applyScenario = async () => {
+    setApplying(true);
+    try {
+      const record = await scenarioAdapter.create(makeRequest(draftAlpha, seed));
+      setAppliedAlpha(draftAlpha);
+      setAppliedSeed(seed);
+      setPreview(record.preview);
+      setAppliedPreview(record.preview);
+      setScenario(record.scenarioId, record.preview.partitionVersion);
+      setPreviewError('');
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : '场景应用失败');
+    } finally {
+      setApplying(false);
+    }
   };
   const sampleOption = {
     tooltip: { trigger: 'axis', formatter: (params: Array<{ name: string; value: number }>) => `${params[0].name}<br/>样本数量 ${params[0].value.toLocaleString()}` },
@@ -166,12 +153,14 @@ export function ScenarioAnalysisPage() {
       <PageHeader
         eyebrow="SCENARIO & HETEROGENEITY"
         title="场景与异构分析"
-        description="域间特征偏移由四个数据域决定并保持只读；域内客户端分布仅由狄利克雷参数调节。"
-        actions={<Space><Tag color="cyan">OfficeHome · 4 域 × 15 客户端</Tag><Tag>{preview.source === 'backend' ? '训练数据' : '演示数据'}</Tag></Space>}
+        description="设置基础异构环境，并查看四个域中每个客户端的样本数量和类别分布。"
+        actions={<Space><Tag color="cyan">OfficeHome · 4 域 × 15 客户端</Tag><Tag color={preview.basis === 'actual_dataset' ? 'green' : 'gold'}>{preview.basis === 'actual_dataset' ? '数据目录实测' : '内置数据规模仿真'}</Tag><Tag color={scenarioId ? 'success' : 'default'}>{scenarioId ? '场景已应用' : '场景未应用'}</Tag></Space>}
       />
 
+      {previewError && <Alert type="error" showIcon message="场景服务请求失败" description={previewError} />}
+
       <div className="scenario-analysis-top">
-        <Panel title="域内分布参数" subtitle="唯一可调异构强度" className="alpha-panel" extra={<Tag color={draftAlpha === appliedAlpha ? 'success' : 'warning'}>{draftAlpha === appliedAlpha ? '已应用' : '待确认'}</Tag>}>
+        <Panel title="基础异构环境" subtitle="设置域内数据分布" className="alpha-panel" extra={<Tag color={draftAlpha === appliedAlpha && seed === appliedSeed && scenarioId ? 'success' : 'warning'}>{draftAlpha === appliedAlpha && seed === appliedSeed && scenarioId ? '已应用' : '待应用'}</Tag>}>
           <div className="alpha-value"><small>狄利克雷参数 α</small><strong>{draftAlpha.toFixed(2)}</strong><span>{draftAlpha <= 0.2 ? '高度不均衡' : draftAlpha < 1 ? '中度不均衡' : '接近均衡'}</span></div>
           <Slider
             min={Math.log10(0.05)}
@@ -184,37 +173,20 @@ export function ScenarioAnalysisPage() {
           />
           <div className="alpha-presets">{alphaPresets.map((value) => <Button key={value} size="small" type={draftAlpha === value ? 'primary' : 'default'} onClick={() => setDraftAlpha(value)}>α {value.toFixed(value < 1 ? 1 : 0)}</Button>)}</div>
           <label className="seed-control"><span>随机种子<small>仅用于复现，不改变异构定义</small></span><InputNumber value={seed} min={1} precision={0} onChange={(value) => setSeed(value ?? 20_260_815)} /></label>
-          <Space className="alpha-actions"><Button icon={<ReloadOutlined />} onClick={() => { setDraftAlpha(0.3); setSeed(20_260_815); }}>重置</Button><Button type="primary" loading={loading} icon={<CheckOutlined />} disabled={draftAlpha === appliedAlpha} onClick={() => setAppliedAlpha(draftAlpha)}>确认应用当前预览</Button></Space>
+          <Space className="alpha-actions"><Button icon={<ReloadOutlined />} onClick={() => { setDraftAlpha(0.3); setSeed(20_260_815); }}>重置</Button><Button type="primary" loading={loading || applying} icon={<CheckOutlined />} disabled={draftAlpha === appliedAlpha && seed === appliedSeed && Boolean(scenarioId)} onClick={applyScenario}>应用到实验配置</Button></Space>
         </Panel>
 
         <Panel title="当前方案 → 待应用方案" subtitle={`划分版本 ${preview.partitionVersion}`} className="partition-diff-panel">
           <div className="partition-flow">
             <div><small>当前 α</small><b>{appliedAlpha.toFixed(2)}</b><span>{currentSummary.minSamples}～{currentSummary.maxSamples} 样本/客户端</span></div>
             <i>→</i>
-            <div className={draftAlpha !== appliedAlpha ? 'pending' : ''}><small>预览 α</small><b>{draftAlpha.toFixed(2)}</b><span>{draftSummary.minSamples}～{draftSummary.maxSamples} 样本/客户端</span></div>
+            <div className={draftAlpha !== appliedAlpha || seed !== appliedSeed ? 'pending' : ''}><small>预览 α</small><b>{draftAlpha.toFixed(2)}</b><span>{draftSummary.minSamples}～{draftSummary.maxSamples} 样本/客户端</span></div>
           </div>
           <div className="preview-metric-grid">
             <MetricCard label="平均类别覆盖" value={draftSummary.meanCoverage.toFixed(1)} suffix=" / 65" delta={`当前 ${currentSummary.meanCoverage.toFixed(1)}`} tone="green" />
             <MetricCard label="最大类别占比" value={(draftSummary.maxDominantRatio * 100).toFixed(1)} suffix="%" delta={`当前 ${(currentSummary.maxDominantRatio * 100).toFixed(1)}%`} tone="amber" />
             <MetricCard label="平均标签熵" value={draftSummary.meanEntropy.toFixed(2)} delta={`当前 ${currentSummary.meanEntropy.toFixed(2)}`} tone="violet" />
           </div>
-        </Panel>
-      </div>
-
-      <Alert
-        type="info"
-        showIcon
-        icon={<EyeOutlined />}
-        message="域间特征偏移为数据集固有属性，只读不可调"
-        description="下方投影与距离矩阵用于观察四域特征差异和处理效果。调整 α 只会更新域内客户端样本与类别分布，不会改变这里的域间特征。"
-      />
-
-      <div className="fixed-feature-grid">
-        <Panel title="四域特征空间投影" subtitle={`${featureView} · 只读统计`} extra={<Segmented size="small" options={['处理前', '处理后']} value={featureView} onChange={(value) => setFeatureView(value as '处理前' | '处理后')} />}>
-          <Chart option={scatterOption} height={300} />
-        </Panel>
-        <Panel title="域间特征距离矩阵" subtitle="数值由数据集与处理结果决定，无法编辑">
-          <Chart option={distanceOption} height={300} />
         </Panel>
       </div>
 
@@ -232,7 +204,6 @@ export function ScenarioAnalysisPage() {
           <span><small>域内客户端</small><b>15</b></span>
           <span><small>域总样本</small><b>{selectedDomain.totalSamples.toLocaleString()}</b></span>
           <span><small>类别数量</small><b>{selectedDomain.classCount}</b></span>
-          <Tag color="blue">域间偏移只读</Tag>
         </div>
         <div className="distribution-chart-grid">
           <Panel title={`${domainDefinition.name} · 客户端样本数量`} subtitle="每根柱对应一个客户端"><Chart option={sampleOption} height={310} /></Panel>
