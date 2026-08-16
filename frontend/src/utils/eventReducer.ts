@@ -34,9 +34,54 @@ export function mergeTrainingEvent(
       ...base,
       clients: {
         ...base.clients,
-        [payload.clientId]: { ...payload, source: event.source },
+        [payload.clientId]: { ...base.clients[payload.clientId], ...payload, source: event.source },
       },
     };
+  }
+  if (event.type === 'client.metric.updated') {
+    const payload = event.payload as unknown as ClientStatusPayload & Record<string, number>;
+    return {
+      ...base,
+      clients: {
+        ...base.clients,
+        [payload.clientId]: { ...base.clients[payload.clientId], ...payload, source: event.source },
+      },
+    };
+  }
+  if (event.type === 'defense.decision') {
+    const payload = event.payload as {
+      round?: number;
+      droppedClientIds?: Array<string | number>;
+      truePositiveRate?: number;
+      falsePositiveRate?: number;
+    };
+    const clients = { ...base.clients };
+    const displayId = (value: string | number) => {
+      if (typeof value === 'string' && value.startsWith('OH-')) return value;
+      const index = Math.max(0, Number(value) - 1);
+      const prefixes = ['OH-DT', 'OH-TS', 'OH-ED', 'OH-FR'];
+      return `${prefixes[Math.min(3, Math.floor(index / 15))]}-C${String(index % 15 + 1).padStart(2, '0')}`;
+    };
+    for (const rawId of payload.droppedClientIds ?? []) {
+      const clientId = displayId(rawId);
+      const current = clients[clientId];
+      if (current) clients[clientId] = {
+        ...current, status: '已过滤', assessment: '过滤', progress: 100,
+        round: payload.round ?? current.round, source: event.source,
+      };
+    }
+    const metrics = [...(base.metrics ?? [])];
+    if (payload.truePositiveRate !== undefined || payload.falsePositiveRate !== undefined) {
+      const metric = {
+        round: payload.round ?? base.round,
+        truePositiveRate: payload.truePositiveRate,
+        falsePositiveRate: payload.falsePositiveRate,
+      };
+      const existing = metrics.findIndex((item) => item.round === metric.round);
+      if (existing >= 0) metrics[existing] = { ...metrics[existing], ...metric };
+      else metrics.push(metric);
+    }
+    return { ...base, clients, metrics };
   }
   if (event.type === 'metric.updated') {
     const metric = event.payload as import('../types').ExperimentMetricPoint;

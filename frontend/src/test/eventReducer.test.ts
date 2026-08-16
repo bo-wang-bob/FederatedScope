@@ -59,6 +59,44 @@ describe('训练事件适配与归并', () => {
     expect(stopped.status).toBe('stopped');
   });
 
+  it('合并客户端隐私统计并应用结构化防御判定', () => {
+    const seeded: TrainingSnapshot = {
+      ...baseSnapshot,
+      clients: {
+        'OH-DT-C01': {
+          clientId: 'OH-DT-C01', domainKey: 'Art', status: '待机',
+          progress: 0, round: 0, sampleCount: 17,
+          assessment: '通过', source: 'backend',
+        },
+      },
+    };
+    const privacy = mergeTrainingEvent(seeded, {
+      id: 'evt-11', sequence: 11, experimentId: 'demo',
+      type: 'client.metric.updated', timestamp: '2026-08-15T00:00:02Z',
+      source: 'backend', payload: {
+        clientId: 'OH-DT-C01', domainKey: 'Art', status: '上传中',
+        progress: 85, round: 3, noiseStd: 0.12,
+      },
+    });
+    expect(privacy.clients['OH-DT-C01']).toMatchObject({
+      sampleCount: 17, noiseStd: 0.12,
+    });
+    const defended = mergeTrainingEvent(privacy, {
+      id: 'evt-12', sequence: 12, experimentId: 'demo',
+      type: 'defense.decision', timestamp: '2026-08-15T00:00:03Z',
+      source: 'backend', payload: {
+        round: 3, droppedClientIds: [1],
+        truePositiveRate: 1, falsePositiveRate: 0,
+      },
+    });
+    expect(defended.clients['OH-DT-C01']).toMatchObject({
+      status: '已过滤', assessment: '过滤', progress: 100,
+    });
+    expect(defended.metrics).toEqual([{
+      round: 3, truePositiveRate: 1, falsePositiveRate: 0,
+    }]);
+  });
+
   it('演示适配器按顺序输出阶段事件并报告连接状态', () => {
     vi.useFakeTimers();
     const events: TrainingEvent[] = [];

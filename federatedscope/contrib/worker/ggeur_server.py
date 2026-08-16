@@ -20,6 +20,7 @@ import queue
 import math
 import base64
 import io
+import json
 import zlib
 import numpy as np
 import torch
@@ -34,6 +35,7 @@ from federatedscope.core.workers import Server
 from federatedscope.core.auxiliaries.optimizer_builder import get_optimizer
 from federatedscope.core.auxiliaries.utils import (
     param2tensor, recursive_param2tensor)
+from federatedscope.core.monitoring.events import emit_training_event
 
 logger = logging.getLogger(__name__)
 
@@ -763,6 +765,14 @@ class GGEURServer(Server):
     def _mark_stage(self, stage_name):
         self._stage_name = stage_name
         self._stage_start_time = time.time()
+        if stage_name in ('statistics', 'augmentation_ready') or \
+                str(stage_name).startswith('round_'):
+            phase_index = 2
+        else:
+            phase_index = 0
+        emit_training_event(
+            'stage.changed', stage=str(stage_name),
+            phaseIndex=phase_index, round=int(getattr(self, 'state', 0)))
         logger.info(
             f"Server: Entered distributed stage '{stage_name}' "
             f"(timeout={self.distributed_stage_timeout}s)")
@@ -1042,7 +1052,7 @@ class GGEURServer(Server):
         else:
             self._load_clip_model()
 
-    def _get_test_cache_path(self, domain):
+    def _get_test_cache_path(self, domain, partition_token=''):
         """Get cache path for test features"""
         cache_dir = getattr(self.ggeur_cfg, 'feature_cache_dir', '')
         if not cache_dir:
@@ -1063,6 +1073,10 @@ class GGEURServer(Server):
 
         dataset_name = data_type
         cache_suffix = ''
+        if partition_token:
+            safe_partition = re.sub(
+                r'[^A-Za-z0-9_-]+', '_', str(partition_token))[:64]
+            cache_suffix = f'_manifest_{safe_partition}'
         if 'domainnet' in data_type or 'domain-net' in data_type or 'domain_net' in data_type:
             selected_domains = list(getattr(self.ggeur_cfg, 'domainnet_domains', []))
             shared_classes_only = getattr(self.ggeur_cfg,
@@ -1101,6 +1115,27 @@ class GGEURServer(Server):
 
         data_type = self._cfg.data.type.lower()
         data_root = self._cfg.data.root
+        replay_manifest = None
+        replay_partition = ''
+        if 'office' in data_type and 'home' in data_type:
+            manifest_path = str(getattr(
+                self.ggeur_cfg, 'officehome_manifest_path', '') or '')
+            if manifest_path and os.path.isfile(manifest_path):
+                try:
+                    with open(manifest_path, 'r', encoding='utf-8') as stream:
+                        candidate = json.load(stream)
+                    if str(candidate.get('schemaVersion')) == '2.0':
+                        replay_manifest = candidate
+                        data_root = candidate.get('root') or data_root
+                        replay_partition = str(
+                            candidate.get('partitionVersion', ''))
+                        logger.info(
+                            'Server: Replaying OfficeHome evaluation split '
+                            f'from manifest partition={replay_partition}')
+                except (OSError, json.JSONDecodeError) as error:
+                    raise RuntimeError(
+                        'Server: Cannot load OfficeHome replay manifest '
+                        f'{manifest_path}: {error}') from error
 
         # Get the same split ratios and seed as client data loading
         if hasattr(self._cfg.data, 'splits'):
@@ -1156,7 +1191,8 @@ class GGEURServer(Server):
 
         # Load test data for each domain
         for domain in domains:
-            cache_path = self._get_test_cache_path(domain)
+            cache_path = self._get_test_cache_path(
+                domain, partition_token=replay_partition)
 
             # Try to load from cache first
             if os.path.exists(cache_path):
@@ -1187,16 +1223,25 @@ class GGEURServer(Server):
                                        std=[0.26862954, 0.26130258, 0.27577711])
                 ])
 
-                test_dataset = dataset_class(
-                    root=data_root,
-                    domain=domain,
-                    split='test',
-                    transform=transform,
-                    train_ratio=train_ratio,
-                    val_ratio=val_ratio,
-                    seed=seed,
-                    **dataset_kwargs
-                )
+                if replay_manifest is not None:
+                    from federatedscope.contrib.data.ggeur_data import \
+                        ManifestImageDataset
+                    records = replay_manifest.get(
+                        'domains', {}).get(domain, {}).get('test', [])
+                    test_dataset = ManifestImageDataset(
+                        data_root, records, transform=transform,
+                        domain=domain, client_id=0)
+                else:
+                    test_dataset = dataset_class(
+                        root=data_root,
+                        domain=domain,
+                        split='test',
+                        transform=transform,
+                        train_ratio=train_ratio,
+                        val_ratio=val_ratio,
+                        seed=seed,
+                        **dataset_kwargs
+                    )
 
                 if len(test_dataset) == 0:
                     logger.warning(f"Server: No test data for domain {domain}")
@@ -1302,12 +1347,38 @@ class GGEURServer(Server):
 
         return results
 
+    def _evaluate_target_label_attack(self, target_label):
+        """Measure all-to-target success on clean non-target test samples."""
+        if self.global_mlp is None or not self.test_features:
+            return {}
+        self.global_mlp.eval()
+        results = {}
+        with torch.no_grad():
+            for domain, features in self.test_features.items():
+                labels = torch.from_numpy(
+                    self.test_labels[domain]).long().to(self.device)
+                eligible = labels != int(target_label)
+                eligible_count = int(eligible.sum().item())
+                if eligible_count <= 0:
+                    continue
+                inputs = torch.from_numpy(features).float().to(self.device)
+                predicted = self.global_mlp(inputs).argmax(dim=1)
+                results[domain] = float(
+                    (predicted[eligible] == int(target_label)).float()
+                    .mean().item())
+        if results:
+            results['average'] = sum(results.values()) / len(results)
+        return results
+
     def callback_for_local_statistics(self, message: Message):
         """Handle receiving local statistics from a client"""
         client_id = message.sender
         content = message.content
         self._bytes_recv += self._sizeof_content(content)
 
+        emit_training_event(
+            'client.status.changed', clientIndex=int(client_id),
+            status='特征统计', progress=45, round=0)
         logger.info(f"Server: Received local statistics from client {client_id}")
 
         # Infer embedding dimension from client-reported value (preferred) or from means later
@@ -1377,6 +1448,10 @@ class GGEURServer(Server):
             self._broadcast_global_covariances(other_prototypes)
 
             self.statistics_collected = True
+            emit_training_event(
+                'stage.changed', stage='statistics_aggregated',
+                phaseIndex=4, round=0,
+                receivedClients=len(self.local_statistics_buffer))
 
     def _validate_received_statistics(self, client_id, content):
         """Fail early when a client uploads statistics with wrong dimensions."""
@@ -1540,6 +1615,9 @@ class GGEURServer(Server):
 
     def _start_training_round(self):
         """Start a new training round by broadcasting model"""
+        emit_training_event(
+            'round.started', round=int(self.state), phaseIndex=0,
+            stage='model_broadcast')
         logger.info(f"Server: Starting training round {self.state}")
 
         # Check for phase transition in separated training mode
@@ -1591,6 +1669,10 @@ class GGEURServer(Server):
                 )
             )
         logger.info(f"Server: Round {self.state} receivers={receiver}")
+        emit_training_event(
+            'stage.changed', round=int(self.state), phaseIndex=1,
+            stage='domain_broadcast_projection',
+            selectedClientCount=len(receiver))
         self._mark_stage(f'round_{self.state}_model_updates')
 
     def _select_round_receivers(self):
@@ -1967,6 +2049,10 @@ class GGEURServer(Server):
                 f"Server: Sent global covariances to client {client_id}")
 
         logger.info(f"Server: Broadcasted global covariances to {len(self.local_statistics_buffer)} clients")
+        emit_training_event(
+            'stage.changed', stage='feature_summary_broadcast',
+            phaseIndex=1, round=0,
+            clientCount=len(self.local_statistics_buffer))
         self._mark_stage('augmentation_ready')
 
     @staticmethod
@@ -2033,16 +2119,33 @@ class GGEURServer(Server):
             self.msg_buffer['train'][round_idx] = []
 
         self.msg_buffer['train'][round_idx].append((sample_size, model_para, sender))
+        received_num = len(self.msg_buffer['train'][round_idx])
+        emit_training_event(
+            'client.status.changed', clientIndex=int(sender),
+            status='上传完成', progress=100, round=int(round_idx),
+            sampleCount=int(sample_size))
+        if received_num == 1:
+            emit_training_event(
+                'stage.changed', round=int(round_idx), phaseIndex=3,
+                stage='client_upload_projection')
         hook_message = copy.copy(message)
         hook_message.content = (sample_size, model_para, privacy_stats)
         self._run_privacy_model_para_hooks(hook_message)
 
         expected_num = len(getattr(self, 'current_round_clients', [])) or self._client_num
         logger.info(f"Server: Received model from client {sender} for round {round_idx} "
-                    f"({len(self.msg_buffer['train'][round_idx])}/{expected_num})")
+                    f"({received_num}/{expected_num})")
 
         # Check if all clients have responded
-        if len(self.msg_buffer['train'][round_idx]) >= expected_num:
+        if received_num >= expected_num:
+            # These two stages are a UI projection of the single-process
+            # aggregation path; no separate domain-server process is created.
+            emit_training_event(
+                'stage.changed', round=int(round_idx), phaseIndex=4,
+                stage='domain_aggregation_projection')
+            emit_training_event(
+                'stage.changed', round=int(round_idx), phaseIndex=5,
+                stage='domain_upload_projection')
             self._perform_fedavg(round_idx)
 
     def _perform_fedavg(self, round_idx):
@@ -2054,6 +2157,9 @@ class GGEURServer(Server):
         logger.info(
             f"Server: Performing {'FedOpt' if self.use_fedopt else 'FedAvg'} aggregation for round {round_idx}"
         )
+        emit_training_event(
+            'stage.changed', round=int(round_idx), phaseIndex=6,
+            stage='global_aggregation')
         self._clear_stage()
         self._current_aggregation_round = int(round_idx)
 
@@ -2256,6 +2362,26 @@ class GGEURServer(Server):
             if test_results:
                 acc_str = ', '.join([f"{k}: {v:.4f}" for k, v in test_results.items()])
                 logger.info(f"Server: Round {round_idx} MLP Test Accuracy - {acc_str}")
+                domain_scores = [
+                    float(test_results[name])
+                    for name in ('Art', 'Clipart', 'Product', 'Real_World')
+                    if name in test_results
+                ]
+                metric_payload = {
+                    'round': int(round_idx),
+                    'accuracy': float(test_results.get(
+                        'average', sum(domain_scores) /
+                        max(1, len(domain_scores)))),
+                }
+                for name in ('Art', 'Clipart', 'Product', 'Real_World'):
+                    if name in test_results:
+                        metric_payload[f'domain{name}'] = float(
+                            test_results[name])
+                if domain_scores:
+                    metric_payload['worstDomain'] = min(domain_scores)
+                    metric_payload['domainGap'] = (
+                        max(domain_scores) - min(domain_scores))
+                emit_training_event('metric.updated', **metric_payload)
             if self.a3fl_enabled and self.latest_a3fl_meta is not None:
                 if self._should_run_attack_eval(round_idx):
                     poison_results = self._evaluate_a3fl_on_test_sets()
@@ -2326,6 +2452,11 @@ class GGEURServer(Server):
                             f"Server: Round {round_idx} SABRE ASR "
                             f"(attacker {attacker_id}) "
                             f"- {poison_str}")
+                        emit_training_event(
+                            'metric.updated', round=int(round_idx),
+                            attackSuccess=float(poison_results.get(
+                                'average', sum(poison_results.values()) /
+                                max(1, len(poison_results)))))
                         if non_target_results:
                             non_target_str = ', '.join([
                                 f"{k}: {v:.4f}"
@@ -2352,6 +2483,23 @@ class GGEURServer(Server):
                     logger.debug(
                         f"Server: Round {round_idx} skipped SABRE ASR "
                         f"evaluation (attack_eval_freq)")
+            if self.label_flip_enabled and \
+                    self.latest_label_flip_meta is not None and \
+                    self.latest_label_flip_meta.get('active', False):
+                target_label = int(self.latest_label_flip_meta.get(
+                    'target_label', self._cfg.attack.target_label_ind))
+                target_results = self._evaluate_target_label_attack(
+                    target_label)
+                if target_results:
+                    logger.info(
+                        'Server: Round %s target-label attack success - %s',
+                        round_idx, ', '.join(
+                            f'{name}: {score:.4f}'
+                            for name, score in target_results.items()))
+                    emit_training_event(
+                        'metric.updated', round=int(round_idx),
+                        attackSuccess=float(target_results['average']),
+                        attackTargetLabel=target_label)
         # Aggregate and evaluate PromptFL if enabled
         if self.use_promptfl:
             self._aggregate_prompt(valid_params, total_samples)
@@ -2374,6 +2522,13 @@ class GGEURServer(Server):
                 logger.info(f"Server: Round {round_idx} CNN Test Accuracy - {acc_str}")
 
         # Log progress
+        round_summary = {
+            'round': int(round_idx),
+            'phaseIndex': 6,
+            'validClientUpdates': len(valid_params),
+            'receivedClientUpdates': len(all_params),
+            'totalSamples': int(total_samples),
+        }
         if self._round_start_time is not None:
             round_elapsed = time.time() - self._round_start_time
             self._round_durations.append(round_elapsed)
@@ -2393,6 +2548,9 @@ class GGEURServer(Server):
                         f"round time: {round_elapsed:.1f}s, "
                         f"train_qps={train_qps:.2f} samples/s, "
                         f"valid_updates={len(valid_params)}/{len(self.current_round_clients)}")
+            round_summary['roundTimeSeconds'] = float(round_elapsed)
+            round_summary['samplesPerSecond'] = float(train_qps)
+        emit_training_event('round.completed', **round_summary)
 
         # Move to next round
         self.state = round_idx + 1
@@ -3062,6 +3220,15 @@ class GGEURServer(Server):
             f"feat_cosine_max={float(feat_cosine.max()):.4f}, "
             f"feat_cosine_mean={float(feat_cosine.mean()):.4f}")
 
+        emit_training_event(
+            'defense.decision', stage='federated_training',
+            round=int(getattr(self, 'state', 0)),
+            keptClientIds=kept_client_ids,
+            droppedClientIds=dropped_client_ids,
+            scores={str(client_ids[index]): float(scores_np[index])
+                    for index in range(len(client_ids))},
+            threshold=float(cutoff_score))
+
         if bool(getattr(self.ggeur_cfg, 'multi_metrics_debug', False)):
             self._log_multi_metrics_debug(
                 aggregation_name=aggregation_name,
@@ -3532,6 +3699,14 @@ class GGEURServer(Server):
             f"z_trace={_r4(z_trace.tolist())}, "
             f"z_fro={_r4(z_fro.tolist())}, "
             f"z_cross={_r4(z_cross.tolist())}")
+
+        emit_training_event(
+            'defense.decision', stage='feature_statistics', round=0,
+            keptClientIds=kept_id_log,
+            droppedClientIds=sorted(dropped_ids),
+            scores={str(all_id_log[index]): float(scores_np[index])
+                    for index in range(len(all_id_log))},
+            threshold=float(cutoff_score))
 
         if bool(getattr(self.ggeur_cfg, 'multi_metrics_debug', False)):
             indicators_cpu = indicators.detach().cpu()

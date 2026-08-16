@@ -55,25 +55,74 @@
 
 运行前需要根据本机环境修改配置中的数据集目录、预训练模型目录和设备编号。
 
-## 前后端实验控制
+## 启动前后端实验平台
 
-本分支前端通过轻量单机 API 启动和停止现有训练入口、读取实验记录，并使用快照与 SSE 接收真实进度。API 不创建真实分布式客户端。
+前端通过单机控制 API 启动或停止现有训练入口，使用快照和 SSE 接收真实训练事件。地图中的中央服务器、域子服务器和 60 个客户端是训练过程的可视化投影；后端仍由一个本机进程模拟，不会创建真实分布式客户端。
+
+### 1. 准备运行环境
+
+在仓库根目录安装 Python 源码依赖，并在前端目录安装 Node.js 依赖：
 
 ```bash
+cd /root/project/FederatedScope
+/root/.local/share/mamba/envs/pfedba/bin/python -m pip install -e .
+
+cd frontend
+npm install
+```
+
+数据目录必须包含 `Art`、`Clipart`、`Product` 和 `Real_World` 四个子目录。异构协同与后门实验还需要本地特征模型文件；隐私实验按其模板加载相应的本地图像模型。
+
+### 2. 终端一：启动后端
+
+```bash
+cd /root/project/FederatedScope
 export FEDERATEDSCOPE_DATA_ROOT=/path/to/OfficeHomeDataset_10072016
 export FEDERATEDSCOPE_MODEL_PATH=/path/to/open_clip_vitb16.bin
+export FEDERATEDSCOPE_API_STATE_DIR=/path/to/writable/experiment-state
+
 /root/.local/share/mamba/envs/pfedba/bin/python -m \
   federatedscope.standalone_api.app --host 127.0.0.1 --port 8000
 ```
 
-另开终端启动前端：
+`FEDERATEDSCOPE_API_STATE_DIR` 可省略，默认使用 `exp/standalone_api`。可在另一个终端确认服务状态：
 
 ```bash
-cd frontend
+curl http://127.0.0.1:8000/api/health
+```
+
+### 3. 终端二：启动前端
+
+```bash
+cd /root/project/FederatedScope/frontend
 npm run dev
 ```
 
-控制服务提供场景预览与固化、配置预检、实验创建与停止、实验记录、运行快照、指标和 SSE 事件接口。数据集不存在时只允许配置和预览，启动实验会在预检阶段失败，不会生成模拟训练结果。
+浏览器访问 `http://127.0.0.1:5173/`。开发服务器默认把 `/api` 转发到 `http://127.0.0.1:8000`；若后端使用其他地址，启动前设置：
+
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
+```
+
+### 4. 启动首个实验
+
+1. 在“场景与异构分析”中设置狄利克雷参数和随机种子，预览后应用场景。
+2. 系统扫描实际四域图像，生成包含 60 个客户端精确样本路径的数据划分清单和数据指纹。
+3. 在“实验配置”中选择单一实验类型，设置参数并执行“运行预检”。
+4. 预检通过后启动实验，页面自动进入运行监控。
+5. 可在监控页停止任务；任务状态、结构化指标、事件和完整训练日志均持久化到状态目录。
+
+如果数据集、数据划分清单、模型、设备或磁盘空间不满足要求，后端会拒绝启动并返回具体预检结果，不会生成伪训练轮次。后门实验配置会强制关闭隐私攻击及上传加噪流程。
+
+### 5. 生产构建
+
+```bash
+cd /root/project/FederatedScope/frontend
+npm run build
+npm run preview
+```
+
+构建产物位于 `frontend/dist/`。预览服务仍需要可访问的后端 API；跨地址部署时使用 `VITE_API_BASE_URL` 构建前端。
 
 ## 测试
 

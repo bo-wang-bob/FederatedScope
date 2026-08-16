@@ -19,6 +19,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from federatedscope.core.monitoring.events import emit_training_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -456,3 +458,10 @@ class GGEURPPAHook:
         logger.info('GGEURPPAHook: Meta-PPA accuracy=%s baseline=%s saved=%s',
                     metrics.get('accuracy'), metrics.get('random_baseline'),
                     save_path)
+        if metrics.get('accuracy') is not None:
+            emit_training_event(
+                'metric.updated',
+                round=int(getattr(self.server, 'state', 0)),
+                privacyRisk=float(metrics['accuracy']),
+                attackName='property_inference',
+                attackBaseline=float(metrics.get('random_baseline', 0.0)))

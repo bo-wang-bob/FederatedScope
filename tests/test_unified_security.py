@@ -93,6 +93,16 @@ class GGEURUnifiedSecurityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Privacy attacks/plugins'):
             cfg.freeze()
 
+    def test_backdoor_and_privacy_protection_is_rejected(self):
+        cfg = _base_cfg()
+        cfg.security.mode = 'backdoor'
+        cfg.attack.attack_method = 'sabre'
+        cfg.dp.enabled = True
+        cfg.dp.level = 'client_update'
+        cfg.dp.protect_ggeur_update = True
+        with self.assertRaisesRegex(ValueError, 'Privacy protection'):
+            cfg.freeze()
+
     def test_privacy_mode_rejects_both_multimetric_phases(self):
         cfg = _base_cfg()
         cfg.security.mode = 'privacy'
@@ -233,6 +243,26 @@ class GGEURUnifiedSecurityTest(unittest.TestCase):
         filtered = server._multi_metrics_filter_statistics(statistics)
 
         self.assertEqual(set(filtered), {1, 2, 3})
+
+    def test_target_label_attack_metric_excludes_true_target_samples(self):
+        server = GGEURServer.__new__(GGEURServer)
+        server.device = 'cpu'
+        server.global_mlp = torch.nn.Identity()
+        server.test_features = {
+            'Art': np.asarray([
+                [0.1, 0.2, 0.9],
+                [0.8, 0.1, 0.2],
+                [0.1, 0.2, 0.9],
+            ], dtype=np.float32),
+        }
+        server.test_labels = {
+            'Art': np.asarray([0, 1, 2], dtype=np.int64),
+        }
+
+        result = server._evaluate_target_label_attack(target_label=2)
+
+        self.assertAlmostEqual(result['Art'], 0.5)
+        self.assertAlmostEqual(result['average'], 0.5)
 
     def test_multimetric_filters_training_updates(self):
         server = GGEURServer.__new__(GGEURServer)

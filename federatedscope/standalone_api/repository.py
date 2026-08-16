@@ -46,6 +46,15 @@ class JsonRepository:
             self._atomic_write(
                 self.scenario_dir / f"{scenario['scenarioId']}.json", scenario)
 
+    def save_scenario_artifact(self, scenario_id: str, name: str,
+                               payload: Dict[str, Any]) -> Path:
+        if not name or Path(name).name != name:
+            raise ValueError('invalid scenario artifact name')
+        with self._lock:
+            path = self.scenario_dir / scenario_id / name
+            self._atomic_write(path, payload)
+            return path.resolve()
+
     def get_scenario(self, scenario_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             return self._read(self.scenario_dir / f'{scenario_id}.json')

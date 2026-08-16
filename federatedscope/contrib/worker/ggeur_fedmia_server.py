@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 
 from federatedscope.contrib.worker.ggeur_server import GGEURServer
+from federatedscope.core.monitoring.events import emit_training_event
 
 logger = logging.getLogger(__name__)
 
@@ -1069,10 +1070,21 @@ class GGEURFedMIAServer(GGEURServer):
 
         logger.info('=' * 20 + ' GGEUR FedMIA Results ' + '=' * 20)
         for name, metrics in results.items():
+            tpr_values = metrics.get('tpr_at_fpr', {}) or {}
+            tpr = tpr_values.get(0.01, tpr_values.get('0.01'))
             logger.info('%s: AUC=%s, TPR@0.01=%s',
                         name,
                         metrics.get('auc'),
-                        metrics.get('tpr_at_fpr', {}).get(0.01))
+                        tpr)
+            metric_payload = {
+                'round': int(getattr(self, 'state', 0)),
+                'attackName': str(name),
+            }
+            if metrics.get('auc') is not None:
+                metric_payload['privacyRisk'] = float(metrics['auc'])
+            if tpr is not None:
+                metric_payload['truePositiveRate'] = float(tpr)
+            emit_training_event('metric.updated', **metric_payload)
         logger.info('Saved GGEUR FedMIA results to %s', save_path)
 
         self._run_all_client_fedmia_attacks(per_client_data)

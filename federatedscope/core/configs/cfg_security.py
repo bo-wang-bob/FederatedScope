@@ -85,6 +85,10 @@ def assert_security_cfg(cfg):
                 plugins:
             raise ValueError(
                 "Privacy attacks/plugins must be disabled in backdoor mode")
+        if bool(getattr(cfg.dp, 'enabled', False)) or bool(
+                getattr(cfg.adaptive_dp, 'use', False)):
+            raise ValueError(
+                "Privacy protection must be disabled in backdoor mode")
     elif mode == 'privacy':
         if has_backdoor:
             raise ValueError(

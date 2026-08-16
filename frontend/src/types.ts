@@ -90,6 +90,7 @@ export interface ScenarioPartitionPreview {
   partitionVersion: string;
   source: DataSourceKind;
   basis?: 'actual_dataset' | 'built_in_simulation';
+  datasetFingerprint?: string;
   domains: DomainPartitionPreview[];
 }
 
@@ -109,6 +110,7 @@ export interface ScenarioRecord {
   createdAt: string;
   request: ScenarioPreviewRequest;
   preview: ScenarioPartitionPreview;
+  artifacts?: Record<string, string>;
 }
 
 export interface ExperimentCommonConfig {
@@ -125,6 +127,7 @@ export interface ExperimentCommonConfig {
 
 export interface HeterogeneityConfig {
   expansionTarget: number;
+  featureBatchSize: number;
 }
 
 export interface PrivacyConfig {
@@ -184,6 +187,8 @@ export interface ExperimentMetricPoint {
   domainGap?: number;
   attackSuccess?: number;
   privacyRisk?: number;
+  reconstructionLoss?: number;
+  reconstructionPsnr?: number;
   noiseMultiplier?: number;
   noiseStd?: number;
   truePositiveRate?: number;
@@ -235,6 +240,32 @@ export interface Capabilities {
     modelReady: boolean;
     templatesReady: boolean;
   };
+  metrics: Record<string, {
+    label: string;
+    unit: 'ratio' | 'number' | 'dB';
+    modes: string[];
+  }>;
+  parameters: Record<string, {
+    minimum: number;
+    maximum: number;
+    default: number;
+  }>;
+}
+
+export interface PreflightCheck {
+  name: string;
+  ready: boolean;
+  message: string;
+  details: Record<string, unknown>;
+}
+
+export interface PreflightResult {
+  ready: boolean;
+  checks: PreflightCheck[];
+  template: string;
+  dataRoot: string;
+  modelPath: string;
+  partitionManifest: string;
 }
 
 export type TrainingEventType =
@@ -245,6 +276,7 @@ export type TrainingEventType =
   | 'round.started'
   | 'client.status.changed'
   | 'client.metric.updated'
+  | 'defense.decision'
   | 'round.completed'
   | 'metric.updated'
   | 'warning.raised'
@@ -268,6 +300,13 @@ export interface ClientTrainingState {
   status: NodeStatus;
   progress: number;
   round: number;
+  sampleCount?: number;
+  assessment?: '通过' | '疑似' | '过滤';
+  clipBound?: number;
+  clipFactor?: number;
+  noiseStd?: number;
+  rawNorm?: number;
+  sanitizedNorm?: number;
   source: DataSourceKind;
 }
 

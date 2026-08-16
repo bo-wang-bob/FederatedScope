@@ -1,4 +1,5 @@
 import json
+import io
 import tempfile
 import threading
 import time
@@ -6,15 +7,21 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
+from contextlib import redirect_stdout
 
 import numpy as np
 
 from federatedscope.core.data.dirichlet_partition import (
     class_histograms, partition_indices_by_label)
+from federatedscope.core.monitoring.events import (
+    emit_training_event, parse_training_event_line)
 from federatedscope.standalone_api.app import create_server
 from federatedscope.standalone_api.repository import JsonRepository
 from federatedscope.standalone_api.runner import StandaloneProcessRunner
+from federatedscope.standalone_api.scenarios import (
+    build_partition, build_partition_artifacts)
 from federatedscope.standalone_api.schemas import (
     ValidationError, validate_experiment, validate_scenario)
 from federatedscope.standalone_api.task_manager import ExperimentTaskManager
@@ -68,6 +75,28 @@ def experiment_payload(experiment_type='heterogeneity'):
     return payload
 
 
+def runtime_resources(root: Path):
+    data_root = root / 'data'
+    for domain in ('Art', 'Clipart', 'Product', 'Real_World'):
+        class_dir = data_root / domain / 'Alarm_Clock'
+        class_dir.mkdir(parents=True)
+        for index in range(4):
+            (class_dir / f'sample-{index}.jpg').touch()
+    model_path = root / 'model.bin'
+    model_path.touch()
+    manifest_path = root / 'manifest.json'
+    with mock.patch.dict('os.environ', {
+            'FEDERATEDSCOPE_DATA_ROOT': str(data_root)}):
+        preview, manifest = build_partition_artifacts(validate_scenario({}))
+    manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+    scenario = {
+        'request': validate_scenario({}),
+        'preview': preview,
+        'artifacts': {'partitionManifest': str(manifest_path)},
+    }
+    return data_root, model_path, scenario
+
+
 class FakeRunner:
     def preflight(self, config):
         return {'ready': True}
@@ -91,7 +120,26 @@ class SlowRunner(FakeRunner):
         return -15
 
 
+class DefenseRunner(FakeRunner):
+    def run(self, config, output_dir, stop_event, emit, on_metric):
+        emit('defense.decision', {
+            'stage': 'feature_statistics', 'round': 0,
+            'keptClientIds': list(range(2, 61)),
+            'droppedClientIds': [1, 4], 'threshold': 1.5,
+        })
+        return 0
+
+
 class StandaloneApiSchemaTest(unittest.TestCase):
+    def test_structured_training_event_round_trip(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            emit_training_event(
+                'metric.updated', round=3, accuracy=np.float32(0.75))
+        parsed = parse_training_event_line(output.getvalue())
+        self.assertEqual(parsed['type'], 'metric.updated')
+        self.assertAlmostEqual(parsed['payload']['accuracy'], 0.75)
+
     def test_within_domain_partition_is_complete_and_deterministic(self):
         labels = np.repeat(np.arange(12), 100)
         first = partition_indices_by_label(labels, 15, 0.2, 73)
@@ -123,10 +171,13 @@ class StandaloneApiSchemaTest(unittest.TestCase):
             'partition': {'strategy': 'dirichlet', 'alpha': 0.3, 'seed': 42},
         })
         self.assertEqual(value['partition']['alpha'], 0.3)
+        with self.assertRaises(ValidationError):
+            validate_scenario({'clientsPerDomain': 12})
 
     def test_scenario_preview_uses_real_directory_counts_when_available(self):
         from federatedscope.cv.dataset.office_home import OfficeHome
-        from federatedscope.standalone_api.scenarios import build_partition
+        from federatedscope.standalone_api.scenarios import (
+            build_partition_artifacts)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for domain in OfficeHome.DOMAINS:
@@ -139,13 +190,54 @@ class StandaloneApiSchemaTest(unittest.TestCase):
                         (class_directory / f'{index}.jpg').touch()
             with mock.patch.dict('os.environ', {
                     'FEDERATEDSCOPE_DATA_ROOT': str(root)}):
-                preview = build_partition(validate_scenario({}))
+                preview, manifest = build_partition_artifacts(
+                    validate_scenario({}))
         self.assertEqual(preview['basis'], 'actual_dataset')
         self.assertEqual([item['totalSamples'] for item in preview['domains']],
                          [28, 28, 28, 28])
         self.assertTrue(all(
             sum(client['sampleCount'] for client in domain['clients']) == 28
             for domain in preview['domains']))
+        self.assertIsNotNone(manifest)
+        self.assertEqual(len(manifest['clients']), 60)
+        self.assertEqual(sum(len(client['train'])
+                             for client in manifest['clients']), 112)
+        all_paths = [record['path'] for client in manifest['clients']
+                     for record in client['train']]
+        self.assertEqual(len(all_paths), len(set(all_paths)))
+
+    def test_replay_manifest_loads_all_standalone_clients(self):
+        from federatedscope.contrib.data.ggeur_data import \
+            _load_officehome_manifest_data
+        manifest = {
+            'schemaVersion': '2.0', 'root': '/dataset',
+            'partitionVersion': 'p1', 'datasetFingerprint': 'f1',
+            'domains': {
+                key: {'val': [], 'test': [
+                    {'path': f'{key}/test.jpg', 'label': 0}]}
+                for key in ('Art', 'Clipart', 'Product', 'Real_World')
+            },
+            'clients': [],
+        }
+        prefixes = ('Art', 'Clipart', 'Product', 'Real_World')
+        for client_id in range(1, 61):
+            domain = prefixes[(client_id - 1) // 15]
+            manifest['clients'].append({
+                'clientId': client_id, 'domain': domain,
+                'train': [{'path': f'{domain}/{client_id}.jpg', 'label': 1}],
+            })
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'manifest.json'
+            path.write_text(json.dumps(manifest), encoding='utf-8')
+            config = SimpleNamespace(
+                data=SimpleNamespace(root='/unused'),
+                dataloader=SimpleNamespace(batch_size=2, num_workers=0),
+                federate=SimpleNamespace(client_num=1),
+                ggeur=SimpleNamespace(officehome_manifest_path=str(path)))
+            loaded, updated = _load_officehome_manifest_data(config, None)
+        self.assertEqual(len(loaded), 60)
+        self.assertEqual(updated.federate.client_num, 60)
+        self.assertEqual(len(loaded[60]['train'].dataset), 1)
 
     def test_privacy_and_backdoor_fields_are_mutually_exclusive(self):
         payload = experiment_payload('privacy')
@@ -172,15 +264,10 @@ class StandaloneApiSchemaTest(unittest.TestCase):
         payload = validate_experiment(experiment_payload('backdoor'))
         payload['backdoor']['attack'] = 'model_update_poisoning'
         payload['experimentId'] = 'EXP-TEST'
-        payload['_scenario'] = {
-            'request': validate_scenario({}),
-            'preview': {'partitionVersion': 'test'},
-        }
         with tempfile.TemporaryDirectory() as temporary:
-            data_root = Path(temporary) / 'data'
-            model_path = Path(temporary) / 'model.bin'
-            data_root.mkdir()
-            model_path.touch()
+            data_root, model_path, scenario = runtime_resources(
+                Path(temporary))
+            payload['_scenario'] = scenario
             runner = StandaloneProcessRunner(
                 Path(__file__).resolve().parents[1])
             with mock.patch.dict('os.environ', {
@@ -202,8 +289,8 @@ class StandaloneApiSchemaTest(unittest.TestCase):
 
     def test_runner_explicitly_switches_privacy_protection(self):
         with tempfile.TemporaryDirectory() as temporary:
-            data_root = Path(temporary) / 'data'
-            data_root.mkdir()
+            data_root, model_path, scenario = runtime_resources(
+                Path(temporary))
             runner = StandaloneProcessRunner(Path(__file__).resolve().parents[1])
             commands = []
             for enabled in (False, True):
@@ -214,12 +301,10 @@ class StandaloneApiSchemaTest(unittest.TestCase):
                                   'noiseMultiplier', 'epsilon'):
                         payload['privacy'].pop(field, None)
                 payload['experimentId'] = f'EXP-{enabled}'
-                payload['_scenario'] = {
-                    'request': validate_scenario({}),
-                    'preview': {'partitionVersion': 'test'},
-                }
+                payload['_scenario'] = scenario
                 with mock.patch.dict('os.environ', {
                     'FEDERATEDSCOPE_DATA_ROOT': str(data_root),
+                    'FEDERATEDSCOPE_MODEL_PATH': str(model_path),
                 }):
                     commands.append(' '.join(runner.build_command(
                         payload, Path(temporary) / 'output')))
@@ -261,7 +346,7 @@ class StandaloneTaskManagerTest(unittest.TestCase):
         self.scenario = {
             'scenarioId': 'SCN-TEST',
             'request': validate_scenario({}),
-            'preview': {'partitionVersion': 'test'},
+            'preview': build_partition(validate_scenario({})),
         }
         self.repository.save_scenario(self.scenario)
 
@@ -283,11 +368,18 @@ class StandaloneTaskManagerTest(unittest.TestCase):
         self.assertEqual(len(manager.list()), 1)
         snapshot = manager.snapshot(record['experimentId'])
         self.assertEqual(snapshot['round'], 2)
+        self.assertEqual(len(snapshot['clients']), 60)
         event_rows = manager.events_after(record['experimentId'], 0)
         self.assertEqual(
             [event['sequence'] for event in event_rows],
             list(range(1, len(event_rows) + 1)))
         self.assertEqual(event_rows[-1]['type'], 'experiment.completed')
+        log_dir = Path(self.temporary.name) / 'runs' / record['experimentId']
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / 'runner.log').write_text(
+            'line-one\nline-two\n', encoding='utf-8')
+        self.assertEqual(manager.logs(record['experimentId'], 1),
+                         ['line-two'])
 
     def test_task_can_be_stopped(self):
         manager = ExperimentTaskManager(
@@ -309,6 +401,24 @@ class StandaloneTaskManagerTest(unittest.TestCase):
                 break
             time.sleep(0.01)
         self.assertEqual(current['status'], 'stopped')
+
+    def test_defense_event_persists_truth_based_detection_metrics(self):
+        manager = ExperimentTaskManager(
+            self.repository, DefenseRunner(),
+            Path(self.temporary.name) / 'runs')
+        payload = experiment_payload('backdoor')
+        record = manager.create(validate_experiment(payload), self.scenario)
+        for _ in range(100):
+            current = manager.get(record['experimentId'])
+            if current['status'] == 'completed':
+                break
+            time.sleep(0.01)
+        self.assertEqual(current['finalMetrics']['truePositiveRate'], 1.0)
+        self.assertAlmostEqual(
+            current['finalMetrics']['falsePositiveRate'], 1 / 59)
+        snapshot = manager.snapshot(record['experimentId'])
+        self.assertEqual(snapshot['clients']['OH-DT-C01']['assessment'],
+                         '过滤')
 
 
 class StandaloneHttpApiTest(unittest.TestCase):
@@ -352,6 +462,33 @@ class StandaloneHttpApiTest(unittest.TestCase):
             '/api/scenarios', 'POST', validate_scenario({}))
         self.assertEqual(status, 201)
         self.assertTrue(scenario['scenarioId'].startswith('SCN-'))
+        status, fetched = self.request(
+            f"/api/scenarios/{scenario['scenarioId']}")
+        self.assertEqual(status, 200)
+        self.assertEqual(fetched['scenarioId'], scenario['scenarioId'])
+
+    def test_real_scenario_persists_replay_manifest(self):
+        from federatedscope.cv.dataset.office_home import OfficeHome
+        data_root = Path(self.temporary.name) / 'officehome'
+        for domain in OfficeHome.DOMAINS:
+            directory = data_root / (domain.replace('_', ' ')
+                                     if 'Real' in domain else domain)
+            class_directory = directory / OfficeHome.CLASSES[0]
+            class_directory.mkdir(parents=True)
+            for index in range(2):
+                (class_directory / f'{index}.jpg').touch()
+        with mock.patch.dict('os.environ', {
+                'FEDERATEDSCOPE_DATA_ROOT': str(data_root)}):
+            status, scenario = self.request(
+                '/api/scenarios', 'POST', validate_scenario({}))
+        self.assertEqual(status, 201)
+        self.assertEqual(scenario['artifacts']['partitionManifest'],
+                         'client_partitions.json')
+        manifest_path = Path(self.temporary.name) / 'api' / 'scenarios' / \
+            scenario['scenarioId'] / 'client_partitions.json'
+        self.assertTrue(manifest_path.is_file())
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        self.assertEqual(len(manifest['clients']), 60)
 
     def test_invalid_experiment_returns_field_errors(self):
         request = urllib.request.Request(

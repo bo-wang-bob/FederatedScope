@@ -21,6 +21,34 @@ const statusLabels: Record<string, string> = {
 const typeLabels = { heterogeneity: '异构协同', privacy: '隐私保护', backdoor: '后门攻防' };
 const methodLabels = { fedavg: 'FedAvg', fedprox: 'FedProx', heterogeneous_solution: '异构解决方案' };
 const terminal = new Set(['completed', 'failed', 'stopped']);
+const eventTypeLabels: Record<string, string> = {
+  'experiment.started': '实验启动',
+  'experiment.stopping': '正在停止',
+  'experiment.stopped': '实验已停止',
+  'experiment.completed': '实验完成',
+  'experiment.failed': '实验失败',
+  'stage.changed': '阶段切换',
+  'round.started': '轮次开始',
+  'round.completed': '轮次完成',
+  'client.status.changed': '节点状态',
+  'client.metric.updated': '节点保护统计',
+  'metric.updated': '指标更新',
+  'defense.decision': '防御判定',
+  'warning.raised': '运行告警',
+};
+
+function eventDescription(event: TrainingEvent) {
+  const payload = event.payload as Record<string, unknown>;
+  if (payload.message) return String(payload.message);
+  if (event.type === 'stage.changed') return `进入 ${String(payload.stage ?? '新阶段')}`;
+  if (event.type === 'round.started') return `第 ${String(payload.round ?? '--')} 轮开始`;
+  if (event.type === 'round.completed') return `第 ${String(payload.round ?? '--')} 轮完成，收到 ${String(payload.receivedClientUpdates ?? '--')} 个节点更新`;
+  if (event.type === 'client.status.changed') return `${String(payload.clientId ?? '节点')}：${String(payload.status ?? '状态更新')}`;
+  if (event.type === 'client.metric.updated') return `${String(payload.clientId ?? '节点')} 已完成上传保护处理`;
+  if (event.type === 'defense.decision') return `${payload.stage === 'feature_statistics' ? '特征统计阶段' : '正常训练阶段'}过滤 ${Array.isArray(payload.droppedClientIds) ? payload.droppedClientIds.length : 0} 个节点`;
+  if (event.type === 'metric.updated') return `第 ${String(payload.round ?? '--')} 轮指标已更新`;
+  return `事件序号 ${event.sequence}`;
+}
 
 function percentMetric(value: number | undefined) {
   if (value === undefined) return '--';
@@ -113,7 +141,12 @@ export function LiveMonitorPage() {
     const series = [
       { key: 'accuracy', name: '全局准确率', color: '#44d8ff' },
       { key: 'loss', name: '损失', color: '#8b7cff' },
-      ...(record?.type === 'privacy' ? [{ key: 'privacyRisk', name: '隐私攻击指标', color: '#ffbd52' }] : []),
+      { key: 'domainArt', name: '数字孪生域', color: '#18d7c5' },
+      { key: 'domainClipart', name: '战术符号域', color: '#ffbd52' },
+      { key: 'domainProduct', name: '装备数据库域', color: '#a68cff' },
+      { key: 'domainReal_World', name: '实景侦察域', color: '#5da9ff' },
+      ...(record?.type === 'privacy' && record.config.privacy?.attack !== 'reconstruction' ? [{ key: 'privacyRisk', name: '隐私攻击指标', color: '#ffbd52' }] : []),
+      ...(record?.type === 'privacy' && record.config.privacy?.attack === 'reconstruction' ? [{ key: 'reconstructionPsnr', name: '重建质量（PSNR）', color: '#f0529d' }, { key: 'reconstructionLoss', name: '重建优化损失', color: '#ff8a52' }] : []),
       ...(record?.type === 'backdoor' ? [{ key: 'attackSuccess', name: '攻击成功率', color: '#f0526d' }] : []),
       ...(record?.type === 'heterogeneity' ? [{ key: 'worstDomain', name: '最弱域准确率', color: '#29e3ae' }] : []),
     ];
@@ -129,6 +162,9 @@ export function LiveMonitorPage() {
 
   const privacyConfig = record?.config.type === 'privacy' ? record.config.privacy : null;
   const backdoorConfig = record?.config.type === 'backdoor' ? record.config.backdoor : null;
+  const reconstructionMetric = latest.reconstructionPsnr !== undefined
+    ? { label: '重建质量（PSNR）', value: latest.reconstructionPsnr.toFixed(2), suffix: 'dB' }
+    : { label: '重建优化损失', value: latest.reconstructionLoss?.toFixed(4) ?? '--', suffix: '' };
   const maliciousSet = useMemo(() => new Set(backdoorConfig?.maliciousClients ?? []), [backdoorConfig]);
   const clientRows = nodeRows.map((node) => {
     const runtime = snapshot?.clients[node.id];
@@ -136,9 +172,16 @@ export function LiveMonitorPage() {
       ...node,
       status: runtime?.status ?? (snapshot?.status === 'running' ? '等待聚合' : '待机'),
       progress: runtime?.progress ?? (snapshot?.status === 'completed' ? 100 : 0),
+      sampleCount: runtime?.sampleCount ?? node.sampleCount,
+      assessment: runtime?.assessment ?? '通过',
       malicious: maliciousSet.has(node.id),
     };
   });
+  const protectedClients = Object.values(snapshot?.clients ?? {}).filter((client) => client.noiseStd !== undefined);
+  const averageNoiseStd = protectedClients.length
+    ? protectedClients.reduce((sum, client) => sum + (client.noiseStd ?? 0), 0) / protectedClients.length
+    : undefined;
+  const defenseEvents = events.filter((event) => event.type === 'defense.decision');
 
   if (loading) return <div className="page route-loading"><Spin size="large" /><span>正在连接实验任务…</span></div>;
   if (error || !record || !snapshot) return <div className="page"><PageHeader eyebrow="LIVE EXPERIMENT MONITOR" title="实验运行监控" description="查看后端单机任务的实时状态。" /><Alert type="error" showIcon message="无法打开实验" description={error || '实验数据不完整'} action={<Space><Button onClick={() => navigate('/experiments/new')}>创建实验</Button><Button onClick={() => navigate('/reports')}>实验记录</Button></Space>} /></div>;
@@ -155,16 +198,18 @@ export function LiveMonitorPage() {
       <MetricCard label="任务进度" value={Math.round((snapshot.round / Math.max(1, snapshot.totalRounds ?? record.totalRounds)) * 100)} suffix="%" delta={statusLabels[status] || status} tone="green" />
       <MetricCard label="全局准确率" value={percentMetric(latest.accuracy)} suffix="%" delta={latest.accuracy === undefined ? '等待后端指标' : `第 ${latest.round} 轮`} tone="cyan" />
       {record.type === 'heterogeneity' && <><MetricCard label="最弱域准确率" value={percentMetric(latest.worstDomain)} suffix="%" delta="跨域性能下界" tone="violet" /><MetricCard label="域间性能差距" value={percentMetric(latest.domainGap)} suffix="%" delta="越低越均衡" tone="amber" /></>}
-      {record.type === 'privacy' && <><MetricCard label="隐私攻击指标" value={percentMetric(latest.privacyRisk)} suffix="%" delta={privacyConfig?.defenseEnabled ? '本地保护已启用' : '无保护实验'} tone="violet" /><MetricCard label="实际噪声标准差" value={(latest.noiseStd ?? latest.noiseMultiplier)?.toFixed(3) ?? '--'} delta="以后端上传统计为准" tone="amber" /></>}
+      {record.type === 'privacy' && <><MetricCard label={privacyConfig?.attack === 'reconstruction' ? reconstructionMetric.label : '隐私攻击指标'} value={privacyConfig?.attack === 'reconstruction' ? reconstructionMetric.value : percentMetric(latest.privacyRisk)} suffix={privacyConfig?.attack === 'reconstruction' ? reconstructionMetric.suffix : '%'} delta={privacyConfig?.defenseEnabled ? '本地保护已启用' : '无保护实验'} tone="violet" /><MetricCard label="实际噪声标准差" value={(averageNoiseStd ?? latest.noiseStd ?? latest.noiseMultiplier)?.toFixed(3) ?? '--'} delta={protectedClients.length ? `${protectedClients.length} 个客户端最新均值` : '等待客户端上传统计'} tone="amber" /></>}
       {record.type === 'backdoor' && <><MetricCard label="攻击成功率" value={percentMetric(latest.attackSuccess)} suffix="%" delta={backdoorConfig?.defenseEnabled ? '攻击防御已启用' : '无防御实验'} tone="red" /><MetricCard label="检测 TPR / FPR" value={`${percentMetric(latest.truePositiveRate)} / ${percentMetric(latest.falsePositiveRate)}`} suffix="%" delta="真值仅用于复盘" tone="amber" /></>}
     </div>
 
     <div className="live-grid">
-      <Panel title="三级运行态势" subtitle={`当前：${phases[phaseIndex]} · 第 ${snapshot.round} 轮`} className="live-topology"><FederationTopology compact /></Panel>
+      <Panel title="三级运行态势" subtitle={`当前：${phases[phaseIndex]} · 第 ${snapshot.round} 轮`} className="live-topology"><FederationTopology compact nodes={clientRows} /></Panel>
       <Panel title="实时事件" subtitle="后端任务事件与运行日志" extra={<ClockCircleOutlined />}>
-        {events.length ? <Timeline className="event-timeline" items={events.slice(0, 20).map((event) => ({ color: event.type.includes('failed') ? 'red' : event.type.includes('completed') ? 'green' : 'blue', children: <div className="event-item"><span>{new Date(event.timestamp).toLocaleTimeString()} · {event.type}</span><p>{String((event.payload as { message?: string }).message || `序号 ${event.sequence}`)}</p></div> }))} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="等待后端事件" />}
+        {events.length ? <Timeline className="event-timeline" items={events.slice(0, 20).map((event) => ({ color: event.type.includes('failed') ? 'red' : event.type.includes('completed') ? 'green' : 'blue', children: <div className="event-item"><span>{new Date(event.timestamp).toLocaleTimeString()} · {eventTypeLabels[event.type] ?? event.type}</span><p>{eventDescription(event)}</p></div> }))} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="等待后端事件" />}
       </Panel>
     </div>
+
+    {record.type === 'backdoor' && <Panel title="双阶段防御判定" subtitle="恶意真值与防御输出独立展示"><div className="defense-event-grid">{['feature_statistics', 'federated_training'].map((stage) => { const event = defenseEvents.find((item) => (item.payload as { stage?: string }).stage === stage); const payload = event?.payload as { droppedClientIds?: Array<string | number>; keptClientIds?: Array<string | number>; threshold?: number } | undefined; return <div key={stage}><span>{stage === 'feature_statistics' ? '特征统计阶段' : '正常训练阶段'}</span><b>{event ? `${payload?.droppedClientIds?.length ?? 0} 个节点被过滤` : '等待阶段结果'}</b><small>{event ? `保留 ${payload?.keptClientIds?.length ?? 0} · 阈值 ${payload?.threshold?.toFixed(3) ?? '--'}` : '结构化防御事件尚未到达'}</small></div>; })}</div></Panel>}
 
     <div className="live-bottom-grid">
       <Panel title="运行指标趋势" subtitle="按实验类型展示后端真实指标">{metrics.length ? <Chart option={trendOption} height={310} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="训练产生指标后将在此显示" />}</Panel>

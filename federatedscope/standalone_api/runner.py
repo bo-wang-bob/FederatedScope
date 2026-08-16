@@ -5,11 +5,15 @@ from __future__ import annotations
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List
+
+from federatedscope.core.monitoring.events import parse_training_event_line
+from federatedscope.standalone_api.preflight import inspect_runtime
 
 
 EventCallback = Callable[[str, Dict[str, Any]], None]
@@ -17,7 +21,9 @@ MetricCallback = Callable[[Dict[str, Any]], None]
 
 
 class RunnerPreflightError(RuntimeError):
-    pass
+    def __init__(self, message: str, result: Dict[str, Any] | None = None):
+        super().__init__(message)
+        self.result = result or {}
 
 
 class StandaloneProcessRunner:
@@ -43,31 +49,15 @@ class StandaloneProcessRunner:
         data_root = Path(os.environ.get(
             'FEDERATEDSCOPE_DATA_ROOT',
             '/root/autodl-tmp/datasets/OfficeHomeDataset_10072016'))
-        errors = []
-        if not template.exists():
-            errors.append(f'运行模板不存在：{template.name}')
-        if not data_root.exists():
-            errors.append(
-                'OfficeHome 数据目录不可用，请设置 FEDERATEDSCOPE_DATA_ROOT')
         model_path = Path(os.environ.get(
             'FEDERATEDSCOPE_MODEL_PATH',
             '/root/autodl-tmp/models/open_clip_vitb16.bin'))
-        if config['type'] in {'heterogeneity', 'backdoor'} and \
-                not model_path.exists():
-            errors.append(
-                '特征模型文件不可用，请设置 FEDERATEDSCOPE_MODEL_PATH')
-        if config['common']['device'] == 'cuda':
-            try:
-                import torch
-                if not torch.cuda.is_available():
-                    errors.append('当前环境没有可用 CUDA 设备')
-            except ImportError:
-                errors.append('当前环境未安装 PyTorch，无法使用 CUDA')
-        if errors:
-            raise RunnerPreflightError('；'.join(errors))
-        result = {'template': str(template), 'dataRoot': str(data_root)}
-        if model_path.exists():
-            result['modelPath'] = str(model_path)
+        result = inspect_runtime(
+            config, template, data_root, model_path, self.repo_root)
+        if not result['ready']:
+            errors = [item['message'] for item in result['checks']
+                      if not item['ready']]
+            raise RunnerPreflightError('；'.join(errors), result)
         return result
 
     @staticmethod
@@ -86,6 +76,29 @@ class StandaloneProcessRunner:
             return sorted(set(result))
         count = max(1, round(client_num * ratio))
         return list(range(1, count + 1))
+
+    @staticmethod
+    def _verify_effective_config(command: List[str],
+                                 experiment_type: str) -> None:
+        """Freeze the exact child configuration before a process is created."""
+        from federatedscope.core.configs.config import global_cfg
+        from federatedscope.core.configs.cfg_security import \
+            resolve_security_mode
+
+        cfg = global_cfg.clone()
+        cfg.merge_from_file(command[4])
+        cfg.merge_from_list(command[5:])
+        cfg.freeze(inform=False, save=False)
+        actual_mode = resolve_security_mode(cfg)
+        expected_mode = ('none' if experiment_type == 'heterogeneity'
+                         else experiment_type)
+        if actual_mode != expected_mode:
+            raise RunnerPreflightError(
+                f'最终配置安全模式不一致：期望 {expected_mode}，'
+                f'实际 {actual_mode}')
+        if experiment_type == 'backdoor' and (
+                bool(cfg.dp.enabled) or bool(cfg.adaptive_dp.use)):
+            raise RunnerPreflightError('后门任务不得启用隐私保护流程')
 
     def build_command(self, config: Dict[str, Any], output_dir: Path) -> List[str]:
         preflight = self.preflight(config)
@@ -110,6 +123,8 @@ class StandaloneProcessRunner:
             'ggeur.use_lds', 'True',
             'ggeur.lds_alpha', str(scenario['request']['partition']['alpha']),
             'ggeur.lds_seed', str(scenario['request']['partition']['seed']),
+            'ggeur.officehome_manifest_path',
+            preflight['partitionManifest'],
         ]
         if preflight.get('modelPath'):
             command.extend(['ggeur.clip_model_path', preflight['modelPath']])
@@ -124,6 +139,8 @@ class StandaloneProcessRunner:
                 'ggeur.target_size_per_class', str(block['expansionTarget']),
                 'ggeur.num_generated_per_sample',
                 str(block['expansionTarget']),
+                'ggeur.extract_batch_size',
+                str(block['featureBatchSize']),
             ])
         elif method != 'heterogeneous_solution':
             command.extend([
@@ -197,6 +214,7 @@ class StandaloneProcessRunner:
                 'dp.protect_ggeur_update', 'False',
                 'adaptive_dp.use', 'False',
             ])
+        self._verify_effective_config(command, config['type'])
         return command
 
     @staticmethod
@@ -284,6 +302,8 @@ class StandaloneProcessRunner:
             stop_event: threading.Event, emit: EventCallback,
             on_metric: MetricCallback) -> int:
         command = self.build_command(config, output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log_path = output_dir / 'runner.log'
         emit('stage.changed', {'phaseIndex': 0, 'round': 0,
                                'stage': '中央下发'})
         process = subprocess.Popen(
@@ -299,8 +319,11 @@ class StandaloneProcessRunner:
 
         def collect_output() -> None:
             assert process.stdout is not None
-            for output_line in process.stdout:
-                lines.put(output_line)
+            with log_path.open('a', encoding='utf-8') as log_stream:
+                for output_line in process.stdout:
+                    log_stream.write(output_line)
+                    log_stream.flush()
+                    lines.put(output_line)
             lines.put(None)
 
         reader = threading.Thread(target=collect_output, daemon=True)
@@ -308,20 +331,50 @@ class StandaloneProcessRunner:
         last_round = -1
         client_states: Dict[str, tuple] = {}
         output_closed = False
+        stop_requested = False
         while process.poll() is None or not output_closed:
-            if stop_event.is_set():
-                process.terminate()
+            if stop_event.is_set() and not stop_requested:
+                stop_requested = True
+                process.send_signal(signal.SIGINT)
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    process.kill()
-                return -15
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
             try:
                 line = lines.get(timeout=0.2)
             except queue.Empty:
                 continue
             if line is None:
                 output_closed = True
+                continue
+            structured = parse_training_event_line(line)
+            if structured is not None:
+                event_type = structured['type']
+                event_payload = dict(structured['payload'])
+                if event_type in {'client.status.changed',
+                                  'client.metric.updated'} and \
+                        'clientIndex' in event_payload:
+                    client_index = int(event_payload.pop('clientIndex'))
+                    identity = self._client_payload(
+                        client_index,
+                        int(event_payload.get('round', last_round)), '')
+                    event_payload = {**identity, **event_payload}
+                if event_type == 'metric.updated':
+                    metric = dict(event_payload)
+                    metric.setdefault('round', max(0, last_round))
+                    on_metric(metric)
+                if event_type == 'round.started' and \
+                        'round' in event_payload:
+                    last_round = int(event_payload['round'])
+                emit(event_type, event_payload)
+                continue
+            if '[AdaptiveDP]' in line:
+                # The client emits the same values as a structured event after
+                # applying protection; do not create a duplicate global point.
                 continue
             parsed = self._parse_line(line)
             current_round = parsed.get('round')
@@ -351,4 +404,4 @@ class StandaloneProcessRunner:
                     'error', 'exception', 'traceback')) else 'warning'
                 emit('warning.raised', {'level': level, **parsed})
         reader.join(timeout=1)
-        return int(process.returncode or 0)
+        return -15 if stop_requested else int(process.returncode or 0)

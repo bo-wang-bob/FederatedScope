@@ -6,6 +6,7 @@ import torch
 
 from federatedscope.contrib.worker.ggeur_server import GGEURServer
 from federatedscope.core.auxiliaries.criterion_builder import get_criterion
+from federatedscope.core.monitoring.events import emit_training_event
 from federatedscope.attack.auxiliary.utils import get_data_info, \
     get_data_sav_fn, get_reconstructor
 
@@ -99,6 +100,10 @@ class GGEURPassiveServer(GGEURServer):
                 'GRNN attack skipped for round=%s, client=%s because the '
                 'update does not contain an image-branch payload.', state,
                 sender)
+            emit_training_event(
+                'warning.raised', level='warning', round=int(state),
+                clientIndex=int(sender),
+                message='重建攻击缺少图像分支更新，已跳过该节点')
             return
 
         if attack_gradients is not None:
@@ -138,12 +143,39 @@ class GGEURPassiveServer(GGEURServer):
                     self.atk_method.upper(),
                     self.reconstructor.dlg_recover_loss)
 
+        metric_payload = {
+            'round': int(state),
+            'reconstructionLoss': float(
+                self.reconstructor.dlg_recover_loss),
+        }
+        original_data = None
+        if isinstance(last_batch_data, tuple) and len(last_batch_data) == 2:
+            original_data = last_batch_data[0]
+        if original_data is not None:
+            reference = original_data.detach().float().cpu()
+            reconstructed = dummy_data.detach().float().cpu()
+            if reference.ndim == 3:
+                reference = reference.unsqueeze(0)
+            if reconstructed.ndim == 3:
+                reconstructed = reconstructed.unsqueeze(0)
+            count = min(reference.shape[0], reconstructed.shape[0])
+            if count:
+                reference = reference[:count].clamp(0.0, 1.0)
+                reconstructed = reconstructed[:count].clamp(0.0, 1.0)
+                if reference.shape[-2:] != reconstructed.shape[-2:]:
+                    reference = torch.nn.functional.interpolate(
+                        reference, size=reconstructed.shape[-2:],
+                        mode='bilinear', align_corners=False)
+                mse = (reference - reconstructed).pow(2).flatten(1).mean(1)
+                psnr = 10.0 * torch.log10(
+                    1.0 / mse.clamp_min(1.0e-12))
+                metric_payload['reconstructionPsnr'] = float(
+                    psnr.mean().item())
+        emit_training_event('metric.updated', **metric_payload)
+
         if self.reconstructed_data_sav_fn is not None:
             label_str = '_'.join(map(str, dummy_label.cpu().numpy().tolist()))
             filename = f'image_state_{state}_client_{sender}_label_{label_str}.png'
-            original_data = None
-            if isinstance(last_batch_data, tuple) and len(last_batch_data) == 2:
-                original_data = last_batch_data[0]
             self.reconstructed_data_sav_fn(
                 data=dummy_data.cpu(),
                 sav_pth=self._cfg.outdir,
@@ -192,14 +224,31 @@ class GGEURPassiveServer(GGEURServer):
             sample_size, model_para = 0, content
 
         self.msg_buffer['train'][round_idx].append((sample_size, model_para, sender))
+        received_num = len(self.msg_buffer['train'][round_idx])
+        emit_training_event(
+            'client.status.changed', clientIndex=int(sender),
+            status='上传完成', progress=100, round=int(round_idx),
+            sampleCount=int(sample_size))
+        if received_num == 1:
+            emit_training_event(
+                'stage.changed', round=int(round_idx), phaseIndex=3,
+                stage='client_upload_projection')
 
         if self.state_to_reconstruct is None or round_idx in self.state_to_reconstruct:
             if self.client_to_reconstruct is None or sender in self.client_to_reconstruct:
                 self.run_reconstruct(state_list=[round_idx], sender_list=[sender])
 
+        expected_num = len(getattr(
+            self, 'current_round_clients', [])) or self._client_num
         logger.info(
             f"Server: Received model from client {sender} for round {round_idx} "
-            f"({len(self.msg_buffer['train'][round_idx])}/{self._client_num})")
+            f"({received_num}/{expected_num})")
 
-        if len(self.msg_buffer['train'][round_idx]) >= self._client_num:
+        if received_num >= expected_num:
+            emit_training_event(
+                'stage.changed', round=int(round_idx), phaseIndex=4,
+                stage='domain_aggregation_projection')
+            emit_training_event(
+                'stage.changed', round=int(round_idx), phaseIndex=5,
+                stage='domain_upload_projection')
             self._perform_fedavg(round_idx)

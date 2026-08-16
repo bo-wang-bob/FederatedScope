@@ -2,6 +2,7 @@ import type {
   Capabilities,
   ExperimentConfig,
   ExperimentRecord,
+  PreflightResult,
   ScenarioRecord,
   ScenarioPreviewRequest,
 } from '../types';
@@ -50,8 +51,11 @@ export const experimentApi = {
       method: 'POST', body: JSON.stringify(value), signal,
     });
   },
+  getScenario(scenarioId: string, signal?: AbortSignal) {
+    return request<ScenarioRecord>(`/api/scenarios/${encodeURIComponent(scenarioId)}`, { signal });
+  },
   preflight(value: ExperimentConfig, signal?: AbortSignal) {
-    return request<Record<string, string>>('/api/experiments/preflight', {
+    return request<PreflightResult>('/api/experiments/preflight', {
       method: 'POST', body: JSON.stringify(value), signal,
     });
   },
@@ -70,5 +74,8 @@ export const experimentApi = {
     return request<ExperimentRecord>(`/api/experiments/${encodeURIComponent(experimentId)}/stop`, {
       method: 'POST', body: '{}', signal,
     });
+  },
+  logs(experimentId: string, limit = 200, signal?: AbortSignal) {
+    return request<string[]>(`/api/experiments/${encodeURIComponent(experimentId)}/logs?limit=${limit}`, { signal });
   },
 };

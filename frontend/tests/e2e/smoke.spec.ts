@@ -85,9 +85,9 @@ test('实验模式使用互斥的单一配置块', async ({ page }) => {
   await expect(page.getByText('隐私攻击与保护')).toHaveCount(0);
 });
 
-test('启动成功后使用后端实验编号跳转监控', async ({ page }) => {
-  await page.route('**/api/capabilities', async (route) => route.fulfill({ json: { data: { apiVersion: '1.0', datasets: [], devices: ['cpu'], methods: ['fedavg', 'fedprox', 'heterogeneous_solution'], experimentTypes: ['heterogeneity', 'privacy', 'backdoor'], runner: { ready: true, dataReady: true, modelReady: true, templatesReady: true } } } }));
-  await page.route('**/api/experiments/preflight', async (route) => route.fulfill({ json: { data: { ready: 'true' } } }));
+test('预检通过并使用后端实验编号跳转监控', async ({ page }) => {
+  await page.route('**/api/capabilities', async (route) => route.fulfill({ json: { data: { apiVersion: '1.0', datasets: [], devices: ['cpu'], methods: ['fedavg', 'fedprox', 'heterogeneous_solution'], experimentTypes: ['heterogeneity', 'privacy', 'backdoor'], runner: { ready: true, dataReady: true, modelReady: true, templatesReady: true }, metrics: {}, parameters: {} } } }));
+  await page.route('**/api/experiments/preflight', async (route) => route.fulfill({ json: { data: { ready: true, checks: [{ name: 'template', ready: true, message: '运行模板可用', details: {} }], template: 'heterogeneity.yaml', dataRoot: 'OfficeHome', modelPath: 'model.bin', partitionManifest: 'client_partitions.json' } } }));
   await page.route('**/api/experiments', async (route) => {
     if (route.request().method() === 'POST') {
       const config = route.request().postDataJSON();
@@ -100,6 +100,8 @@ test('启动成功后使用后端实验编号跳转监控', async ({ page }) => 
   await page.getByRole('button', { name: '应用到实验配置' }).click();
   await expect(page.getByText('场景已应用')).toBeVisible();
   await page.getByText('实验配置', { exact: true }).click();
+  await page.getByRole('button', { name: '运行预检' }).click();
+  await expect(page.getByText('运行模板可用').last()).toBeVisible();
   await page.getByRole('button', { name: '创建并启动实验' }).click();
   await expect(page).toHaveURL(/\/experiments\/EXP-E2E-001\/live$/);
 });

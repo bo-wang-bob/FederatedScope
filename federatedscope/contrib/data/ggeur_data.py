@@ -453,6 +453,47 @@ def _load_officehome_manifest_data(config, transform):
     batch_size = config.dataloader.batch_size
     num_workers = config.dataloader.num_workers
     data_dict = {}
+    if str(manifest.get('schemaVersion', '1.0')) == '2.0':
+        domains = manifest.get('domains', {})
+        clients = manifest.get('clients', [])
+        if not clients:
+            raise ValueError('OfficeHome replay manifest has no clients')
+        expected_ids = list(range(1, len(clients) + 1))
+        actual_ids = sorted(int(item.get('clientId', -1))
+                            for item in clients)
+        if actual_ids != expected_ids:
+            raise ValueError(
+                'OfficeHome replay manifest client ids must be contiguous')
+        for client in clients:
+            client_id = int(client['clientId'])
+            domain = client['domain']
+            domain_splits = domains.get(domain, {})
+            split_records = {
+                'train': client.get('train', []),
+                'val': domain_splits.get('val', []),
+                'test': domain_splits.get('test', []),
+            }
+            client_data = {}
+            for split, records in split_records.items():
+                dataset = ManifestImageDataset(
+                    root, records, transform=transform, domain=domain,
+                    client_id=client_id)
+                client_data[split] = (
+                    None if split == 'val' and len(dataset) == 0 else
+                    DataLoader(dataset,
+                               batch_size=batch_size,
+                               shuffle=(split == 'train'),
+                               num_workers=num_workers,
+                               drop_last=False))
+            data_dict[client_id] = client_data
+        config.federate.client_num = len(clients)
+        logger.info(
+            "OfficeHome replay manifest loaded: "
+            f"manifest={manifest_path}, clients={len(clients)}, "
+            f"partition={manifest.get('partitionVersion')}, "
+            f"fingerprint={manifest.get('datasetFingerprint')}")
+        return data_dict, config
+
     client_id = int(manifest.get('client_id', 1))
     domain = manifest.get('domain', None)
     splits = manifest.get('splits', {})

@@ -233,6 +233,17 @@ body::before {
 @media(prefers-reduced-motion:reduce){.map-central-link.active,.map-client-link.active{animation:none!important}.process-step.active{transform:none}.map-central-link.active,.map-client-link.active{stroke-dasharray:none}}
 
 .experiment-actions { margin-top: 12px; }
+.experiment-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(141, 211, 255, 0.12); }
+.experiment-presets > span { margin-right: 4px; color: var(--text-muted); font-size: 12px; }
+.preflight-checks { display: grid; gap: 7px; margin-top: 14px; padding: 12px; border: 1px solid rgba(141, 211, 255, 0.12); border-radius: 10px; background: rgba(4, 19, 37, 0.42); }
+.preflight-checks > div { display: flex; align-items: flex-start; gap: 8px; color: var(--text-muted); font-size: 12px; }
+.preflight-checks i { display: grid; flex: 0 0 18px; width: 18px; height: 18px; place-items: center; border-radius: 50%; font-style: normal; }
+.preflight-checks .ready i { color: #071a19; background: #39d9a7; }
+.preflight-checks .failed i { color: white; background: #f0526d; }
+.defense-event-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.defense-event-grid > div { display: grid; gap: 6px; padding: 14px; border: 1px solid rgba(141, 211, 255, 0.14); border-radius: 10px; background: rgba(4, 19, 37, 0.44); }
+.defense-event-grid span, .defense-event-grid small { color: var(--text-muted); }
+.defense-event-grid b { color: var(--text-primary); font-size: 16px; }
 .record-config-panel { margin-top: 16px; }
 .record-config-panel pre,
 .reports-page .ant-drawer-body pre { max-height: 420px; margin: 0; overflow: auto; padding: 13px; border: 1px solid var(--border); border-radius: 5px; background: #071522; color: #b8d0df; font: 10px/1.65 'JetBrains Mono', monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

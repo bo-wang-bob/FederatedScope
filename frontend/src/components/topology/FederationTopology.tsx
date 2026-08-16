@@ -1,6 +1,6 @@
 import { memo, useMemo, type CSSProperties } from 'react';
 import { Progress } from 'antd';
-import mapImage from '../../../resource/4o28b0625501ad13015501ad2bfc0135.jpg';
+import mapImage from '../../../resource/4o28b0625501ad13015501ad2bfc0135.optimized.webp';
 import { domains } from '../../mock/data';
 import { phases, useAppStore } from '../../store/useAppStore';
 import { isCentralLinkActive, isClientLinkActive, isUpperDirection } from '../../utils/hierarchyProjection';
@@ -79,7 +79,7 @@ const DomainServerMarker = memo(({ domain, layout }: { domain: MilitaryDomain; l
     <div className="map-server-card">
       <div><b>{domain.serverId}</b><em>域子服务器</em></div>
       <strong>{domain.name}</strong>
-      <Progress percent={68 + domains.indexOf(domain) * 6} size="small" showInfo={false} strokeColor={domain.color} />
+      <Progress percent={Math.round(domain.nodes.reduce((sum, node) => sum + node.progress, 0) / Math.max(1, domain.nodes.length))} size="small" showInfo={false} strokeColor={domain.color} />
     </div>
   </div>
 ));
@@ -113,7 +113,7 @@ const ClientMarker = memo(({ node, point, color, revealTruth, onSelect }: {
 
 ClientMarker.displayName = 'ClientMarker';
 
-function FlowLines({ phaseIndex }: { phaseIndex: number }) {
+function FlowLines({ phaseIndex, renderedDomains }: { phaseIndex: number; renderedDomains: MilitaryDomain[] }) {
   const phase = phases[phaseIndex];
   const upperDirection = isUpperDirection(phase);
   const centralActive = isCentralLinkActive(phase);
@@ -122,9 +122,9 @@ function FlowLines({ phaseIndex }: { phaseIndex: number }) {
     <svg className="map-flow-layer" viewBox="0 0 100 70" preserveAspectRatio="none" aria-hidden="true">
       <defs>
         <marker id="map-arrow-cyan" viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="1.6" markerHeight="1.6" orient="auto"><path d="M 1 1 L 11 6 L 1 11 L 3.5 6 z" fill="#44d8ff" stroke="#03101b" strokeWidth="1" /></marker>
-        {domains.map((domain) => <marker key={domain.id} id={`map-arrow-${domain.id}`} viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="1.05" markerHeight="1.05" orient="auto"><path d="M 1 1 L 11 6 L 1 11 L 3.5 6 z" fill={domain.color} stroke="#03101b" strokeWidth="1.2" /></marker>)}
+        {renderedDomains.map((domain) => <marker key={domain.id} id={`map-arrow-${domain.id}`} viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="1.05" markerHeight="1.05" orient="auto"><path d="M 1 1 L 11 6 L 1 11 L 3.5 6 z" fill={domain.color} stroke="#03101b" strokeWidth="1.2" /></marker>)}
       </defs>
-      {domains.map((domain, domainIndex) => {
+      {renderedDomains.map((domain, domainIndex) => {
         const layout = regionLayouts[domainIndex];
         const from = upperDirection ? layout.server : centralPoint;
         const to = upperDirection ? centralPoint : layout.server;
@@ -134,7 +134,7 @@ function FlowLines({ phaseIndex }: { phaseIndex: number }) {
           <path d={path} className={`map-central-link ${centralActive ? 'active' : ''}`} markerMid={centralActive ? 'url(#map-arrow-cyan)' : undefined} markerEnd={centralActive ? 'url(#map-arrow-cyan)' : undefined} />
         </g>;
       })}
-      {domains.flatMap((domain, domainIndex) => {
+      {renderedDomains.flatMap((domain, domainIndex) => {
         const layout = regionLayouts[domainIndex];
         const clientPoints = createClientPoints(layout, domain.nodes.length);
         return domain.nodes.map((node, nodeIndex) => {
@@ -160,18 +160,22 @@ function FlowLines({ phaseIndex }: { phaseIndex: number }) {
   );
 }
 
-export function FederationTopology({ compact = false }: { compact?: boolean }) {
+export function FederationTopology({ compact = false, nodes }: { compact?: boolean; nodes?: MilitaryNode[] }) {
   const phaseIndex = useAppStore((state) => state.phaseIndex);
   const revealTruth = useAppStore((state) => state.revealTruth);
   const selectNode = useAppStore((state) => state.selectNode);
   const phase = phases[phaseIndex];
-  const regionData = useMemo(() => domains.map((domain, index) => ({ domain, layout: regionLayouts[index], clientPoints: createClientPoints(regionLayouts[index], domain.nodes.length) })), []);
+  const renderedDomains = useMemo(() => domains.map((domain) => ({
+    ...domain,
+    nodes: nodes?.filter((node) => node.domainId === domain.id) ?? domain.nodes,
+  })), [nodes]);
+  const regionData = useMemo(() => renderedDomains.map((domain, index) => ({ domain, layout: regionLayouts[index], clientPoints: createClientPoints(regionLayouts[index], domain.nodes.length) })), [renderedDomains]);
 
   return (
     <div className={`topology-canvas map-topology ${compact ? 'compact' : ''}`}>
       <img className="map-background" src={mapImage} alt="中国行政区域演示底图" />
       <div className="map-tone" />
-      <FlowLines phaseIndex={phaseIndex} />
+      <FlowLines phaseIndex={phaseIndex} renderedDomains={renderedDomains} />
       {regionData.map(({ domain, layout, clientPoints }) => (
         <div key={domain.id} className="map-region-layer">
           <div className="map-region-boundary" style={{ left: `${layout.center.x}%`, top: `${layout.center.y}%`, width: `${layout.radius.x * 2}%`, height: `${layout.radius.y * 2}%`, '--domain-color': domain.color } as CSSProperties} />
@@ -188,7 +192,7 @@ export function FederationTopology({ compact = false }: { compact?: boolean }) {
         <div className="map-central-copy"><span>MASTER NODE</span><b>中央主服务器</b><small>CS-00 · {phase}</small></div>
       </div>
       <div className="map-compass"><b>N</b><i /><span>全域态势底图</span></div>
-      <div className="simulation-badge"><span /> 地图与三级链路均为前端模拟</div>
+      <div className="simulation-badge"><span /> {nodes ? '后端任务状态投影' : '地图与三级链路均为前端模拟'}</div>
       <div className="map-legend">
         <span><i className="legend-central" />主服务器</span>
         <span><i className="legend-domain" />域子服务器</span>

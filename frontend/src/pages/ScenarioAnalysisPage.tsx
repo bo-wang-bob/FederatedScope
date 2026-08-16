@@ -176,7 +176,7 @@ export function ScenarioAnalysisPage() {
           <Space className="alpha-actions"><Button icon={<ReloadOutlined />} onClick={() => { setDraftAlpha(0.3); setSeed(20_260_815); }}>重置</Button><Button type="primary" loading={loading || applying} icon={<CheckOutlined />} disabled={draftAlpha === appliedAlpha && seed === appliedSeed && Boolean(scenarioId)} onClick={applyScenario}>应用到实验配置</Button></Space>
         </Panel>
 
-        <Panel title="当前方案 → 待应用方案" subtitle={`划分版本 ${preview.partitionVersion}`} className="partition-diff-panel">
+        <Panel title="当前方案 → 待应用方案" subtitle={`划分版本 ${preview.partitionVersion} · 数据指纹 ${(preview.datasetFingerprint || 'simulation').slice(0, 12)}`} className="partition-diff-panel">
           <div className="partition-flow">
             <div><small>当前 α</small><b>{appliedAlpha.toFixed(2)}</b><span>{currentSummary.minSamples}～{currentSummary.maxSamples} 样本/客户端</span></div>
             <i>→</i>

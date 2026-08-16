@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import copy
 import threading
 import uuid
@@ -62,7 +63,18 @@ class ExperimentTaskManager:
     def preflight(self, config: Dict[str, Any], scenario: Dict[str, Any]) -> Dict[str, Any]:
         runtime_config = {**config, '_scenario': scenario,
                           'experimentId': 'preflight'}
-        return self.runner.preflight(runtime_config)
+        result = copy.deepcopy(self.runner.preflight(runtime_config))
+        result['template'] = Path(result.get('template', '')).name
+        result['dataRoot'] = 'OfficeHome'
+        result['modelPath'] = (
+            Path(result.get('modelPath', '')).name
+            if result.get('modelPath') else '')
+        result['partitionManifest'] = (
+            Path(result.get('partitionManifest', '')).name
+            if result.get('partitionManifest') else '')
+        for check in result.get('checks', []):
+            check.get('details', {}).pop('path', None)
+        return result
 
     def create(self, config: Dict[str, Any], scenario: Dict[str, Any]) -> Dict[str, Any]:
         key = str(config.get('idempotencyKey', '')).strip()
@@ -84,6 +96,20 @@ class ExperimentTaskManager:
         experiment_id = f"EXP-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6].upper()}"
         created_at = utc_now()
         public_config = copy.deepcopy(config)
+        initial_clients = {}
+        for domain in scenario.get('preview', {}).get('domains', []):
+            for client in domain.get('clients', []):
+                client_id = client['clientId']
+                initial_clients[client_id] = {
+                    'clientId': client_id,
+                    'domainKey': client['domainKey'],
+                    'sampleCount': int(client['sampleCount']),
+                    'status': '待机',
+                    'progress': 0,
+                    'round': 0,
+                    'assessment': '通过',
+                    'source': 'backend',
+                }
         record = {
             'experimentId': experiment_id,
             'name': public_config['name'],
@@ -106,7 +132,7 @@ class ExperimentTaskManager:
             'phaseIndex': 0,
             'round': 0,
             'totalRounds': public_config['common']['rounds'],
-            'clients': {},
+            'clients': initial_clients,
             'metrics': [],
             'events': [],
             'finalMetrics': {},
@@ -211,7 +237,13 @@ class ExperimentTaskManager:
                        metric: Dict[str, Any]) -> None:
         with self._lock:
             record = self._get_record(experiment_id)
-            record['metrics'].append(metric)
+            if record['metrics'] and record['metrics'][-1].get('round') == \
+                    metric.get('round'):
+                record['metrics'][-1] = {
+                    **record['metrics'][-1], **metric,
+                }
+            else:
+                record['metrics'].append(metric)
             record['metrics'] = record['metrics'][-2000:]
             record['finalMetrics'].update({
                 key: value for key, value in metric.items() if key != 'round'
@@ -243,10 +275,73 @@ class ExperimentTaskManager:
             if 'round' in payload:
                 record['round'] = int(payload['round'])
             if event_type == 'client.status.changed' and payload.get('clientId'):
+                previous = record['clients'].get(payload['clientId'], {})
                 record['clients'][payload['clientId']] = {
+                    **previous,
                     **payload,
                     'source': 'backend',
                 }
+            if event_type == 'client.metric.updated' and payload.get('clientId'):
+                previous = record['clients'].get(payload['clientId'], {})
+                record['clients'][payload['clientId']] = {
+                    **previous,
+                    **payload,
+                    'source': 'backend',
+                }
+            if event_type == 'defense.decision':
+                dropped_display_ids = []
+                for client_id in payload.get('droppedClientIds', []):
+                    key = self._display_client_id(client_id)
+                    dropped_display_ids.append(key)
+                    previous = record['clients'].get(key, {})
+                    record['clients'][key] = {
+                        **previous,
+                        'clientId': key,
+                        'status': '已过滤',
+                        'progress': 100,
+                        'round': int(payload.get('round', record['round'])),
+                        'assessment': '过滤',
+                        'source': 'backend',
+                    }
+                if record['type'] == 'backdoor':
+                    truth = set(record['config']['backdoor'].get(
+                        'maliciousClients', []))
+                    dropped = set(dropped_display_ids)
+                    all_clients = set(record['clients'])
+                    benign = all_clients - truth
+                    true_positive_rate = (
+                        len(dropped & truth) / len(truth) if truth else 0.0)
+                    false_positive_rate = (
+                        len(dropped & benign) / len(benign)
+                        if benign else 0.0)
+                    payload['truePositiveRate'] = true_positive_rate
+                    payload['falsePositiveRate'] = false_positive_rate
+                    payload['truePositiveCount'] = len(dropped & truth)
+                    payload['falsePositiveCount'] = len(dropped & benign)
+                    metric = {
+                        'round': int(payload.get('round', record['round'])),
+                        'truePositiveRate': true_positive_rate,
+                        'falsePositiveRate': false_positive_rate,
+                    }
+                    stage_prefix = ('featureStage' if payload.get('stage') ==
+                                    'feature_statistics' else 'trainingStage')
+                    metric[f'{stage_prefix}TruePositiveRate'] = \
+                        true_positive_rate
+                    metric[f'{stage_prefix}FalsePositiveRate'] = \
+                        false_positive_rate
+                    if record['metrics'] and \
+                            record['metrics'][-1].get('round') == \
+                            metric['round']:
+                        record['metrics'][-1] = {
+                            **record['metrics'][-1], **metric,
+                        }
+                    else:
+                        record['metrics'].append(metric)
+                    record['metrics'] = record['metrics'][-2000:]
+                    record['finalMetrics'].update({
+                        key: value for key, value in metric.items()
+                        if key != 'round'
+                    })
             record['events'].append(event)
             record['events'] = record['events'][-2000:]
             self.repository.save_experiment(record)
@@ -254,6 +349,16 @@ class ExperimentTaskManager:
             if condition:
                 condition.notify_all()
             return event
+
+    @staticmethod
+    def _display_client_id(client_id: Any) -> str:
+        try:
+            index = int(client_id) - 1
+        except (TypeError, ValueError):
+            return str(client_id)
+        prefixes = ['OH-DT', 'OH-TS', 'OH-ED', 'OH-FR']
+        domain_index = max(0, min(3, index // 15))
+        return f'{prefixes[domain_index]}-C{index % 15 + 1:02d}'
 
     def stop(self, experiment_id: str) -> Dict[str, Any]:
         with self._lock:
@@ -319,6 +424,17 @@ class ExperimentTaskManager:
     def metrics(self, experiment_id: str) -> List[Dict[str, Any]]:
         with self._lock:
             return copy.deepcopy(self._get_record(experiment_id)['metrics'])
+
+    def logs(self, experiment_id: str, limit: int = 200) -> List[str]:
+        with self._lock:
+            self._get_record(experiment_id)
+        safe_limit = max(1, min(int(limit), 2000))
+        path = self.output_root / experiment_id / 'runner.log'
+        if not path.is_file():
+            return []
+        with path.open('r', encoding='utf-8', errors='replace') as stream:
+            lines = deque(stream, maxlen=safe_limit)
+        return [line.rstrip('\n')[-4000:] for line in lines]
 
     def events_after(self, experiment_id: str,
                      sequence: int) -> List[Dict[str, Any]]:

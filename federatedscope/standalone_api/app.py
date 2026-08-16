@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -17,7 +18,8 @@ from urllib.parse import parse_qs, urlparse
 from federatedscope.standalone_api.repository import JsonRepository
 from federatedscope.standalone_api.runner import (
     RunnerPreflightError, StandaloneProcessRunner)
-from federatedscope.standalone_api.scenarios import build_partition
+from federatedscope.standalone_api.scenarios import (
+    build_partition, build_partition_artifacts)
 from federatedscope.standalone_api.schemas import (
     ValidationError, capabilities, validate_experiment, validate_scenario)
 from federatedscope.standalone_api.task_manager import (
@@ -26,6 +28,15 @@ from federatedscope.standalone_api.task_manager import (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def public_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(scenario)
+    if result.get('artifacts'):
+        result['artifacts'] = {
+            'partitionManifest': 'client_partitions.json',
+        }
+    return result
 
 
 class ApiContext:
@@ -115,10 +126,19 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == '/api/capabilities':
             self._data(capabilities(self.context.repo_root))
             return
+        scenario_match = re.fullmatch(r'/api/scenarios/([^/]+)', path)
+        if scenario_match:
+            scenario = self.context.repository.get_scenario(
+                scenario_match.group(1))
+            if scenario is None:
+                self._error(HTTPStatus.NOT_FOUND, 'NOT_FOUND', '场景不存在')
+            else:
+                self._data(public_scenario(scenario))
+            return
         if path == '/api/experiments':
             self._data(self.context.manager.list())
             return
-        match = re.fullmatch(r'/api/experiments/([^/]+)(?:/(snapshot|events|metrics))?', path)
+        match = re.fullmatch(r'/api/experiments/([^/]+)(?:/(snapshot|events|metrics|logs))?', path)
         if not match:
             self._error(HTTPStatus.NOT_FOUND, 'NOT_FOUND', '接口不存在')
             return
@@ -127,6 +147,13 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._data(self.context.manager.snapshot(experiment_id))
         elif action == 'metrics':
             self._data(self.context.manager.metrics(experiment_id))
+        elif action == 'logs':
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(query.get('limit', ['200'])[0])
+            except ValueError:
+                limit = 200
+            self._data(self.context.manager.logs(experiment_id, limit))
         elif action == 'events':
             query = parse_qs(parsed.query)
             header_sequence = self.headers.get('Last-Event-ID', '0').split('-')[-1]
@@ -173,7 +200,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.UNPROCESSABLE_ENTITY, 'VALIDATION_ERROR',
                         str(error), error.field_errors)
         except RunnerPreflightError as error:
-            self._error(HTTPStatus.CONFLICT, 'RUNNER_NOT_READY', str(error))
+            self._error(HTTPStatus.CONFLICT, 'RUNNER_NOT_READY', str(error), {
+                item['name']: item['message']
+                for item in error.result.get('checks', [])
+                if not item['ready']
+            })
         except TaskConflict as error:
             self._error(HTTPStatus.CONFLICT, 'TASK_CONFLICT', str(error))
         except TaskNotFound:
@@ -190,16 +221,22 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if path == '/api/scenarios':
             request = validate_scenario(self._body())
-            preview = build_partition(request)
+            preview, manifest = build_partition_artifacts(request)
             scenario_id = f"SCN-{preview['partitionVersion'].upper()}"
             scenario = {
                 'scenarioId': scenario_id,
                 'createdAt': utc_now(),
                 'request': request,
                 'preview': preview,
+                'artifacts': {},
             }
+            if manifest is not None:
+                manifest_path = self.context.repository.save_scenario_artifact(
+                    scenario_id, 'client_partitions.json', manifest)
+                scenario['artifacts']['partitionManifest'] = str(
+                    manifest_path)
             self.context.repository.save_scenario(scenario)
-            self._data(scenario, HTTPStatus.CREATED)
+            self._data(public_scenario(scenario), HTTPStatus.CREATED)
             return
         if path == '/api/experiments/preflight':
             config = validate_experiment(self._body())

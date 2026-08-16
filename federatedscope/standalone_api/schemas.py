@@ -59,6 +59,10 @@ def validate_scenario(payload: Dict[str, Any]) -> Dict[str, Any]:
         })
     clients = _integer(payload.get('clientsPerDomain', 15),
                        'clientsPerDomain', 1, 100)
+    if clients != 15:
+        raise ValidationError('当前版本固定每域 15 个逻辑客户端', {
+            'clientsPerDomain': '必须为 15',
+        })
     partition = payload.get('partition') or {}
     if partition.get('strategy', 'dirichlet') != 'dirichlet':
         raise ValidationError('当前版本仅支持狄利克雷划分', {
@@ -149,6 +153,9 @@ def validate_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
                 block['expansionTarget'] = _integer(
                     block.get('expansionTarget', 50),
                     'heterogeneity.expansionTarget', 0, 10000)
+                block['featureBatchSize'] = _integer(
+                    block.get('featureBatchSize', 64),
+                    'heterogeneity.featureBatchSize', 1, 1024)
             except ValidationError as error:
                 errors.update(error.field_errors)
         normalized['heterogeneity'] = block
@@ -232,6 +239,8 @@ def validate_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def capabilities(repo_root: Path) -> Dict[str, Any]:
+    from federatedscope.standalone_api.metric_registry import \
+        public_metric_registry
     data_root = Path(os.environ.get(
         'FEDERATEDSCOPE_DATA_ROOT',
         '/root/autodl-tmp/datasets/OfficeHomeDataset_10072016'))
@@ -265,4 +274,20 @@ def capabilities(repo_root: Path) -> Dict[str, Any]:
             'templatesReady': templates.exists(),
         },
         'limits': {'maxConcurrentCpu': 1, 'maxConcurrentGpu': 1},
+        'metrics': public_metric_registry(),
+        'parameters': {
+            'rounds': {'minimum': 1, 'maximum': 500, 'default': 30},
+            'localEpochs': {'minimum': 1, 'maximum': 50, 'default': 1},
+            'participationRate': {
+                'minimum': 0.01, 'maximum': 1.0, 'default': 1.0},
+            'batchSize': {'minimum': 1, 'maximum': 1024, 'default': 8},
+            'learningRate': {
+                'minimum': 1e-7, 'maximum': 1.0, 'default': 0.001},
+            'fedproxMu': {'minimum': 0.0, 'maximum': 100.0,
+                          'default': 0.01},
+            'expansionTarget': {'minimum': 0, 'maximum': 10000,
+                                'default': 50},
+            'featureBatchSize': {'minimum': 1, 'maximum': 1024,
+                                 'default': 64},
+        },
     }

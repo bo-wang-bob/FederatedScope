@@ -27,6 +27,7 @@ from federatedscope.attack.auxiliary.a3fl_utils import \
     get_a3fl_start_round, parse_attacker_ids, should_a3fl_attack
 from federatedscope.core.message import Message, b64serializer
 from federatedscope.core.auxiliaries.utils import param2tensor
+from federatedscope.core.monitoring.events import emit_training_event
 from federatedscope.core.workers import Client
 from federatedscope.register import register_worker
 
@@ -4219,12 +4220,22 @@ class GGEURClient(Client):
         combined_para = self._apply_update_reversal_to_upload(
             combined_para, round_idx)
 
-        # Privacy is the final client-side model transformation. Backdoor and
-        # privacy attacks never run together, while upload noise may protect
-        # either normal or backdoor training.
+        # Privacy is the final client-side model transformation in privacy
+        # experiments. Unified backdoor profiles are rejected if this path is
+        # enabled, so the two research modes never share one run.
         combined_para, privacy_stats = self._apply_adaptive_dp_to_upload(
             combined_para, round_idx)
         self._last_upload_privacy_stats = privacy_stats
+        if privacy_stats is not None:
+            emit_training_event(
+                'client.metric.updated', clientIndex=int(self.ID),
+                round=int(round_idx),
+                clipBound=float(privacy_stats.get('clip_bound', 0.0)),
+                clipFactor=float(privacy_stats.get('clip_factor', 0.0)),
+                noiseStd=float(privacy_stats.get('noise_std', 0.0)),
+                rawNorm=float(privacy_stats.get('raw_norm', 0.0)),
+                sanitizedNorm=float(
+                    privacy_stats.get('sanitized_norm', 0.0)))
 
         upload_content = (sample_size, combined_para)
         if privacy_stats is not None:

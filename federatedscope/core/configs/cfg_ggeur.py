@@ -128,6 +128,8 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.officehome_random_clients_per_domain = 0
     cfg.ggeur.officehome_random_samples_per_client = 0
     cfg.ggeur.officehome_random_sample_with_replacement = False
+    # Schema v1 describes one distributed client; schema v2 stores every
+    # logical standalone client and replays an API-created scenario exactly.
     cfg.ggeur.officehome_manifest_path = ''
     # Cache-hot rerun mode for HeadOnly experiments. If True and the
     # per-client augmented feature cache exists, clients skip round-0 feature
