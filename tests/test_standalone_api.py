@@ -276,6 +276,15 @@ class StandaloneApiSchemaTest(unittest.TestCase):
             }):
                 command = runner.build_command(
                     payload, Path(temporary) / 'output')
+            feature_cache_index = command.index('ggeur.feature_cache_dir')
+            augmented_cache_index = command.index(
+                'ggeur.augmented_feature_cache_dir')
+            self.assertEqual(
+                Path(command[feature_cache_index + 1]),
+                Path(temporary) / 'feature_cache')
+            self.assertEqual(
+                Path(command[augmented_cache_index + 1]),
+                Path(temporary) / 'output' / 'augmented_feature_cache')
         joined = ' '.join(command)
         self.assertIn('attack.attack_method label_flip', joined)
         self.assertIn('attack.label_flip.update_reversal True', joined)

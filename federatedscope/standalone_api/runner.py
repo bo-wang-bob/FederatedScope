@@ -125,6 +125,10 @@ class StandaloneProcessRunner:
             'ggeur.lds_seed', str(scenario['request']['partition']['seed']),
             'ggeur.officehome_manifest_path',
             preflight['partitionManifest'],
+            'ggeur.feature_cache_dir',
+            str(output_dir.parent / 'feature_cache'),
+            'ggeur.augmented_feature_cache_dir',
+            str(output_dir / 'augmented_feature_cache'),
         ]
         if preflight.get('modelPath'):
             command.extend(['ggeur.clip_model_path', preflight['modelPath']])
