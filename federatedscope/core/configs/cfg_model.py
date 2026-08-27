@@ -14,6 +14,10 @@ def extend_model_cfg(cfg):
     cfg.model.use_bias = True
     cfg.model.task = 'node'
     cfg.model.hidden = 256
+    # Optional explicit dimensions for feature-embedding MLP classifiers.
+    # Zero preserves the historical automatic/default behavior.
+    cfg.model.input_dim = 0
+    cfg.model.hidden_dim = 0
     cfg.model.num_classes = 10  # Number of classes for classification tasks
     cfg.model.dropout = 0.5
     cfg.model.in_channels = 0  # If 0, model will be built by data.shape

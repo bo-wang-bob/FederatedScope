@@ -1,0 +1,7 @@
+version: 1
+description: Functional test profile for platform task-adaptive generation
+default_target_size: 8
+class_counts:
+  "0": 4
+  "1": 12
+  "2": 20

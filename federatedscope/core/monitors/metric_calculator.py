@@ -2,8 +2,6 @@ import logging
 from typing import Optional, Union, List, Set
 
 import numpy as np
-from scipy.special import softmax
-from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
 
 from federatedscope.core.auxiliaries.metric_builder import get_metric
 
@@ -187,6 +185,8 @@ def eval_acc(y_true, y_pred, **kwargs):
 
 
 def eval_ap(y_true, y_pred, **kwargs):
+    from sklearn.metrics import average_precision_score
+
     ap_list = []
 
     for i in range(y_true.shape[1]):
@@ -207,6 +207,8 @@ def eval_ap(y_true, y_pred, **kwargs):
 
 
 def eval_f1_score(y_true, y_pred, **kwargs):
+    from sklearn.metrics import f1_score
+
     return f1_score(y_true, y_pred, average='macro')
 
 
@@ -226,6 +228,9 @@ def eval_hits(y_true, y_prob, metric, **kwargs):
 
 
 def eval_roc_auc(y_true, y_prob, **kwargs):
+    from scipy.special import softmax
+    from sklearn.metrics import roc_auc_score
+
     rocauc_list = []
 
     for i in range(y_true.shape[1]):

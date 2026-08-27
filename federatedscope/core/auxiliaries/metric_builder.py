@@ -1,15 +1,18 @@
 import logging
+import os
 import federatedscope.register as register
-from federatedscope.nlp.hetero_tasks.metric import *
 
 logger = logging.getLogger(__name__)
 
-try:
-    from federatedscope.contrib.metrics import *
-except ImportError as error:
-    logger.warning(
-        f'{error} in `federatedscope.contrib.metrics`, some modules are not '
-        f'available.')
+if os.environ.get('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT') != '1':
+    from federatedscope.nlp.hetero_tasks.metric import *
+
+    try:
+        from federatedscope.contrib.metrics import *
+    except ImportError as error:
+        logger.warning(
+            f'{error} in `federatedscope.contrib.metrics`, some modules are '
+            f'not available.')
 
 
 def get_metric(types):

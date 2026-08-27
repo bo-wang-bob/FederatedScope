@@ -19,18 +19,32 @@ import hashlib
 import io
 import json
 import zlib
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import yaml
 from torch.utils.data import Dataset, DataLoader
 
 from federatedscope.core.message import Message, b64serializer
 from federatedscope.core.auxiliaries.utils import param2tensor
-from federatedscope.core.workers import Client
+from federatedscope.core.workers.client import Client
 from federatedscope.register import register_worker
 
 logger = logging.getLogger(__name__)
+
+# Shared BERT extractors avoid loading one encoder per standalone client.
+_SHARED_BERT_EXTRACTORS = {}
+
+# In standalone evaluation every client receives the same global covariance
+# matrices, but deserialization gives each client a different ndarray object.
+# Cache factors by matrix content so the expensive high-dimensional
+# eigendecomposition/Cholesky step is performed once per class, not once per
+# class and client.  The cache is process-local and does not change the sampled
+# Gaussian distribution.
+_SHARED_COV_FACTOR_CACHE = {}
+_SHARED_COV_FACTOR_CACHE_MAXSIZE = 128
 
 
 class AugmentedFeatureDataset(Dataset):
@@ -130,6 +144,61 @@ class GGEURClient(Client):
     _shared_prompt_tokenizer = None
     _shared_prompt_clip_name = None   # track which model is loaded
 
+    @staticmethod
+    def _decode_parameter_tree(payload):
+        """Restore tensor leaves serialized by ``Message.transform``.
+
+        Distributed ``model_para`` messages pickle/base64-encode tensor
+        leaves before gRPC transport. Control strings such as the separated
+        training phase must stay unchanged, so failed tensor decoding falls
+        back to the original value.
+        """
+        if isinstance(payload, dict):
+            return {
+                key: GGEURClient._decode_parameter_tree(value)
+                for key, value in payload.items()
+            }
+        if isinstance(payload, list):
+            # ``model_para`` tensor leaves can arrive in either of two wire
+            # representations.  FederatedScope normally pickles tensor
+            # leaves into base64 bytes, but protobuf also represents a plain
+            # numeric tensor as nested Python lists.  Recursing first would
+            # preserve the latter as a list and ``load_state_dict`` would then
+            # reject it.  Convert a homogeneous numeric list (including a
+            # nested matrix) as one tensor; heterogeneous control lists still
+            # recurse element-by-element.
+            try:
+                restored = param2tensor(payload)
+                if isinstance(restored, torch.Tensor):
+                    return restored
+            except (TypeError, ValueError, RuntimeError):
+                pass
+            return [
+                GGEURClient._decode_parameter_tree(value)
+                for value in payload
+            ]
+        if isinstance(payload, tuple):
+            return tuple(
+                GGEURClient._decode_parameter_tree(value)
+                for value in payload
+            )
+        if isinstance(payload, (str, bytes)):
+            # Platform inference heads can use the compact ``znp:`` ndarray
+            # representation.  It is not a FederatedScope tensor payload, so
+            # decode it before calling ``param2tensor`` (which otherwise may
+            # interpret the string as a scalar and fail during evaluation).
+            text_payload = payload.decode('utf-8') \
+                if isinstance(payload, bytes) else payload
+            if text_payload.startswith('znp:'):
+                decoded_array = GGEURClient._payload_to_ndarray(text_payload)
+                if isinstance(decoded_array, np.ndarray):
+                    return decoded_array
+            try:
+                return param2tensor(payload)
+            except Exception:
+                return payload
+        return payload
+
     def __init__(self, ID=-1, server_id=None, state=-1, config=None,
                  data=None, model=None, device='cpu', strategy=None,
                  is_unseen_client=False, *args, **kwargs):
@@ -165,6 +234,10 @@ class GGEURClient(Client):
         # timm feature extractor (for 'timm' mode)
         self.timm_extractor = None
 
+        # BERT feature extractor (for 'bert' text mode)
+        self.bert_model = None
+        self.bert_tokenizer = None
+
         # The actual embedding dimension used by the feature extractor.
         # (May differ from cfg.ggeur.embedding_dim if user changes backbone.)
         self.embedding_dim = getattr(self.ggeur_cfg, 'embedding_dim', 512)
@@ -185,11 +258,14 @@ class GGEURClient(Client):
 
         # Global prototypes for feature alignment
         self.global_prototypes = None  # {class_idx: mean vector}
+        self.domain_prototype_ensemble = {}
+        self.domain_personalized_head = None
 
         # Augmented data
         self.augmented_features = None
         self.augmented_labels = None
         self.augmented_loader = None
+        self._task_adaptation_cache = None
 
         # Real local features saved before augmentation (for PromptFL training)
         self.real_local_features = {}
@@ -221,6 +297,27 @@ class GGEURClient(Client):
         self.use_moon = getattr(self.ggeur_cfg, 'use_moon', False)
         self.moon_prev_model = None    # Previous local model snapshot
         self.moon_global_model = None  # Global model snapshot (received this round)
+
+        # ===== FedProto Mode =====
+        # Preserve the representation-prototype exchange implemented by the
+        # original MDSent RNN/LSTM branch.  These prototypes live in the
+        # trainable head's hidden space (256 by default), not in the frozen
+        # BERT input space (768 by default).
+        self.use_fedproto = bool(
+            getattr(self.ggeur_cfg, 'use_fedproto', False))
+        self.fedproto_proto_weight = float(
+            getattr(
+                self.ggeur_cfg, 'fedproto_proto_weight',
+                getattr(self.ggeur_cfg, 'proto_weight', 1.0)))
+        self.fedproto_distance_metric = str(
+            getattr(
+                self.ggeur_cfg, 'fedproto_distance_metric',
+                getattr(self.ggeur_cfg, 'proto_distance', 'mse'))).lower()
+        self.fedproto_normalize = bool(
+            getattr(self.ggeur_cfg, 'fedproto_normalize', False))
+        self.fedproto_global_prototypes = {}
+        self.fedproto_local_prototypes = {}
+        self.fedproto_local_counts = {}
 
         # ===== PromptFL Mode =====
         self.use_promptfl = getattr(self.ggeur_cfg, 'use_promptfl', False)
@@ -259,11 +356,13 @@ class GGEURClient(Client):
                                self.callback_for_client_eval)
 
     def _load_feature_extractor(self):
-        """Load feature extractor (CLIP / CNN / timm based on config)"""
+        """Load feature extractor (CLIP / CNN / timm / BERT)."""
         if self.feature_extractor_type == 'cnn':
             self._load_cnn_extractor()
         elif self.feature_extractor_type == 'timm':
             self._load_timm_extractor()
+        elif self.feature_extractor_type == 'bert':
+            self._load_bert_extractor()
         else:
             self._load_clip_model()
 
@@ -284,6 +383,11 @@ class GGEURClient(Client):
             self.timm_extractor = self.timm_extractor.cpu()
             del self.timm_extractor
             self.timm_extractor = None
+            unloaded = True
+        if self.bert_model is not None:
+            self.bert_model = self.bert_model.cpu()
+            self.bert_model = None
+            self.bert_tokenizer = None
             unloaded = True
         if unloaded:
             torch.cuda.empty_cache()
@@ -396,6 +500,62 @@ class GGEURClient(Client):
             logger.error("open_clip not installed. Please install: pip install open_clip_torch")
             raise
 
+    def _load_bert_extractor(self):
+        """Load a frozen BERT encoder for text feature extraction."""
+        if self.bert_model is not None and self.bert_tokenizer is not None:
+            return
+
+        try:
+            from transformers import AutoConfig, AutoModel, AutoTokenizer
+        except Exception as error:
+            raise ImportError(
+                "transformers is required for ggeur.feature_extractor='bert'"
+            ) from error
+
+        model_path = str(getattr(self.ggeur_cfg, 'bert_model_path', '') or '')
+        if not model_path:
+            raise ValueError(
+                "Please set ggeur.bert_model_path for BERT text extraction")
+        tokenizer_path = str(
+            getattr(self.ggeur_cfg, 'bert_tokenizer_path', '') or ''
+        ) or model_path
+        local_only = bool(getattr(self.ggeur_cfg, 'bert_local_files_only',
+                                  True))
+        use_pretrained = bool(
+            getattr(self.ggeur_cfg, 'bert_use_pretrained_weights', True))
+        key = (model_path, tokenizer_path, local_only, use_pretrained,
+               int(getattr(self.ggeur_cfg, 'bert_max_length', 128)),
+               str(getattr(self.ggeur_cfg, 'bert_pooling', 'cls')))
+
+        if key not in _SHARED_BERT_EXTRACTORS:
+            tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_path, local_files_only=local_only)
+            if use_pretrained:
+                model = AutoModel.from_pretrained(
+                    model_path, local_files_only=local_only)
+            else:
+                bert_cfg = AutoConfig.from_pretrained(
+                    model_path, local_files_only=local_only)
+                model = AutoModel.from_config(bert_cfg)
+            for param in model.parameters():
+                param.requires_grad_(False)
+            model.eval()
+            _SHARED_BERT_EXTRACTORS[key] = (tokenizer, model.cpu())
+            logger.info(
+                f"Client {self.ID}: Loaded shared BERT extractor from "
+                f"{model_path}")
+
+        self.bert_tokenizer, self.bert_model = _SHARED_BERT_EXTRACTORS[key]
+        self.bert_model = self.bert_model.to(self.device)
+        self.bert_model.eval()
+        hidden_size = getattr(getattr(self.bert_model, 'config', None),
+                              'hidden_size', None)
+        if hidden_size is not None:
+            self.embedding_dim = int(hidden_size)
+        logger.info(
+            f"Client {self.ID}: BERT extractor ready, "
+            f"feature_dim={self.embedding_dim}")
+
     def _get_feature_cache_path(self, domain=None):
         """Get the path for cached CLIP features"""
         # Check if caching is enabled
@@ -420,6 +580,19 @@ class GGEURClient(Client):
             model_name = getattr(self.ggeur_cfg, 'timm_model', 'gfnet_tiny')
             model_str = str(model_name).replace('/', '_').replace('-', '_')
             prefix = 'timm'
+        elif self.feature_extractor_type == 'bert':
+            model_name = os.path.basename(
+                str(getattr(self.ggeur_cfg, 'bert_model_path',
+                            'bert')).rstrip('/\\')) or 'bert'
+            mode = 'pre' if getattr(
+                self.ggeur_cfg, 'bert_use_pretrained_weights',
+                True) else f"rand_seed{int(getattr(self._cfg, 'seed', 0))}"
+            pooling = str(getattr(self.ggeur_cfg, 'bert_pooling', 'cls'))
+            max_len = int(getattr(self.ggeur_cfg, 'bert_max_length', 128))
+            model_str = (
+                f"{model_name}_maxlen{max_len}_{pooling}_{mode}"
+            ).replace('/', '_').replace('-', '_')
+            prefix = 'bert'
         else:
             clip_model = self.ggeur_cfg.clip_model.replace('/', '_').replace('-', '_')
             pretrained = self.ggeur_cfg.clip_pretrained.replace('/', '_').replace('-', '_')
@@ -446,7 +619,10 @@ class GGEURClient(Client):
             if 'paths' in data and 'features' in data:
                 paths = data['paths']
                 features = data['features']
-                cache = {str(p): f for p, f in zip(paths, features)}
+                cache = {
+                    self._feature_cache_key(p): f
+                    for p, f in zip(paths, features)
+                }
                 logger.info(f"Client {self.ID}: Loaded {len(cache)} cached features from {cache_path}")
                 return cache
         except Exception as e:
@@ -460,8 +636,12 @@ class GGEURClient(Client):
             return
 
         try:
-            paths = list(feature_cache.keys())
-            features = np.array([feature_cache[p] for p in paths])
+            normalized_cache = {
+                self._feature_cache_key(path): feature
+                for path, feature in feature_cache.items()
+            }
+            paths = list(normalized_cache.keys())
+            features = np.array([normalized_cache[p] for p in paths])
             tmp_path = (
                 f"{cache_path}.client{int(self.ID)}."
                 f"pid{os.getpid()}.tmp.npz")
@@ -472,6 +652,39 @@ class GGEURClient(Client):
                 f"{cache_path}")
         except Exception as e:
             logger.warning(f"Client {self.ID}: Failed to save cache: {e}")
+
+    def _feature_cache_key(self, sample_id):
+        """Return a portable cache key shared by Linux and Windows hosts.
+
+        Vision datasets expose absolute image paths, which previously made a
+        cache produced on Linux unusable on Windows.  Strip the configured
+        dataset-root prefix (or its basename when crossing OS path styles),
+        normalize separators, and compare case-insensitively.  Text sample
+        ids are stable already and pass through the same harmless separator
+        normalization.
+        """
+        value = str(sample_id).replace('\\', '/').strip()
+        while '//' in value:
+            value = value.replace('//', '/')
+
+        data_root = str(getattr(self._cfg.data, 'root', '') or '')
+        root = data_root.replace('\\', '/').rstrip('/')
+        while '//' in root:
+            root = root.replace('//', '/')
+        if root:
+            value_folded = value.casefold()
+            root_folded = root.casefold()
+            if value_folded == root_folded:
+                value = ''
+            elif value_folded.startswith(root_folded + '/'):
+                value = value[len(root) + 1:]
+            else:
+                root_name = root.rsplit('/', 1)[-1]
+                marker = f'/{root_name.casefold()}/'
+                marker_index = value_folded.find(marker)
+                if marker_index >= 0:
+                    value = value[marker_index + len(marker):]
+        return value.lstrip('./').casefold()
 
     def _is_valid_feature_vector(self, feat):
         """Check whether a cached/extracted feature matches current dim."""
@@ -490,11 +703,171 @@ class GGEURClient(Client):
 
         return True
 
+    @staticmethod
+    def _resolve_dataset_sample(dataset, idx):
+        """Return (text, label, sample_id, domain) for text datasets."""
+        from torch.utils.data import Subset
+
+        if isinstance(dataset, Subset):
+            return GGEURClient._resolve_dataset_sample(
+                dataset.dataset, dataset.indices[idx])
+
+        sample = dataset[idx]
+        if not isinstance(sample, (tuple, list)) or len(sample) < 2:
+            raise ValueError('BERT feature extraction expects text-label data')
+
+        text = str(sample[0])
+        label = int(sample[1])
+        if hasattr(dataset, 'get_id'):
+            sample_id = str(dataset.get_id(idx))
+        elif hasattr(dataset, 'ids') and len(dataset.ids) > idx:
+            sample_id = str(dataset.ids[idx])
+        else:
+            domain = getattr(dataset, 'domain', 'sample')
+            sample_id = f'{domain}:{idx}'
+        domain = getattr(dataset, 'domain', None)
+        return text, label, sample_id, domain
+
+    @torch.no_grad()
+    def _encode_text_batch(self, texts):
+        encoded = self.bert_tokenizer(
+            list(texts),
+            padding=True,
+            truncation=True,
+            max_length=int(getattr(self.ggeur_cfg, 'bert_max_length', 128)),
+            return_tensors='pt')
+        encoded = {key: value.to(self.device) for key, value in encoded.items()}
+        outputs = self.bert_model(**encoded)
+        hidden = outputs.last_hidden_state
+        pooling = str(getattr(self.ggeur_cfg, 'bert_pooling',
+                              'cls')).lower()
+        if pooling == 'mean':
+            mask = encoded.get('attention_mask')
+            if mask is None:
+                features = hidden.mean(dim=1)
+            else:
+                mask = mask.unsqueeze(-1).float()
+                features = (hidden * mask).sum(dim=1) / mask.sum(
+                    dim=1).clamp(min=1e-6)
+        else:
+            features = hidden[:, 0, :]
+        return features.detach().cpu().numpy().astype(np.float32)
+
+    def _extract_text_features(self):
+        """Extract frozen BERT embeddings from local text data."""
+        timing_total_start = time.time()
+        logger.info(f"Client {self.ID}: Extracting BERT text features...")
+
+        train_data = self.trainer.ctx.data.get('train', None)
+        if train_data is None:
+            train_data = self.data.get('train', None)
+        if train_data is None:
+            logger.error(f"Client {self.ID}: No training data available")
+            return
+
+        dataset = train_data.dataset if hasattr(train_data, 'dataset') \
+            else train_data
+        domain = getattr(dataset, 'domain', None)
+        if domain is None and hasattr(dataset, 'dataset'):
+            domain = getattr(dataset.dataset, 'domain', None)
+
+        timing_load_extractor = 0.0
+
+        cache_path = self._get_feature_cache_path(domain)
+        t0 = time.time()
+        feature_cache = self._load_feature_cache(cache_path)
+        timing_load_cache = time.time() - t0
+        if feature_cache:
+            feature_cache = {
+                key: value
+                for key, value in feature_cache.items()
+                if self._is_valid_feature_vector(value)
+            }
+
+        self.local_features = {}
+        self.local_labels = {}
+        samples = []
+        for idx in range(len(dataset)):
+            text, label, sample_id, sample_domain = \
+                self._resolve_dataset_sample(dataset, idx)
+            if domain is None and sample_domain is not None:
+                domain = sample_domain
+            samples.append((text, label,
+                            self._feature_cache_key(sample_id)))
+
+        missing = [
+            item for item in samples
+            if item[2] not in feature_cache or not self._is_valid_feature_vector(
+                feature_cache.get(item[2]))
+        ]
+
+        timing_forward = 0.0
+        if missing:
+            if bool(getattr(
+                    self.ggeur_cfg,
+                    'require_complete_feature_cache',
+                    False)):
+                preview = ', '.join(item[2] for item in missing[:3])
+                raise RuntimeError(
+                    f"Client {self.ID}: BERT feature cache is incomplete; "
+                    f"missing {len(missing)}/{len(samples)} samples "
+                    f"(first keys: {preview})")
+            t0 = time.time()
+            self._load_bert_extractor()
+            timing_load_extractor = time.time() - t0
+            batch_size = int(getattr(self.ggeur_cfg, 'bert_batch_size', 32))
+            for start in range(0, len(missing), max(batch_size, 1)):
+                batch = missing[start:start + max(batch_size, 1)]
+                texts = [item[0] for item in batch]
+                t0 = time.time()
+                features = self._encode_text_batch(texts)
+                timing_forward += time.time() - t0
+                for feat, (_, _, sample_id) in zip(features, batch):
+                    feature_cache[sample_id] = feat
+            self._save_feature_cache(cache_path, feature_cache)
+
+        for _, label, sample_id in samples:
+            feat = feature_cache.get(sample_id)
+            if not self._is_valid_feature_vector(feat):
+                logger.warning(
+                    f"Client {self.ID}: Skip invalid BERT feature "
+                    f"for sample {sample_id}")
+                continue
+            self.local_features.setdefault(int(label), []).append(feat)
+            self.local_labels.setdefault(int(label), []).append(int(label))
+
+        for label in self.local_features:
+            self.local_features[label] = np.asarray(
+                self.local_features[label], dtype=np.float32)
+
+        total_samples = sum(len(value) for value in self.local_features.values())
+        logger.info(
+            f"Client {self.ID}: Extracted {total_samples} BERT features "
+            f"from {len(self.local_features)} classes")
+        logger.info(
+            "GGEUR_TIMING_CLIENT "
+            f"client={int(self.ID)} stage=feature_extraction "
+            f"dataset={self._cfg.data.type} extractor=bert "
+            f"total_sec={time.time() - timing_total_start:.6f} "
+            f"load_extractor_sec={timing_load_extractor:.6f} "
+            f"load_cache_sec={timing_load_cache:.6f} "
+            f"forward_sec={timing_forward:.6f} "
+            f"samples_total={len(samples)} "
+            f"samples_cached={len(samples) - len(missing)} "
+            f"samples_need_extract={len(missing)} "
+            f"output_samples={total_samples} "
+            f"classes={len(self.local_features)} "
+            f"feature_dim={self.embedding_dim}")
+
     def _extract_features(self):
         """
         Extract features from local data using either CLIP or CNN.
         Supports caching for both modes.
         """
+        if self.feature_extractor_type == 'bert':
+            self._extract_text_features()
+            return
+
         timing_total_start = time.time()
         timing_load_extractor = 0.0
         timing_load_cache = 0.0
@@ -536,12 +909,6 @@ class GGEURClient(Client):
             base_dataset = dataset
             subset_indices = None
             domain = getattr(dataset, 'domain', None)
-
-        # Load before cache lookup so embedding_dim reflects the real extractor
-        # output, not the config default from a previous backbone.
-        _timing_t0 = time.time()
-        self._load_feature_extractor()
-        timing_load_extractor += time.time() - _timing_t0
 
         cache_path = self._get_feature_cache_path(domain)
 
@@ -593,18 +960,19 @@ class GGEURClient(Client):
                     base_idx = local_idx
 
                 img_path = base_dataset.data[base_idx]
+                cache_key = self._feature_cache_key(img_path)
                 label = base_dataset.targets[base_idx]
 
-                if img_path in feature_cache:
+                if cache_key in feature_cache:
                     # Use cached feature
-                    feat = feature_cache[img_path]
+                    feat = feature_cache[cache_key]
                     if not self._is_valid_feature_vector(feat):
                         logger.warning(
                             f"Client {self.ID}: Skip invalid cached feature "
                             f"for {img_path} with shape "
                             f"{np.asarray(feat).shape}, expected dim "
                             f"{self.embedding_dim}")
-                        paths_to_extract.append(img_path)
+                        paths_to_extract.append(cache_key)
                         indices_to_extract.append(local_idx)
                         base_indices_to_extract.append(base_idx)
                         continue
@@ -616,7 +984,7 @@ class GGEURClient(Client):
                     self.local_labels[label].append(label)
                 else:
                     # Need to extract
-                    paths_to_extract.append(img_path)
+                    paths_to_extract.append(cache_key)
                     indices_to_extract.append(local_idx)
                     base_indices_to_extract.append(base_idx)
             timing_scan_cache += time.time() - _timing_t0
@@ -628,6 +996,16 @@ class GGEURClient(Client):
 
             # Extract features for non-cached samples
             if paths_to_extract:
+                if bool(getattr(self.ggeur_cfg,
+                                'require_complete_feature_cache', False)):
+                    preview = ', '.join(paths_to_extract[:3])
+                    raise RuntimeError(
+                        f"Client {self.ID}: feature cache is incomplete; "
+                        f"missing {len(paths_to_extract)}/{num_samples} "
+                        f"samples (first keys: {preview})")
+                _timing_t0 = time.time()
+                self._load_feature_extractor()
+                timing_load_extractor += time.time() - _timing_t0
                 # Create a mini dataloader for samples to extract
                 batch_size = getattr(self.ggeur_cfg, 'extract_batch_size', 64)
                 use_fp16 = getattr(self.ggeur_cfg, 'use_fp16_extraction', True) and torch.cuda.is_available()
@@ -691,6 +1069,10 @@ class GGEURClient(Client):
         else:
             # Fallback: Dataset without paths - cannot use caching
             logger.info(f"Client {self.ID}: Dataset does not have image paths, caching disabled")
+
+            _timing_t0 = time.time()
+            self._load_feature_extractor()
+            timing_load_extractor += time.time() - _timing_t0
 
             use_fp16 = getattr(self.ggeur_cfg, 'use_fp16_extraction', True) and torch.cuda.is_available()
             extract_batch_size = getattr(self.ggeur_cfg, 'extract_batch_size', 64)
@@ -808,7 +1190,10 @@ class GGEURClient(Client):
             centered = features - mean
             timing_center += time.time() - _timing_t0
             _timing_t0 = time.time()
-            cov = (1.0 / n) * np.dot(centered.T, centered)
+            if bool(getattr(self.ggeur_cfg, 'diagonal_covariance', False)):
+                cov = np.mean(centered * centered, axis=0)
+            else:
+                cov = (1.0 / n) * np.dot(centered.T, centered)
             timing_cov += time.time() - _timing_t0
 
             self.local_means[class_idx] = mean
@@ -829,6 +1214,10 @@ class GGEURClient(Client):
     def _validate_local_statistics(self):
         """Validate statistics dimensions before sending them to the server."""
         expected_dim = int(self.embedding_dim)
+        diagonal_covariance = bool(getattr(
+            self.ggeur_cfg, 'diagonal_covariance', False))
+        expected_cov_shape = ((expected_dim, ) if diagonal_covariance else
+                              (expected_dim, expected_dim))
         invalid = []
 
         for class_idx, mean in self.local_means.items():
@@ -838,7 +1227,7 @@ class GGEURClient(Client):
                 invalid.append(
                     f"class {class_idx}: mean shape {mean_arr.shape}")
                 continue
-            if cov_arr.shape != (expected_dim, expected_dim):
+            if cov_arr.shape != expected_cov_shape:
                 invalid.append(f"class {class_idx}: cov shape {cov_arr.shape}")
 
         if invalid:
@@ -851,6 +1240,22 @@ class GGEURClient(Client):
         """Upload local statistics to server"""
         logger.info(f"Client {self.ID}: Uploading local statistics to server...")
         timing_total_start = time.time()
+
+        stagger_seconds = max(
+            0.0,
+            float(getattr(self.ggeur_cfg,
+                          'statistics_upload_stagger_seconds', 0.0)))
+        if stagger_seconds > 0:
+            client_num = max(1, int(self._cfg.federate.client_num))
+            stagger_slot = (int(self.ID) - 1) % client_num
+            stagger_delay = stagger_slot * stagger_seconds
+            if stagger_delay > 0:
+                logger.info(
+                    f"Client {self.ID}: Stagger statistics upload by "
+                    f"{stagger_delay:.1f}s (slot={stagger_slot}, "
+                    f"interval={stagger_seconds:.1f}s)")
+                time.sleep(stagger_delay)
+
         _timing_t0 = time.time()
         self._validate_local_statistics()
         timing_validate = time.time() - _timing_t0
@@ -858,8 +1263,29 @@ class GGEURClient(Client):
         # Also send prototypes for cross-client augmentation
         _timing_t0 = time.time()
         prototypes = {}
+        prototypes_per_class = max(
+            1,
+            int(getattr(
+                self.ggeur_cfg, 'local_prototypes_per_class', 1)))
         for class_idx, mean in self.local_means.items():
-            prototypes[class_idx] = mean
+            if prototypes_per_class == 1:
+                prototypes[class_idx] = mean
+                continue
+            features = np.asarray(
+                self.local_features.get(class_idx, []), dtype=np.float32)
+            if features.ndim != 2 or features.shape[0] == 0:
+                prototypes[class_idx] = mean
+                continue
+            keep = min(prototypes_per_class, int(features.shape[0]))
+            if keep == int(features.shape[0]):
+                indices = np.arange(keep, dtype=np.int64)
+            else:
+                indices = np.linspace(
+                    0, int(features.shape[0]) - 1, keep,
+                    dtype=np.int64)
+            prototypes[class_idx] = [
+                features[int(index)] for index in indices
+            ]
         timing_prototype_prepare = time.time() - _timing_t0
 
         _timing_t0 = time.time()
@@ -879,15 +1305,37 @@ class GGEURClient(Client):
             f"(classes={stats_class_count}, embedding_dim={self.embedding_dim})")
 
         _timing_t0 = time.time()
-        self.comm_manager.send(
-            Message(
-                msg_type='local_statistics',
-                sender=self.ID,
-                receiver=[self.server_id],
-                state=self.state,
-                content=content
-            )
-        )
+        max_attempts = max(
+            1,
+            int(getattr(self.ggeur_cfg,
+                        'statistics_upload_max_attempts', 3)))
+        retry_backoff = max(
+            0.0,
+            float(getattr(self.ggeur_cfg,
+                          'statistics_upload_retry_backoff_seconds', 15.0)))
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.comm_manager.send(
+                    Message(
+                        msg_type='local_statistics',
+                        sender=self.ID,
+                        receiver=[self.server_id],
+                        state=self.state,
+                        content=content
+                    )
+                )
+                break
+            except Exception as error:
+                if attempt >= max_attempts:
+                    raise
+                delay = min(60.0, retry_backoff * attempt)
+                logger.warning(
+                    f"Client {self.ID}: Statistics upload attempt "
+                    f"{attempt}/{max_attempts} failed with "
+                    f"{type(error).__name__}: {error}; retrying in "
+                    f"{delay:.1f}s")
+                if delay > 0:
+                    time.sleep(delay)
         timing_send = time.time() - _timing_t0
 
         self.statistics_uploaded = True
@@ -900,6 +1348,7 @@ class GGEURClient(Client):
             f"dataset={self._cfg.data.type} extractor={self.feature_extractor_type} "
             f"total_sec={timing_total:.6f} validate_sec={timing_validate:.6f} "
             f"prototype_prepare_sec={timing_prototype_prepare:.6f} "
+            f"prototypes_per_class={prototypes_per_class} "
             f"serialize_sec={timing_serialize:.6f} send_sec={timing_send:.6f} "
             f"payload_bytes={payload_bytes} classes={stats_class_count} "
             f"feature_dim={self.embedding_dim}")
@@ -962,7 +1411,8 @@ class GGEURClient(Client):
         logger.info(f"Client {self.ID}: Received global covariances from server")
         timing_total_start = time.time()
 
-        content = message.content
+        content = self._decode_parameter_tree(message.content)
+        message.content = content
         _timing_t0 = time.time()
         self.global_cov_matrices = self._normalize_covariance_mapping(
             content.get('cov_matrices', {}))
@@ -1123,7 +1573,10 @@ class GGEURClient(Client):
             return normalized
 
         expected_dim = int(self.embedding_dim)
-        expected_shape = (expected_dim, expected_dim)
+        diagonal_covariance = bool(getattr(
+            self.ggeur_cfg, 'diagonal_covariance', False))
+        expected_shape = ((expected_dim, ) if diagonal_covariance else
+                          (expected_dim, expected_dim))
         for class_idx, cov in cov_matrices.items():
             try:
                 key = int(class_idx)
@@ -1239,7 +1692,8 @@ class GGEURClient(Client):
 
         # Scale small eigenvalues for better conditioning
         scale_factors = np.ones_like(eigenvalues)
-        scale_factors[:10] = np.linspace(5, 1, 10)
+        scaled_count = min(10, len(eigenvalues))
+        scale_factors[:scaled_count] = np.linspace(5, 1, scaled_count)
         eigenvalues = eigenvalues * scale_factors
 
         # Clip negative eigenvalues
@@ -1250,25 +1704,60 @@ class GGEURClient(Client):
     def _generate_samples(self, mean, cov_matrix, num_samples):
         """Generate samples from Gaussian distribution."""
         mean = np.asarray(mean, dtype=np.float32)
-        cov_matrix = np.asarray(cov_matrix, dtype=np.float32)
-
         expected_dim = int(self.embedding_dim)
         if mean.shape != (expected_dim, ):
             raise ValueError(
                 f"Client {self.ID}: Cannot generate samples with mean shape "
                 f"{mean.shape}, expected ({expected_dim},).")
-        if cov_matrix.shape != (expected_dim, expected_dim):
+        means = np.repeat(mean.reshape(1, -1), int(num_samples), axis=0)
+        return self._generate_samples_from_means(means, cov_matrix)
+
+    def _generate_samples_from_means(self, means, cov_matrix):
+        """Generate one Gaussian sample for every row in ``means``."""
+        means = np.asarray(means, dtype=np.float32)
+        cov_matrix = np.asarray(cov_matrix, dtype=np.float32)
+        covariance_scale = max(
+            0.0,
+            float(getattr(
+                self.ggeur_cfg, 'generation_covariance_scale', 1.0)))
+        cov_matrix = cov_matrix * covariance_scale
+
+        expected_dim = int(self.embedding_dim)
+        if means.ndim != 2 or means.shape[1] != expected_dim:
+            raise ValueError(
+                f"Client {self.ID}: Cannot generate samples with means shape "
+                f"{means.shape}, expected (N, {expected_dim}).")
+        diagonal_covariance = bool(getattr(
+            self.ggeur_cfg, 'diagonal_covariance', False))
+        expected_cov_shape = ((expected_dim, ) if diagonal_covariance else
+                              (expected_dim, expected_dim))
+        if cov_matrix.shape != expected_cov_shape:
             raise ValueError(
                 f"Client {self.ID}: Cannot generate samples with covariance "
                 f"shape {cov_matrix.shape}, expected "
-                f"({expected_dim}, {expected_dim}).")
+                f"{expected_cov_shape}.")
+
+        if diagonal_covariance:
+            variance = np.maximum(cov_matrix, 1e-6)
+            z = np.random.randn(*means.shape).astype(np.float32)
+            return means + z * np.sqrt(variance).astype(np.float32)
 
         dim = cov_matrix.shape[0]
         cache_key = id(cov_matrix)
         cached_factor = self._cov_factor_cache.get(cache_key)
 
         if cached_factor is None:
-            cov_matrix = self._nearest_pos_def(cov_matrix)
+            contiguous_cov = np.ascontiguousarray(cov_matrix)
+            content_key = (
+                contiguous_cov.shape,
+                contiguous_cov.dtype.str,
+                hashlib.blake2b(contiguous_cov.view(np.uint8),
+                                digest_size=16).digest(),
+            )
+            cached_factor = _SHARED_COV_FACTOR_CACHE.get(content_key)
+
+        if cached_factor is None:
+            cov_matrix = self._nearest_pos_def(contiguous_cov)
 
             jitter = 1e-6
             factor = None
@@ -1288,13 +1777,459 @@ class GGEURClient(Client):
                         break
 
             cached_factor = (factor_type, factor.astype(np.float32))
-            self._cov_factor_cache[cache_key] = cached_factor
+            if len(_SHARED_COV_FACTOR_CACHE) >= \
+                    _SHARED_COV_FACTOR_CACHE_MAXSIZE:
+                _SHARED_COV_FACTOR_CACHE.pop(
+                    next(iter(_SHARED_COV_FACTOR_CACHE)))
+            _SHARED_COV_FACTOR_CACHE[content_key] = cached_factor
+
+        self._cov_factor_cache[cache_key] = cached_factor
 
         factor_type, factor = cached_factor
-        z = np.random.randn(num_samples, dim).astype(np.float32)
+        z = np.random.randn(means.shape[0], dim).astype(np.float32)
         if factor_type == 'diag':
-            return mean + z * factor
-        return mean + z @ factor.T
+            return means + z * factor
+        return means + z @ factor.T
+
+    @staticmethod
+    def _normalize_task_class_counts(raw_counts):
+        """Normalize task-file/config class targets to ``str -> int``."""
+        if raw_counts in (None, ''):
+            return {}
+
+        items = []
+        if isinstance(raw_counts, dict):
+            items = list(raw_counts.items())
+        elif isinstance(raw_counts, (list, tuple)):
+            for item in raw_counts:
+                if isinstance(item, dict):
+                    key = item.get(
+                        'class_id', item.get('class', item.get('name')))
+                    value = item.get(
+                        'target_size', item.get('count', item.get('samples')))
+                    if key is None or value is None:
+                        raise ValueError(
+                            f"Invalid task class entry: {item!r}")
+                    items.append((key, value))
+                    continue
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    items.append((item[0], item[1]))
+                    continue
+                text = str(item).strip()
+                separator = ':' if ':' in text else '=' if '=' in text else ''
+                if not separator:
+                    raise ValueError(
+                        f"Invalid task class target {item!r}; expected "
+                        "class_id:count")
+                key, value = text.split(separator, 1)
+                items.append((key, value))
+        else:
+            raise ValueError(
+                "Task class targets must be a mapping or a sequence")
+
+        normalized = {}
+        for key, value in items:
+            key = str(key).strip()
+            if not key:
+                raise ValueError("Task class target contains an empty key")
+            try:
+                count = int(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Invalid target count for class {key!r}: {value!r}") \
+                    from error
+            if count < 0:
+                raise ValueError(
+                    f"Target count for class {key!r} must be non-negative")
+            normalized[key] = count
+        return normalized
+
+    def _load_task_adaptation_spec(self):
+        """Load the per-class generation task from YAML/JSON and config.
+
+        File values are loaded first. Inline ``task_class_counts`` and
+        ``task_default_target_size`` then override them, which makes the same
+        task file reusable across deployments with small local adjustments.
+        """
+        cached = getattr(self, '_task_adaptation_cache', None)
+        if cached is not None:
+            return cached
+
+        file_path = str(getattr(
+            self.ggeur_cfg, 'task_adaptation_file', '') or '').strip()
+        file_counts = {}
+        file_default = -1
+        sources = []
+        resolved_path = ''
+        if file_path:
+            resolved_path = os.path.abspath(os.path.expanduser(
+                os.path.expandvars(file_path)))
+            if not os.path.isfile(resolved_path):
+                raise FileNotFoundError(
+                    f"Task adaptation file does not exist: {resolved_path}")
+            with open(resolved_path, 'r', encoding='utf-8-sig') as stream:
+                if resolved_path.lower().endswith('.json'):
+                    payload = json.load(stream)
+                else:
+                    payload = yaml.safe_load(stream)
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    "Task adaptation file must contain a mapping")
+            raw_counts = payload.get(
+                'class_counts', payload.get(
+                    'classes', payload.get('target_size_per_class', {})))
+            file_counts = self._normalize_task_class_counts(raw_counts)
+            raw_default = payload.get(
+                'default_target_size', payload.get('default', -1))
+            file_default = int(raw_default)
+            if file_default < -1:
+                raise ValueError(
+                    "default_target_size must be -1 or non-negative")
+            sources.append(resolved_path)
+
+        inline_counts = self._normalize_task_class_counts(getattr(
+            self.ggeur_cfg, 'task_class_counts', []))
+        class_counts = dict(file_counts)
+        class_counts.update(inline_counts)
+        if inline_counts:
+            sources.append('config:task_class_counts')
+
+        raw_config_default = getattr(
+            self.ggeur_cfg, 'task_default_target_size', '')
+        config_default = (
+            -1 if raw_config_default in (None, '')
+            else int(raw_config_default))
+        if config_default < -1:
+            raise ValueError(
+                "task_default_target_size must be -1 or non-negative")
+        default_target = (
+            config_default if config_default >= 0 else file_default)
+        enabled = bool(file_path or inline_counts or config_default >= 0)
+        if default_target < 0:
+            default_target = int(getattr(
+                self.ggeur_cfg, 'target_size_per_class', 0))
+
+        canonical = {
+            'enabled': enabled,
+            'default_target_size': int(default_target),
+            'class_counts': {
+                key: int(value)
+                for key, value in sorted(class_counts.items())
+            },
+        }
+        signature_payload = json.dumps(
+            canonical, sort_keys=True, ensure_ascii=True)
+        canonical.update({
+            'source': sources or ['config:target_size_per_class'],
+            'file_path': resolved_path,
+            'signature': hashlib.sha1(
+                signature_payload.encode('utf-8')).hexdigest()[:16],
+        })
+        self._task_adaptation_cache = canonical
+        if enabled:
+            logger.info(
+                f"Client {self.ID}: Loaded task-adaptive generation "
+                f"profile signature={canonical['signature']} "
+                f"default={canonical['default_target_size']} "
+                f"explicit_classes={len(canonical['class_counts'])} "
+                f"source={canonical['source']}")
+        return canonical
+
+    def _task_target_size(self, class_idx, fallback, spec=None):
+        spec = spec or self._load_task_adaptation_spec()
+        if not spec.get('enabled', False):
+            return int(fallback)
+
+        keys = [str(int(class_idx))]
+        class_names = list(getattr(
+            self.ggeur_cfg, 'prompt_class_names', []) or [])
+        if 0 <= int(class_idx) < len(class_names):
+            name = str(class_names[int(class_idx)]).strip()
+            if name:
+                keys.extend([name, name.lower()])
+
+        counts = spec.get('class_counts', {})
+        for key in keys:
+            if key in counts:
+                return int(counts[key])
+        lower_counts = {str(key).lower(): int(value)
+                        for key, value in counts.items()}
+        for key in keys:
+            if key.lower() in lower_counts:
+                return lower_counts[key.lower()]
+        return int(spec['default_target_size'])
+
+    def _task_adaptation_is_generation_neutral(self, spec=None):
+        """Return whether the task file requests the default class profile.
+
+        The outline task profiles intentionally repeat the platform's normal
+        per-class target so that reading the task file validates the adaptive
+        interface without changing the accuracy experiment. Treating that
+        profile as a different generation algorithm changed sampled features
+        despite identical targets, so a neutral profile keeps the normal
+        generation path while it is still loaded, logged and reported.
+        """
+        spec = spec or self._load_task_adaptation_spec()
+        if not spec.get('enabled', False):
+            return True
+        fallback = int(getattr(
+            self.ggeur_cfg, 'target_size_per_class', 0) or 0)
+        if int(spec.get('default_target_size', fallback)) != fallback:
+            return False
+        num_classes = int(getattr(self._cfg.model, 'num_classes', 0) or 0)
+        return all(
+            self._task_target_size(class_idx, fallback, spec) == fallback
+            for class_idx in range(num_classes)
+        )
+
+    def _sample_task_target_augmentation(self, original, prototypes,
+                                         cov_matrix, target_size):
+        """Return exactly the requested final class size when a mean exists."""
+        original = np.asarray(original, dtype=np.float32)
+        if original.size == 0:
+            original = np.empty((0, int(self.embedding_dim)),
+                                dtype=np.float32)
+        elif original.ndim == 1:
+            original = original.reshape(1, -1)
+        prototypes = np.asarray(prototypes, dtype=np.float32)
+        if prototypes.size == 0:
+            prototypes = np.empty((0, int(self.embedding_dim)),
+                                  dtype=np.float32)
+        elif prototypes.ndim == 1:
+            prototypes = prototypes.reshape(1, -1)
+
+        target_size = int(target_size)
+        if target_size < 0:
+            raise ValueError("Task target size must be non-negative")
+        if target_size == 0:
+            return {
+                'features': np.empty((0, int(self.embedding_dim)),
+                                     dtype=np.float32),
+                'sample_generated': 0,
+                'prototype_generated': 0,
+                'exact': True,
+            }
+
+        original_count = int(original.shape[0])
+        if original_count >= target_size:
+            indices = np.random.choice(
+                original_count, target_size, replace=False)
+            return {
+                'features': original[indices],
+                'sample_generated': 0,
+                'prototype_generated': 0,
+                'exact': True,
+            }
+
+        source_parts = []
+        if original_count:
+            source_parts.append(original)
+        if int(prototypes.shape[0]):
+            source_parts.append(prototypes)
+        if not source_parts:
+            return {
+                'features': original,
+                'sample_generated': 0,
+                'prototype_generated': 0,
+                'exact': False,
+            }
+
+        source_means = np.vstack(source_parts)
+        required = target_size - original_count
+        source_indices = np.random.choice(
+            source_means.shape[0], required, replace=True)
+        selected_means = source_means[source_indices]
+        generated = self._generate_samples_from_means(
+            selected_means, cov_matrix)
+        selected_parts = [generated]
+        if original_count:
+            selected_parts.insert(0, original)
+        selected = np.vstack(selected_parts)
+        np.random.shuffle(selected)
+        from_samples = int(np.sum(source_indices < original_count))
+        return {
+            'features': selected,
+            'sample_generated': from_samples,
+            'prototype_generated': int(required - from_samples),
+            'exact': int(selected.shape[0]) == target_size,
+        }
+
+    def _emit_training_distribution(self, cache_hit=False):
+        """Log and persist the exact data distribution used for training."""
+        spec = self._load_task_adaptation_spec()
+        configured_dir = str(getattr(
+            self.ggeur_cfg, 'training_distribution_dir', '') or '').strip()
+        if not spec.get('enabled', False) and not configured_dir:
+            return None, None
+
+        training_labels = (
+            np.asarray(self.augmented_labels, dtype=np.int64)
+            if self.augmented_labels is not None else
+            np.asarray([], dtype=np.int64))
+        training_unique, training_counts_values = np.unique(
+            training_labels, return_counts=True)
+        training_class_counts = {
+            str(int(class_idx)): int(count)
+            for class_idx, count in zip(
+                training_unique, training_counts_values)
+        }
+        generated_snapshot = getattr(
+            self, '_generated_distribution_snapshot', None) or {}
+        class_counts = dict(generated_snapshot.get(
+            'class_counts', training_class_counts))
+        generated_total = int(generated_snapshot.get(
+            'total_samples', training_labels.shape[0]))
+        targets = {}
+        if spec.get('enabled', False):
+            num_classes = int(getattr(self._cfg.model, 'num_classes', 0))
+            targets = {
+                str(class_idx): self._task_target_size(
+                    class_idx,
+                    getattr(self.ggeur_cfg, 'target_size_per_class', 0),
+                    spec)
+                for class_idx in range(num_classes)
+            }
+
+        report = {
+            'schema_version': 2,
+            'method': 'Platform',
+            'client_id': int(self.ID),
+            'dataset': str(getattr(self._cfg.data, 'type', '')),
+            'cache_hit': bool(cache_hit),
+            'task_adaptation': {
+                'enabled': bool(spec.get('enabled', False)),
+                'source': list(spec.get('source', [])),
+                'signature': str(spec.get('signature', '')),
+                'default_target_size': int(spec.get(
+                    'default_target_size', 0)),
+                'class_targets': targets,
+            },
+            'total_samples': generated_total,
+            'class_counts': class_counts,
+            'training_total_samples': int(training_labels.shape[0]),
+            'training_class_counts': training_class_counts,
+        }
+
+        output_dir = configured_dir or os.path.join(
+            str(getattr(self._cfg, 'outdir', '') or os.getcwd()),
+            'training_distributions')
+        output_dir = os.path.abspath(os.path.expanduser(
+            os.path.expandvars(output_dir)))
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(
+            output_dir, f"client_{int(self.ID):06d}.json")
+        temp_path = f"{output_path}.tmp.{os.getpid()}"
+        with open(temp_path, 'w', encoding='utf-8') as stream:
+            json.dump(report, stream, ensure_ascii=False, indent=2,
+                      sort_keys=True)
+        os.replace(temp_path, output_path)
+        logger.info(
+            "PLATFORM_TRAIN_DISTRIBUTION " +
+            json.dumps({
+                'client_id': int(self.ID),
+                'total_samples': report['total_samples'],
+                'class_counts': class_counts,
+                'task_signature': spec.get('signature', ''),
+                'output': output_path,
+            }, sort_keys=True, ensure_ascii=True))
+        return report, output_path
+
+    def _capture_generated_distribution_snapshot(self):
+        """Remember generated rows before optional runtime subsampling."""
+        labels = (
+            np.asarray(self.augmented_labels, dtype=np.int64)
+            if self.augmented_labels is not None else
+            np.asarray([], dtype=np.int64))
+        unique, counts = np.unique(labels, return_counts=True)
+        self._generated_distribution_snapshot = {
+            'total_samples': int(labels.shape[0]),
+            'class_counts': {
+                str(int(class_idx)): int(count)
+                for class_idx, count in zip(unique, counts)
+            },
+        }
+        return self._generated_distribution_snapshot
+
+    def _sample_target_sized_augmentation(self,
+                                          original,
+                                          prototypes,
+                                          cov_matrix,
+                                          num_per_sample,
+                                          num_per_prototype,
+                                          target_size):
+        """Sample a bounded result from the conceptual augmentation pool.
+
+        The legacy path materialized every generated candidate before uniformly
+        selecting ``target_size`` rows.  For large clients that can create
+        millions of 768-dimensional temporary rows even though only a few
+        hundred survive.  Selecting conceptual candidate indices first and
+        generating only selected Gaussian rows has the same sampling
+        distribution without the transient memory and compute explosion.
+        """
+        original = np.asarray(original, dtype=np.float32)
+        if original.size == 0:
+            original = np.empty((0, int(self.embedding_dim)),
+                                dtype=np.float32)
+        elif original.ndim == 1:
+            original = original.reshape(1, -1)
+        prototypes = np.asarray(prototypes, dtype=np.float32)
+        if prototypes.size == 0:
+            prototypes = np.empty((0, int(self.embedding_dim)),
+                                  dtype=np.float32)
+        elif prototypes.ndim == 1:
+            prototypes = prototypes.reshape(1, -1)
+
+        original_count = int(original.shape[0])
+        prototype_count = int(prototypes.shape[0])
+        sample_candidates = original_count * max(0, int(num_per_sample))
+        prototype_candidates = (
+            prototype_count * max(0, int(num_per_prototype)))
+        total_candidates = (
+            original_count + sample_candidates + prototype_candidates)
+        if (int(target_size) <= 0 or
+                total_candidates < int(target_size)):
+            return None
+
+        selected_indices = np.random.choice(
+            total_candidates, int(target_size), replace=False)
+        selected_original = selected_indices[
+            selected_indices < original_count]
+        generated_means = []
+
+        sample_start = original_count
+        sample_stop = sample_start + sample_candidates
+        selected_sample_slots = selected_indices[
+            (selected_indices >= sample_start) &
+            (selected_indices < sample_stop)]
+        if selected_sample_slots.size:
+            source_indices = (
+                (selected_sample_slots - sample_start) //
+                int(num_per_sample))
+            generated_means.append(original[source_indices])
+
+        selected_prototype_slots = selected_indices[
+            selected_indices >= sample_stop]
+        if selected_prototype_slots.size:
+            source_indices = (
+                (selected_prototype_slots - sample_stop) //
+                int(num_per_prototype))
+            generated_means.append(prototypes[source_indices])
+
+        selected_parts = []
+        if selected_original.size:
+            selected_parts.append(original[selected_original])
+        if generated_means:
+            selected_parts.append(
+                self._generate_samples_from_means(
+                    np.vstack(generated_means), cov_matrix))
+        selected = np.vstack(selected_parts)
+        np.random.shuffle(selected)
+        return {
+            'features': selected,
+            'sample_generated': int(selected_sample_slots.size),
+            'prototype_generated': int(selected_prototype_slots.size),
+            'conceptual_candidates': int(total_candidates),
+        }
 
     def _perform_augmentation(self):
         """Perform GGEUR_Clip feature augmentation"""
@@ -1317,6 +2252,7 @@ class GGEURClient(Client):
         _timing_t0 = time.time()
         if self._try_load_augmented_feature_cache():
             timing_cache_load = time.time() - _timing_t0
+            self._emit_training_distribution(cache_hit=True)
             self.augmentation_done = True
             self.local_features = {}
             self.local_labels = {}
@@ -1337,9 +2273,17 @@ class GGEURClient(Client):
         num_per_sample = self.ggeur_cfg.num_generated_per_sample
         num_per_prototype = self.ggeur_cfg.num_generated_per_prototype
         use_cross_client = self.ggeur_cfg.use_cross_client_prototypes
+        task_spec = self._load_task_adaptation_spec()
+        task_adaptation_enabled = bool(task_spec.get('enabled', False))
+        task_adaptation_changes_generation = (
+            task_adaptation_enabled and
+            not self._task_adaptation_is_generation_neutral(task_spec))
 
         # Check if augmentation is disabled (baseline mode)
-        no_augmentation = (num_per_sample == 0 and num_per_prototype == 0) or not use_cross_client
+        no_augmentation = (
+            ((num_per_sample == 0 and num_per_prototype == 0) or
+             not use_cross_client) and
+            not task_adaptation_changes_generation)
 
         if no_augmentation:
             logger.info(f"Client {self.ID}: No augmentation mode - using original features only")
@@ -1355,6 +2299,12 @@ class GGEURClient(Client):
             all_classes.update(self.global_cov_matrices.keys())
         if not no_augmentation and self.other_prototypes:
             all_classes.update(self.other_prototypes.keys())
+        if task_adaptation_changes_generation:
+            for task_key in task_spec.get('class_counts', {}):
+                try:
+                    all_classes.add(int(task_key))
+                except (TypeError, ValueError):
+                    continue
 
         total_classes = len(all_classes)
         timing_init += time.time() - _timing_t0
@@ -1405,6 +2355,84 @@ class GGEURClient(Client):
             timing_cov_lookup += time.time() - _timing_t0
 
             # 3. Expand original features using global covariance
+            original_for_generation = self.local_features.get(
+                class_idx,
+                np.empty((0, int(self.embedding_dim)), dtype=np.float32))
+            prototypes_for_generation = []
+            if (use_cross_client and self.other_prototypes and
+                    class_idx in self.other_prototypes):
+                prototypes_for_generation = self.other_prototypes[class_idx]
+
+            if task_adaptation_changes_generation:
+                class_target = self._task_target_size(
+                    class_idx, target_size, task_spec)
+                _timing_t0 = time.time()
+                task_result = self._sample_task_target_augmentation(
+                    original_for_generation,
+                    prototypes_for_generation,
+                    cov_matrix,
+                    class_target,
+                )
+                timing_sample_generation += time.time() - _timing_t0
+                selected = task_result['features']
+                generated_sample_count += task_result['sample_generated']
+                generated_prototype_count += \
+                    task_result['prototype_generated']
+                sample_generation_calls += int(
+                    task_result['sample_generated'] > 0)
+                prototype_generation_calls += int(
+                    task_result['prototype_generated'] > 0)
+                if selected.shape[0] > 0:
+                    all_features.append(selected)
+                    all_labels.append(
+                        np.full(selected.shape[0], class_idx))
+                    selected_samples += int(selected.shape[0])
+                if not task_result['exact']:
+                    logger.warning(
+                        f"Client {self.ID}: Task target for class "
+                        f"{class_idx} could not be met because no source "
+                        f"mean was available (target={class_target}, "
+                        f"actual={selected.shape[0]})")
+                logger.info(
+                    f"Client {self.ID}: Task-adaptive class {class_idx} "
+                    f"target={class_target} selected={selected.shape[0]} "
+                    f"generated_from_samples="
+                    f"{task_result['sample_generated']} "
+                    f"generated_from_prototypes="
+                    f"{task_result['prototype_generated']}")
+                continue
+
+            _timing_t0 = time.time()
+            bounded = self._sample_target_sized_augmentation(
+                original_for_generation,
+                prototypes_for_generation,
+                cov_matrix,
+                num_per_sample,
+                num_per_prototype,
+                target_size,
+            )
+            if bounded is not None:
+                selected = bounded['features']
+                generated_sample_count += bounded['sample_generated']
+                generated_prototype_count += \
+                    bounded['prototype_generated']
+                sample_generation_calls += int(
+                    bounded['sample_generated'] > 0)
+                prototype_generation_calls += int(
+                    bounded['prototype_generated'] > 0)
+                timing_sample_generation += time.time() - _timing_t0
+                all_features.append(selected)
+                all_labels.append(
+                    np.full(selected.shape[0], class_idx))
+                selected_samples += int(selected.shape[0])
+                logger.info(
+                    f"Client {self.ID}: Bounded augmentation class "
+                    f"{class_idx} selected={selected.shape[0]} from "
+                    f"conceptual_candidates="
+                    f"{bounded['conceptual_candidates']}")
+                continue
+            timing_sample_generation += time.time() - _timing_t0
+
             if num_per_sample > 0 and class_idx in self.local_features and self.local_features[class_idx].shape[0] > 0:
                 for feat in self.local_features[class_idx]:
                     _timing_t0 = time.time()
@@ -1448,13 +2476,16 @@ class GGEURClient(Client):
             _timing_t0 = time.time()
             self.augmented_features = np.vstack(all_features)
             self.augmented_labels = np.concatenate(all_labels)
+            self._capture_generated_distribution_snapshot()
+            self._apply_baseline_client_sampling()
 
             # Create data loader
             dataset = AugmentedFeatureDataset(self.augmented_features, self.augmented_labels)
             self.augmented_loader = DataLoader(
                 dataset,
                 batch_size=self._cfg.dataloader.batch_size,
-                shuffle=True
+                shuffle=True,
+                generator=self._training_loader_generator(),
             )
             timing_dataset_build += time.time() - _timing_t0
 
@@ -1477,6 +2508,17 @@ class GGEURClient(Client):
             _timing_t0 = time.time()
             self._save_augmented_feature_cache()
             timing_cache_save += time.time() - _timing_t0
+            if self._apply_platform_training_sampling():
+                dataset = AugmentedFeatureDataset(
+                    self.augmented_features, self.augmented_labels)
+                self.augmented_loader = DataLoader(
+                    dataset,
+                    batch_size=self._cfg.dataloader.batch_size,
+                    shuffle=True,
+                    generator=self._training_loader_generator(),
+                )
+
+        self._emit_training_distribution(cache_hit=False)
 
         self.augmentation_done = True
         output_samples = (
@@ -1510,34 +2552,75 @@ class GGEURClient(Client):
             f"prototype_generation_calls={prototype_generation_calls} "
             f"generated_per_sample={num_per_sample} "
             f"generated_per_prototype={num_per_prototype} "
-            f"target_size_per_class={target_size}")
+            f"target_size_per_class={target_size} "
+            f"task_adaptation={1 if task_adaptation_enabled else 0} "
+            f"task_signature={task_spec.get('signature', '')}")
 
         # Free raw features from memory - augmented_features/loader are all we need now
         self.local_features = {}
         self.local_labels = {}
 
     def _build_mlp_classifier(self):
-        """Build MLP classifier for augmented features"""
+        """Build the trainable classifier for augmented features."""
         # IMPORTANT: Always use config's num_classes, not the unique labels in augmented data
         # In LDS mode, each client may only have a subset of classes, but the model
         # must support all classes for proper FedAvg aggregation
         num_classes = self._cfg.model.num_classes
         input_dim = self.embedding_dim
         hidden_dim = self.ggeur_cfg.mlp_hidden_dim
+        model_type = str(getattr(self._cfg.model, 'type', '')).lower()
 
-        if hidden_dim > 0:
-            self.mlp_classifier = nn.Sequential(
-                nn.Linear(input_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(self.ggeur_cfg.mlp_dropout),
-                nn.Linear(hidden_dim, num_classes)
-            )
-        else:
-            # Simple linear classifier
-            self.mlp_classifier = nn.Linear(input_dim, num_classes)
+        init_seed = int(getattr(
+            self.ggeur_cfg, 'classifier_init_seed', -1))
+        cpu_rng_state = None
+        if init_seed >= 0:
+            cpu_rng_state = torch.get_rng_state()
+            torch.manual_seed(init_seed)
+
+        try:
+            if model_type in ['ggeur_rnn', 'ggeur_lstm']:
+                from federatedscope.contrib.model.ggeur_text_rnn import \
+                    GGEURTextRNNClassifier
+
+                rnn_type = 'rnn' if model_type == 'ggeur_rnn' else 'lstm'
+                input_dim = int(getattr(self._cfg.model, 'in_channels',
+                                        input_dim) or input_dim)
+                self.mlp_classifier = GGEURTextRNNClassifier(
+                    input_dim=input_dim,
+                    hidden_dim=int(getattr(self._cfg.model, 'hidden', 256)),
+                    num_classes=num_classes,
+                    num_layers=int(getattr(self._cfg.model, 'layer', 1)),
+                    dropout=float(getattr(self._cfg.model, 'dropout', 0.0)),
+                    rnn_type=rnn_type)
+            elif hidden_dim > 0:
+                self.mlp_classifier = nn.Sequential(
+                    nn.Linear(input_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Dropout(self.ggeur_cfg.mlp_dropout),
+                    nn.Linear(hidden_dim, num_classes)
+                )
+            else:
+                # Simple linear classifier
+                self.mlp_classifier = nn.Linear(input_dim, num_classes)
+        finally:
+            if cpu_rng_state is not None:
+                torch.set_rng_state(cpu_rng_state)
 
         self.mlp_classifier = self.mlp_classifier.to(self.device)
-        logger.info(f"Client {self.ID}: Built MLP classifier with {num_classes} classes")
+        logger.info(
+            f"Client {self.ID}: Built {model_type or 'mlp'} classifier "
+            f"with {num_classes} classes "
+            f"(classifier_init_seed={init_seed})")
+
+    def _training_loader_generator(self):
+        """Return a repeatable per-client loader RNG when configured."""
+        base_seed = int(getattr(
+            self.ggeur_cfg, 'training_data_seed', -1))
+        if base_seed < 0:
+            return None
+        generator = torch.Generator()
+        generator.manual_seed(base_seed + int(self.ID))
+        return generator
 
     def _augmented_cache_metadata(self):
         splits = getattr(self._cfg.data, 'splits', [])
@@ -1549,6 +2632,17 @@ class GGEURClient(Client):
             self.ggeur_cfg, 'augmented_feature_cache_version',
             getattr(self.ggeur_cfg, 'headonly_cache_version',
                     'aug_fcache_v1')))
+        task_spec = self._load_task_adaptation_spec()
+        task_metadata = {
+            'enabled': bool(task_spec.get('enabled', False)),
+            'default_target_size': int(task_spec.get(
+                'default_target_size', 0)),
+            'class_counts': dict(task_spec.get('class_counts', {})),
+            'signature': str(task_spec.get('signature', '')),
+        }
+        if self._task_adaptation_is_generation_neutral(task_spec):
+            task_metadata = self._disabled_task_cache_metadata(
+                int(self.ggeur_cfg.target_size_per_class))
         return {
             'source': 'real_dataset',
             'mode': 'ggeur_augmented_features',
@@ -1568,6 +2662,10 @@ class GGEURClient(Client):
                 int(self.ggeur_cfg.num_generated_per_prototype),
             'target_size_per_class':
                 int(self.ggeur_cfg.target_size_per_class),
+            'baseline_target_samples_per_client': int(getattr(
+                self.ggeur_cfg,
+                'baseline_target_samples_per_client', 0)),
+            'task_adaptation': task_metadata,
             'use_cross_client_prototypes':
                 bool(getattr(self.ggeur_cfg, 'use_cross_client_prototypes',
                              True)),
@@ -1575,9 +2673,24 @@ class GGEURClient(Client):
                 int(getattr(
                     self.ggeur_cfg,
                     'max_cross_client_prototypes_per_class', 0)),
+            'local_prototypes_per_class': int(getattr(
+                self.ggeur_cfg, 'local_prototypes_per_class', 1)),
+            'generation_covariance_scale': float(getattr(
+                self.ggeur_cfg, 'generation_covariance_scale', 1.0)),
+            'platform_target_samples_per_client': int(getattr(
+                self.ggeur_cfg, 'platform_target_samples_per_client', 0)),
+            'platform_auto_target_samples_per_client': int(getattr(
+                self.ggeur_cfg,
+                'platform_auto_target_samples_per_client', 0)),
+            'platform_class_balanced_sampling': bool(getattr(
+                self.ggeur_cfg, 'platform_class_balanced_sampling', False)),
+            'prototype_classifier_init': bool(getattr(
+                self.ggeur_cfg, 'prototype_classifier_init', False)),
             'cross_client_prototype_seed':
                 int(getattr(self.ggeur_cfg,
                             'cross_client_prototype_seed', 42)),
+            'diagonal_covariance':
+                bool(getattr(self.ggeur_cfg, 'diagonal_covariance', False)),
             'use_fedproto':
                 bool(getattr(self.ggeur_cfg, 'use_fedproto', False)),
             'use_lds':
@@ -1649,6 +2762,16 @@ class GGEURClient(Client):
         if self.feature_extractor_type == 'timm':
             return str(getattr(self.ggeur_cfg, 'timm_model',
                                'mixer_b16_224'))
+        if self.feature_extractor_type == 'bert':
+            model_name = os.path.basename(
+                str(getattr(self.ggeur_cfg, 'bert_model_path',
+                            'bert')).rstrip('/\\')) or 'bert'
+            mode = 'pre' if getattr(
+                self.ggeur_cfg, 'bert_use_pretrained_weights',
+                True) else f"rand_seed{int(getattr(self._cfg, 'seed', 0))}"
+            pooling = str(getattr(self.ggeur_cfg, 'bert_pooling', 'cls'))
+            max_len = int(getattr(self.ggeur_cfg, 'bert_max_length', 128))
+            return f'{model_name}_maxlen{max_len}_{pooling}_{mode}'
         clip_model = str(getattr(self.ggeur_cfg, 'clip_model', 'ViT-B-16'))
         pretrained = str(getattr(self.ggeur_cfg, 'clip_pretrained',
                                  'openai'))
@@ -1667,9 +2790,18 @@ class GGEURClient(Client):
             'num_generated_per_sample',
             'num_generated_per_prototype',
             'target_size_per_class',
+            'baseline_target_samples_per_client',
+            'task_adaptation',
             'use_cross_client_prototypes',
             'max_cross_client_prototypes_per_class',
+            'local_prototypes_per_class',
+            'generation_covariance_scale',
+            'platform_target_samples_per_client',
+            'platform_auto_target_samples_per_client',
+            'platform_class_balanced_sampling',
+            'prototype_classifier_init',
             'cross_client_prototype_seed',
+            'diagonal_covariance',
             'use_fedproto',
             'use_lds',
             'lds_alpha',
@@ -1685,9 +2817,53 @@ class GGEURClient(Client):
             'augmented_feature_cache_version',
         ]
         payload = {key: metadata.get(key) for key in keys}
+        task_metadata = payload.get('task_adaptation')
+        if self._task_cache_metadata_is_generation_neutral(
+                task_metadata,
+                int(metadata.get('num_classes', 0) or 0),
+                int(metadata.get('target_size_per_class', 0) or 0)):
+            payload['task_adaptation'] = \
+                self._disabled_task_cache_metadata(
+                    int(metadata.get('target_size_per_class', 0) or 0))
         text = json.dumps(payload, sort_keys=True, ensure_ascii=True,
                           default=str)
         return hashlib.sha1(text.encode('utf-8')).hexdigest()[:16]
+
+    @staticmethod
+    def _disabled_task_cache_metadata(target_size):
+        canonical = {
+            'enabled': False,
+            'default_target_size': int(target_size),
+            'class_counts': {},
+        }
+        signature_payload = json.dumps(
+            canonical, sort_keys=True, ensure_ascii=True)
+        return {
+            **canonical,
+            'signature': hashlib.sha1(
+                signature_payload.encode('utf-8')).hexdigest()[:16],
+        }
+
+    @staticmethod
+    def _task_cache_metadata_is_generation_neutral(
+            task_metadata, num_classes, target_size):
+        """Whether cache task metadata describes the default generation."""
+        if not isinstance(task_metadata, dict):
+            return True
+        if not bool(task_metadata.get('enabled', False)):
+            return True
+        if int(task_metadata.get('default_target_size', -1)) != \
+                int(target_size):
+            return False
+        counts = task_metadata.get('class_counts', {})
+        if not isinstance(counts, dict):
+            return False
+        for class_idx in range(int(num_classes)):
+            if int(counts.get(str(class_idx), target_size)) != \
+                    int(target_size):
+                return False
+        return all(int(value) == int(target_size)
+                   for value in counts.values())
 
     def _get_augmented_feature_cache_base_dir(self):
         cache_dir = getattr(self.ggeur_cfg,
@@ -1732,6 +2908,26 @@ class GGEURClient(Client):
             namespace,
             f'{dataset}_client_{int(self.ID):06d}.pt',
         )
+        # The fully descriptive namespace can exceed the legacy Win32
+        # MAX_PATH limit when a distributed run also has a descriptive run
+        # ID. Keep the metadata/fingerprint unchanged, but use a compact,
+        # deterministic directory name on Windows when needed. A preflight
+        # and its formal run therefore still resolve to the same cache.
+        if os.name == 'nt' and len(os.path.abspath(path)) >= 240:
+            compact_namespace = (
+                f'{dataset[:20]}_{extractor[:20]}_'
+                f'{metadata["client_num"]}c_'
+                f'g{metadata["num_generated_per_sample"]}_'
+                f'p{metadata["num_generated_per_prototype"]}_'
+                f't{metadata["target_size_per_class"]}_{fingerprint}'
+            )
+            path = os.path.join(
+                cache_dir,
+                subdir,
+                version,
+                compact_namespace,
+                f'c{int(self.ID):06d}.pt',
+            )
         os.makedirs(os.path.dirname(path), exist_ok=True)
         return path
 
@@ -1741,6 +2937,22 @@ class GGEURClient(Client):
             return []
 
         paths = [path]
+
+        # Cache fingerprints evolve when new compatibility metadata is added.
+        # Search sibling namespaces with the same descriptive configuration
+        # prefix and rely on the metadata validator below before loading.  This
+        # keeps previously generated, compatible caches reusable without
+        # copying or renaming large feature files.
+        namespace_dir = Path(path).parent
+        namespace_parts = namespace_dir.name.rsplit('_', 1)
+        if len(namespace_parts) == 2:
+            namespace_prefix = f'{namespace_parts[0]}_'
+            for candidate_dir in sorted(
+                    namespace_dir.parent.glob(f'{namespace_prefix}*')):
+                candidate_path = str(candidate_dir / Path(path).name)
+                if candidate_path not in paths:
+                    paths.append(candidate_path)
+
         cache_dir = self._get_augmented_feature_cache_base_dir()
         if cache_dir:
             legacy_ids = [int(self.ID) - 1, int(self.ID)]
@@ -1789,6 +3001,13 @@ class GGEURClient(Client):
             checks[-1] = (
                 str(metadata.get('augmented_feature_cache_version')) ==
                 str(expected.get('augmented_feature_cache_version')))
+        cached_baseline_target = int(metadata.get(
+            'baseline_target_samples_per_client', 0) or 0)
+        expected_baseline_target = int(expected.get(
+            'baseline_target_samples_per_client', 0) or 0)
+        checks.append(
+            cached_baseline_target == expected_baseline_target or
+            (expected_baseline_target > 0 and cached_baseline_target == 0))
         if metadata.get('feature_extractor_model') is not None:
             checks.append(
                 str(metadata.get('feature_extractor_model')) ==
@@ -1810,6 +3029,54 @@ class GGEURClient(Client):
         if metadata.get('client_num') is not None:
             checks.append(
                 int(metadata.get('client_num')) == expected['client_num'])
+        if metadata.get('seed') is not None:
+            checks.append(int(metadata.get('seed')) == expected['seed'])
+        if metadata.get('splits') is not None:
+            checks.append(list(metadata.get('splits')) == expected['splits'])
+        if metadata.get('diagonal_covariance') is not None:
+            checks.append(
+                bool(metadata.get('diagonal_covariance')) ==
+                bool(expected['diagonal_covariance']))
+        for key in (
+                'local_prototypes_per_class',
+                'platform_target_samples_per_client',
+                'platform_auto_target_samples_per_client'):
+            if metadata.get(key) is not None:
+                checks.append(int(metadata.get(key)) == int(expected[key]))
+        if metadata.get('generation_covariance_scale') is not None:
+            checks.append(float(metadata.get(
+                'generation_covariance_scale')) == float(expected[
+                    'generation_covariance_scale']))
+        for key in (
+                'use_cross_client_prototypes',
+                'platform_class_balanced_sampling',
+                'prototype_classifier_init'):
+            if metadata.get(key) is not None:
+                checks.append(bool(metadata.get(key)) == bool(expected[key]))
+        for key in (
+                'max_cross_client_prototypes_per_class',
+                'cross_client_prototype_seed'):
+            if metadata.get(key) is not None:
+                checks.append(int(metadata.get(key)) == int(expected[key]))
+        expected_task = expected.get('task_adaptation', {})
+        cached_task = metadata.get('task_adaptation')
+        expected_task_is_neutral = \
+            self._task_cache_metadata_is_generation_neutral(
+                expected_task, expected['num_classes'],
+                expected['target_size_per_class'])
+        cached_task_is_neutral = \
+            self._task_cache_metadata_is_generation_neutral(
+                cached_task, expected['num_classes'],
+                expected['target_size_per_class'])
+        if expected_task.get('enabled', False) and \
+                not expected_task_is_neutral:
+            checks.append(cached_task == expected_task)
+        elif expected_task_is_neutral:
+            checks.append(
+                cached_task_is_neutral and
+                not bool((cached_task or {}).get('enabled', False)))
+        elif cached_task is not None:
+            checks.append(not bool(cached_task.get('enabled', False)))
 
         cached_client_id = metadata.get('client_id')
         if cached_client_id is not None:
@@ -1830,6 +3097,184 @@ class GGEURClient(Client):
                 pass
             copied[key] = np.asarray(value, dtype=dtype)
         return copied
+
+    @staticmethod
+    def _sample_client_local_dataset(features, labels, target_size, seed):
+        """Deterministically resize one client's dataset using local rows.
+
+        Downsampling is without replacement. When the client owns fewer rows
+        than requested, all original rows are retained and the remainder is
+        sampled with replacement from the same client. This operation never
+        creates a synthetic feature.
+        """
+        features = np.asarray(features)
+        labels = np.asarray(labels)
+        source_size = int(labels.shape[0])
+        target_size = int(target_size)
+        if source_size != int(features.shape[0]):
+            raise ValueError(
+                "Client-local sampling requires matching feature/label rows")
+        if target_size <= 0 or source_size == target_size:
+            return features, labels, False, source_size
+        if source_size <= 0:
+            raise ValueError(
+                "Cannot sample a positive target from an empty client")
+
+        rng = np.random.RandomState(int(seed) % (2 ** 32 - 1))
+        if source_size > target_size:
+            indices = rng.choice(source_size, target_size, replace=False)
+            used_replacement = False
+        else:
+            extra = rng.choice(
+                source_size, target_size - source_size, replace=True)
+            indices = np.concatenate(
+                [np.arange(source_size, dtype=np.int64), extra])
+            rng.shuffle(indices)
+            used_replacement = True
+
+        unique_samples = int(np.unique(indices).shape[0])
+        return (features[indices], labels[indices], used_replacement,
+                unique_samples)
+
+    @staticmethod
+    def _sample_client_local_balanced_dataset(features, labels, target_size,
+                                              seed):
+        """Resize local rows while preserving an equal per-class target."""
+        features = np.asarray(features)
+        labels = np.asarray(labels)
+        source_size = int(labels.shape[0])
+        target_size = int(target_size)
+        if source_size != int(features.shape[0]):
+            raise ValueError(
+                "Balanced client sampling requires matching feature/label rows")
+        if target_size <= 0 or source_size <= 0:
+            raise ValueError(
+                "Balanced client sampling requires positive source and target")
+
+        classes = np.unique(labels)
+        if classes.size == 0:
+            raise ValueError("Balanced client sampling found no classes")
+        base, remainder = divmod(target_size, int(classes.size))
+        rng = np.random.RandomState(int(seed) % (2 ** 32 - 1))
+        selected = []
+        used_replacement = False
+        for class_offset, class_id in enumerate(classes.tolist()):
+            class_target = base + (1 if class_offset < remainder else 0)
+            if class_target <= 0:
+                continue
+            class_indices = np.flatnonzero(labels == class_id)
+            replace = int(class_indices.size) < int(class_target)
+            used_replacement = used_replacement or replace
+            selected.append(rng.choice(
+                class_indices, size=class_target, replace=replace))
+        indices = np.concatenate(selected).astype(np.int64, copy=False)
+        rng.shuffle(indices)
+        unique_samples = int(np.unique(indices).shape[0])
+        return (features[indices], labels[indices], used_replacement,
+                unique_samples)
+
+    def _apply_baseline_client_sampling(self):
+        """Match baseline client sample counts without feature generation."""
+        target_size = int(getattr(
+            self.ggeur_cfg, 'baseline_target_samples_per_client', 0) or 0)
+        if target_size <= 0:
+            return False
+
+        generation_enabled = any([
+            int(getattr(self.ggeur_cfg,
+                        'num_generated_per_sample', 0) or 0) > 0,
+            int(getattr(self.ggeur_cfg,
+                        'num_generated_per_prototype', 0) or 0) > 0,
+            int(getattr(self.ggeur_cfg,
+                        'target_size_per_class', 0) or 0) > 0,
+            bool(str(getattr(
+                self.ggeur_cfg, 'task_adaptation_file', '') or '').strip()),
+            bool(list(getattr(
+                self.ggeur_cfg, 'task_class_counts', []) or [])),
+            bool(str(getattr(
+                self.ggeur_cfg, 'task_default_target_size', '') or '').strip()),
+        ])
+        if generation_enabled:
+            logger.warning(
+                f"Client {self.ID}: Ignore baseline client-local sampling "
+                "because augmentation or task adaptation is enabled")
+            return False
+        if self.augmented_features is None or self.augmented_labels is None:
+            return False
+
+        source_size = int(len(self.augmented_labels))
+        base_seed = int(getattr(self._cfg, 'seed', 0))
+        client_id = int(self.ID)
+        sampling_seed = (
+            base_seed * 1000003 + client_id * 9176 + target_size
+        ) % (2 ** 32 - 1)
+        sampled = self._sample_client_local_dataset(
+            self.augmented_features,
+            self.augmented_labels,
+            target_size,
+            sampling_seed,
+        )
+        (self.augmented_features, self.augmented_labels,
+         used_replacement, unique_samples) = sampled
+        logger.info(
+            "BASELINE_CLIENT_SAMPLING "
+            f"client={client_id} source_samples={source_size} "
+            f"target_samples={target_size} "
+            f"output_samples={len(self.augmented_labels)} "
+            f"replacement={1 if used_replacement else 0} "
+            f"unique_source_samples={unique_samples} seed={sampling_seed}")
+        return True
+
+    def _apply_platform_training_sampling(self):
+        """Resize cached generated rows without regenerating noisy features."""
+        target_size = int(getattr(
+            self.ggeur_cfg, 'platform_target_samples_per_client', 0) or 0)
+        target_source = 'explicit'
+        if target_size <= 0:
+            target_size = int(getattr(
+                self.ggeur_cfg,
+                'platform_auto_target_samples_per_client', 0) or 0)
+            target_source = 'automatic'
+        generation_enabled = any([
+            int(getattr(self.ggeur_cfg,
+                        'num_generated_per_sample', 0) or 0) > 0,
+            int(getattr(self.ggeur_cfg,
+                        'num_generated_per_prototype', 0) or 0) > 0,
+            int(getattr(self.ggeur_cfg,
+                        'target_size_per_class', 0) or 0) > 0,
+        ])
+        if (target_size <= 0 or not generation_enabled or
+                self.augmented_features is None or
+                self.augmented_labels is None):
+            return False
+
+        source_size = int(len(self.augmented_labels))
+        base_seed = int(getattr(self._cfg, 'seed', 0))
+        client_id = int(self.ID)
+        sampling_seed = (
+            base_seed * 1000003 + client_id * 9176 + target_size + 7919
+        ) % (2 ** 32 - 1)
+        balanced_sampling = bool(getattr(
+            self.ggeur_cfg, 'platform_class_balanced_sampling', False))
+        sampler = (
+            self._sample_client_local_balanced_dataset
+            if balanced_sampling else self._sample_client_local_dataset)
+        sampled = sampler(self.augmented_features,
+                          self.augmented_labels,
+                          target_size,
+                          sampling_seed)
+        (self.augmented_features, self.augmented_labels,
+         used_replacement, unique_samples) = sampled
+        logger.info(
+            "PLATFORM_TRAINING_SAMPLING "
+            f"client={client_id} source_samples={source_size} "
+            f"target_samples={target_size} "
+            f"target_source={target_source} "
+            f"output_samples={len(self.augmented_labels)} "
+            f"class_balanced={1 if balanced_sampling else 0} "
+            f"replacement={1 if used_replacement else 0} "
+            f"unique_source_samples={unique_samples} seed={sampling_seed}")
+        return True
 
     def _restore_cached_local_statistics(self, local_statistics):
         if not isinstance(local_statistics, dict):
@@ -1860,7 +3305,19 @@ class GGEURClient(Client):
             if not os.path.exists(path):
                 continue
             try:
-                cached = torch.load(path, map_location='cpu')
+                # These files are trusted, locally generated GGEUR cache
+                # artifacts and contain NumPy statistics in addition to
+                # tensors.  PyTorch 2.6 changed ``torch.load`` to default to
+                # ``weights_only=True``, which rejects those statistics and
+                # silently forces every client to regenerate its cache.
+                # Request a full load explicitly while keeping compatibility
+                # with older PyTorch releases that do not expose this option.
+                try:
+                    cached = torch.load(path,
+                                        map_location='cpu',
+                                        weights_only=False)
+                except TypeError:
+                    cached = torch.load(path, map_location='cpu')
                 metadata = cached.get('metadata', {})
                 if not self._is_augmented_cache_metadata_compatible(metadata):
                     logger.info(
@@ -1877,6 +3334,9 @@ class GGEURClient(Client):
                     labels.numpy() if isinstance(labels, torch.Tensor)
                     else np.asarray(labels)
                 )
+                self._capture_generated_distribution_snapshot()
+                self._apply_baseline_client_sampling()
+                self._apply_platform_training_sampling()
                 cached_global_prototypes = cached.get('global_prototypes', {})
                 if cached_global_prototypes:
                     self.global_prototypes = self._copy_numpy_mapping(
@@ -1891,7 +3351,12 @@ class GGEURClient(Client):
                     dataset,
                     batch_size=self._cfg.dataloader.batch_size,
                     shuffle=True,
+                    generator=self._training_loader_generator(),
                 )
+                # A cache hit is still a completed task-adaptation data build.
+                # Persist the same directly observable client distribution as
+                # the cache-miss path so validation evidence is never absent.
+                self._emit_training_distribution(cache_hit=True)
                 logger.info(
                     f"Client {self.ID}: Loaded augmented feature cache "
                     f"from {path} ({len(self.augmented_labels)} samples, "
@@ -2019,7 +3484,12 @@ class GGEURClient(Client):
         round_idx = message.state
         sender = message.sender
         timestamp = message.timestamp
-        content = message.content
+        # gRPC serializes every tensor leaf in ``model_para`` messages to
+        # bytes.  Hierarchical subservers intentionally forward that payload
+        # unchanged, so restore the full tree before loading the global head
+        # or reading FedProto metadata.
+        content = self._decode_parameter_tree(message.content)
+        message.content = content
 
         # Update state
         self.state = round_idx
@@ -2034,13 +3504,22 @@ class GGEURClient(Client):
                     'after_statistics_upload', round_idx)
                 return
             if cache_hot_status == 'augmentation_ready':
+                ready_content = 'ready'
+                if (bool(getattr(
+                        self.ggeur_cfg, 'prototype_classifier_init', False))
+                        and self.global_prototypes):
+                    ready_content = {
+                        'status': 'ready',
+                        'global_prototypes': self._serialize_array_payload(
+                            self.global_prototypes),
+                    }
                 self.comm_manager.send(
                     Message(
                         msg_type='augmentation_ready',
                         sender=self.ID,
                         receiver=[self.server_id],
                         state=self.state,
-                        content='ready'
+                        content=ready_content
                     )
                 )
                 self._maybe_fail_for_distributed_validation(
@@ -2123,12 +3602,20 @@ class GGEURClient(Client):
 
         if content is not None:
             if isinstance(content, dict):
+                if self.use_fedproto and \
+                        'fedproto_global_prototypes' in content:
+                    self._set_fedproto_global_prototypes(
+                        content.get('fedproto_global_prototypes'))
                 if 'mlp' in content:
                     mlp_para = content.get('mlp')
                     cnn_para = content.get('cnn')
                 else:
                     # Backward compatibility: content is just MLP parameters
-                    mlp_para = content
+                    mlp_para = {
+                        key: value
+                        for key, value in content.items()
+                        if key != 'fedproto_global_prototypes'
+                    }
 
         # Load global prompt ctx if PromptFL enabled
         if self.use_promptfl and content is not None and isinstance(content, dict):
@@ -2229,6 +3716,18 @@ class GGEURClient(Client):
             else:
                 combined_para = {'mlp': combined_para, 'prompt': prompt_para}
 
+        # FedProto metadata is aggregated independently from model weights.
+        # Always wrap a plain state_dict so the root server and hierarchical
+        # subservers can distinguish trainable parameters from prototypes.
+        if self.use_fedproto:
+            if not isinstance(combined_para, dict) or \
+                    'mlp' not in combined_para:
+                combined_para = {'mlp': combined_para}
+            combined_para['fedproto_local_prototypes'] = copy.deepcopy(
+                self.fedproto_local_prototypes)
+            combined_para['fedproto_local_counts'] = copy.deepcopy(
+                self.fedproto_local_counts)
+
         # Send model parameters
         self.comm_manager.send(
             Message(
@@ -2244,18 +3743,49 @@ class GGEURClient(Client):
     def callback_for_client_eval(self, message: Message):
         """Evaluate the aggregated MLP on this client's local test split."""
         round_idx = int(message.state)
-        model_para = message.content
+        model_para = self._decode_parameter_tree(message.content)
         self.state = round_idx
 
-        if self.mlp_classifier is None:
-            self._build_mlp_classifier()
+        self.domain_prototype_ensemble = {}
+        self.domain_personalized_head = None
+        if isinstance(model_para, dict) and \
+                'domain_prototype_ensemble' in model_para:
+            raw_ensemble = model_para.get('domain_prototype_ensemble', {})
+            for class_idx, prototypes in raw_ensemble.items():
+                values = np.asarray(prototypes, dtype=np.float32)
+                if values.ndim == 2 and values.shape[1] == self.embedding_dim:
+                    self.domain_prototype_ensemble[int(class_idx)] = values
+        if isinstance(model_para, dict) and \
+                'domain_personalized_heads' in model_para:
+            heads = model_para.get('domain_personalized_heads', {})
+            dataloader = self._get_local_test_loader()
+            dataset = getattr(dataloader, 'dataset', None) \
+                if dataloader is not None else None
+            domain = getattr(dataset, 'domain', None)
+            if domain is None:
+                domain = getattr(
+                    getattr(dataset, 'dataset', None), 'domain', '')
+            head = heads.get(str(domain))
+            if head:
+                self.domain_personalized_head = head
+        if isinstance(model_para, dict) and 'mlp' in model_para:
+            model_para = model_para.get('mlp')
+
+        self._ensure_eval_classifier_matches(model_para)
         if model_para is not None and self.mlp_classifier is not None:
             try:
                 self.mlp_classifier.load_state_dict(model_para)
             except Exception as error:
-                logger.warning(
+                # Continuing here evaluates the client's stale local head and
+                # silently produces a formally shaped but invalid result.
+                # Terminal evidence must always use the root-aggregated head.
+                logger.error(
                     f"Client {self.ID}: Could not load MLP for local eval: "
                     f"{error}")
+                raise RuntimeError(
+                    f"Client {self.ID}: terminal evaluation rejected because "
+                    "the root-aggregated classifier could not be loaded") \
+                    from error
 
         metrics = self._evaluate_mlp_on_local_test(round_idx)
         self.comm_manager.send(
@@ -2268,6 +3798,58 @@ class GGEURClient(Client):
                 content=metrics
             )
         )
+
+    def _ensure_eval_classifier_matches(self, model_para):
+        """Build the classifier architecture encoded by an eval state dict.
+
+        Platform cases use a two-layer MLP while FedAvg/FedProx use a linear
+        head.  Client evaluation is common to both, so it must infer the head
+        shape from the server payload instead of reusing a classifier left by
+        local training.
+        """
+        if not isinstance(model_para, dict):
+            if self.mlp_classifier is None:
+                self._build_mlp_classifier()
+            return
+
+        weight_keys = [
+            key for key, value in model_para.items()
+            if str(key).endswith('weight') and torch.is_tensor(value) and
+            value.ndim == 2
+        ]
+        if not weight_keys:
+            if self.mlp_classifier is None:
+                self._build_mlp_classifier()
+            return
+
+        if 'weight' in model_para and torch.is_tensor(model_para['weight']):
+            weight = model_para['weight']
+            expected = nn.Linear(int(weight.shape[1]), int(weight.shape[0]))
+        elif '0.weight' in model_para and '3.weight' in model_para:
+            first = model_para['0.weight']
+            last = model_para['3.weight']
+            expected = nn.Sequential(
+                nn.Linear(int(first.shape[1]), int(first.shape[0])),
+                nn.ReLU(),
+                nn.Dropout(float(self.ggeur_cfg.mlp_dropout)),
+                nn.Linear(int(last.shape[1]), int(last.shape[0])))
+        else:
+            if self.mlp_classifier is None:
+                self._build_mlp_classifier()
+            return
+
+        current = self.mlp_classifier
+        current_state = current.state_dict() if current is not None else {}
+        shape_mismatch = any(
+            key not in current_state or
+            tuple(current_state[key].shape) != tuple(value.shape)
+            for key, value in model_para.items() if torch.is_tensor(value))
+        if current is None or set(current_state) != set(model_para) or \
+                shape_mismatch:
+            self.mlp_classifier = expected.to(self.device)
+            logger.info(
+                f"Client {self.ID}: Rebuilt local eval classifier from "
+                f"server state keys={sorted(model_para)}")
 
     def _get_local_test_loader(self):
         test_data = None
@@ -2294,7 +3876,10 @@ class GGEURClient(Client):
             subset_indices = None
             domain = getattr(dataset, 'domain', None)
 
-        self._load_feature_extractor()
+        shared_eval = self._load_shared_eval_cache(domain)
+        if shared_eval is not None:
+            return shared_eval
+
         cache_path = self._get_feature_cache_path(domain)
         feature_cache = self._load_feature_cache(cache_path)
         feature_cache = {
@@ -2302,6 +3887,55 @@ class GGEURClient(Client):
             for path, feat in feature_cache.items()
             if self._is_valid_feature_vector(feat)
         }
+
+        # Text datasets expose stable sample IDs rather than image paths.
+        # Their complete domain cache already contains the held-out IDs (the
+        # cache-preparation step validates this).  Resolve those IDs directly
+        # so terminal evaluation never imports or runs one BERT model per
+        # client process.
+        if self.feature_extractor_type == 'bert':
+            text_samples = []
+            missing = []
+            for idx in range(len(dataset)):
+                text, label, sample_id, _ = self._resolve_dataset_sample(
+                    dataset, idx)
+                cache_key = self._feature_cache_key(sample_id)
+                text_samples.append((text, int(label), cache_key))
+                if cache_key not in feature_cache or not \
+                        self._is_valid_feature_vector(
+                            feature_cache.get(cache_key)):
+                    missing.append((text, int(label), cache_key))
+
+            if missing:
+                if bool(getattr(
+                        self.ggeur_cfg,
+                        'require_complete_feature_cache', False)):
+                    preview = ', '.join(item[2] for item in missing[:3])
+                    raise RuntimeError(
+                        f"Client {self.ID}: BERT eval feature cache is "
+                        f"incomplete; missing {len(missing)}/"
+                        f"{len(text_samples)} samples (first keys: "
+                        f"{preview})")
+                self._load_bert_extractor()
+                batch_size = int(getattr(
+                    self.ggeur_cfg, 'bert_batch_size', 32))
+                for start in range(0, len(missing), max(batch_size, 1)):
+                    batch = missing[start:start + max(batch_size, 1)]
+                    encoded = self._encode_text_batch(
+                        [item[0] for item in batch])
+                    for feat, (_, _, cache_key) in zip(encoded, batch):
+                        feature_cache[cache_key] = feat
+                self._save_feature_cache(cache_path, feature_cache)
+
+            features = np.asarray(
+                [feature_cache[item[2]] for item in text_samples],
+                dtype=np.float32)
+            labels = np.asarray(
+                [item[1] for item in text_samples], dtype=np.int64)
+            logger.info(
+                f"Client {self.ID}: Loaded {len(labels)} held-out BERT "
+                f"features from {cache_path}")
+            return torch.from_numpy(features), torch.from_numpy(labels)
 
         has_paths = hasattr(base_dataset, 'data') and \
             len(base_dataset.data) > 0 and isinstance(base_dataset.data[0], str)
@@ -2316,15 +3950,17 @@ class GGEURClient(Client):
                 base_idx = subset_indices[local_idx] if is_subset else local_idx
                 img_path = base_dataset.data[base_idx]
                 label = int(base_dataset.targets[base_idx])
-                cached = feature_cache.get(img_path)
+                cache_key = self._feature_cache_key(img_path)
+                cached = feature_cache.get(cache_key)
                 if cached is not None and self._is_valid_feature_vector(cached):
                     features.append(cached)
                     labels.append(label)
                 else:
-                    paths_to_extract.append(img_path)
+                    paths_to_extract.append(cache_key)
                     base_indices_to_extract.append(base_idx)
 
             if paths_to_extract:
+                self._load_feature_extractor()
                 batch_size = getattr(self.ggeur_cfg, 'extract_batch_size', 64)
                 use_fp16 = getattr(self.ggeur_cfg, 'use_fp16_extraction',
                                    True) and torch.cuda.is_available()
@@ -2359,6 +3995,7 @@ class GGEURClient(Client):
                 if cache_updated:
                     self._save_feature_cache(cache_path, feature_cache)
         else:
+            self._load_feature_extractor()
             use_fp16 = getattr(self.ggeur_cfg, 'use_fp16_extraction',
                                True) and torch.cuda.is_available()
             with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_fp16):
@@ -2382,8 +4019,81 @@ class GGEURClient(Client):
             torch.as_tensor(np.asarray(labels), dtype=torch.long),
         )
 
+    def _load_domainnet_eval_cache(self, domain):
+        """Compatibility wrapper for the former DomainNet-only cache API."""
+        return self._load_shared_eval_cache(domain)
+
+    def _load_shared_eval_cache(self, domain):
+        """Load a deterministic held-out vision cache when available.
+
+        Every logical OfficeHome client in a domain uses the same manifest
+        test split.  DomainNet uses an equivalent per-client sharded cache.
+        Reusing those verified features avoids loading a large frozen vision
+        extractor independently in every terminal process.
+        """
+        data_type = str(getattr(self._cfg.data, 'type', '')).lower()
+        is_domainnet = any(token in data_type for token in (
+            'domainnet', 'domain-net', 'domain_net'))
+        is_officehome = any(token in data_type for token in (
+            'officehome', 'office-home', 'office_home'))
+        if not is_domainnet and not is_officehome:
+            return None
+        domain = str(domain or '')
+        if not domain:
+            return None
+        cache_dir = Path(str(getattr(
+            self.ggeur_cfg, 'feature_cache_dir', '') or ''))
+        if is_domainnet:
+            client_num = int(self._cfg.federate.client_num)
+            suffix = (
+                f'_terminal_client{int(self.ID):06d}of{client_num:06d}.npz')
+            matches = sorted(
+                path for path in cache_dir.glob(
+                    f'domainnet_{domain}_test_*{suffix}')
+                if path.name.endswith(suffix))
+            cache_description = 'DomainNet terminal feature shard'
+        else:
+            # The server cache is named from the configured data type, which
+            # may use any of the supported OfficeHome spellings.  Match by
+            # domain and exclude any unrelated terminal shards.
+            matches = sorted(
+                path for path in cache_dir.glob(f'*_{domain}_test_*.npz')
+                if 'terminal_client' not in path.name and any(
+                    token in path.name.lower() for token in (
+                        'officehome', 'office-home', 'office_home')))
+            cache_description = 'OfficeHome shared test feature cache'
+        if len(matches) != 1:
+            if bool(getattr(
+                    self.ggeur_cfg, 'require_complete_feature_cache', False)):
+                raise RuntimeError(
+                    f"Client {self.ID}: Expected one {cache_description} "
+                    f"for domain={domain} in {cache_dir}, "
+                    f"found {len(matches)}")
+            return None
+        with np.load(matches[0], allow_pickle=False) as data:
+            features = np.asarray(data['features'], dtype=np.float32)
+            labels = np.asarray(data['labels'], dtype=np.int64)
+        if features.ndim != 2 or features.shape[1] != int(self.embedding_dim):
+            raise ValueError(
+                f"Client {self.ID}: Invalid held-out feature shape "
+                f"{features.shape}; expected (*, {self.embedding_dim})")
+        if labels.shape != (features.shape[0],):
+            raise ValueError(
+                f"Client {self.ID}: Invalid held-out label shape "
+                f"{labels.shape}")
+        logger.info(
+            f"Client {self.ID}: Loaded {len(labels)} held-out features "
+            f"from {matches[0]}")
+        return torch.from_numpy(features), torch.from_numpy(labels)
+
     def _evaluate_mlp_on_local_test(self, round_idx):
         dataloader = self._get_local_test_loader()
+        dataset = getattr(dataloader, 'dataset', None) \
+            if dataloader is not None else None
+        domain = getattr(dataset, 'domain', None)
+        if domain is None:
+            domain = getattr(getattr(dataset, 'dataset', None), 'domain', '')
+        domain = str(domain or '')
         if dataloader is None or self.mlp_classifier is None:
             logger.warning(
                 f"Client {self.ID}: No local test data or MLP for eval")
@@ -2392,6 +4102,7 @@ class GGEURClient(Client):
                 'loss': 0.0,
                 'correct': 0,
                 'total': 0,
+                'domain': domain,
             }
 
         features, labels = self._extract_eval_features(dataloader)
@@ -2401,6 +4112,7 @@ class GGEURClient(Client):
                 'loss': 0.0,
                 'correct': 0,
                 'total': 0,
+                'domain': domain,
             }
 
         self.mlp_classifier.eval()
@@ -2418,7 +4130,31 @@ class GGEURClient(Client):
             for batch_features, batch_labels in eval_loader:
                 batch_features = batch_features.to(self.device)
                 batch_labels = batch_labels.to(self.device)
-                outputs = self.mlp_classifier(batch_features)
+                if self.domain_personalized_head:
+                    weight = torch.as_tensor(
+                        self.domain_personalized_head['weight'],
+                        device=self.device, dtype=batch_features.dtype)
+                    bias = torch.as_tensor(
+                        self.domain_personalized_head['bias'],
+                        device=self.device, dtype=batch_features.dtype)
+                    normalized = F.normalize(batch_features, p=2, dim=1)
+                    outputs = F.linear(normalized, weight, bias)
+                elif self.domain_prototype_ensemble:
+                    outputs = torch.full(
+                        (batch_features.shape[0],
+                         int(self._cfg.model.num_classes)),
+                        -torch.inf, device=self.device,
+                        dtype=batch_features.dtype)
+                    for class_idx, prototypes in \
+                            self.domain_prototype_ensemble.items():
+                        values = torch.as_tensor(
+                            prototypes, device=self.device,
+                            dtype=batch_features.dtype)
+                        outputs[:, int(class_idx)] = torch.max(
+                            batch_features @ values.transpose(0, 1),
+                            dim=1).values
+                else:
+                    outputs = self.mlp_classifier(batch_features)
                 total_loss += criterion(outputs, batch_labels).item()
                 predicted = torch.argmax(outputs, dim=1)
                 total_correct += (predicted == batch_labels).sum().item()
@@ -2435,6 +4171,7 @@ class GGEURClient(Client):
             'loss': float(avg_loss),
             'correct': int(total_correct),
             'total': int(total_samples),
+            'domain': domain,
         }
 
     def _handle_separated_training(self, message: Message):
@@ -2745,11 +4482,184 @@ class GGEURClient(Client):
 
         return total_samples, backbone_para, results
 
+    def _set_fedproto_global_prototypes(self, prototypes):
+        """Load global head-representation prototypes from the server."""
+        if not self.use_fedproto:
+            return
+
+        normalized = {}
+        if isinstance(prototypes, dict):
+            for class_idx, prototype in prototypes.items():
+                try:
+                    class_idx = int(class_idx)
+                except (TypeError, ValueError):
+                    continue
+                if prototype is None:
+                    continue
+                if isinstance(prototype, torch.Tensor):
+                    tensor = prototype.detach().to(self.device).float()
+                else:
+                    try:
+                        tensor = torch.as_tensor(
+                            prototype,
+                            device=self.device,
+                            dtype=torch.float32)
+                    except (TypeError, ValueError):
+                        continue
+                normalized[class_idx] = tensor
+
+        self.fedproto_global_prototypes = normalized
+        logger.info(
+            f"Client {self.ID}: FedProto global prototypes updated "
+            f"({len(normalized)} classes)")
+
+    def _forward_head_with_representation(self, features):
+        """Run the classifier and expose the representation used by FedProto.
+
+        Text heads implement ``return_features`` directly.  DomainNet's
+        reference heads are deliberately plain ``Linear``/``Sequential``
+        modules, so asking those modules for ``return_features`` raises a
+        ``TypeError``.  A linear head lives in the input-feature space, while
+        a two-layer head uses the activated output of its first linear layer.
+        """
+        representation = None
+        try:
+            forward_res = self.mlp_classifier(
+                features, return_features=True)
+            if isinstance(forward_res, tuple) and len(forward_res) == 2:
+                outputs, representation = forward_res
+            else:
+                outputs = forward_res
+        except TypeError:
+            outputs = self.mlp_classifier(features)
+            if isinstance(self.mlp_classifier, nn.Linear):
+                representation = features
+            elif isinstance(self.mlp_classifier, nn.Sequential) and \
+                    len(self.mlp_classifier) >= 1 and \
+                    isinstance(self.mlp_classifier[0], nn.Linear):
+                representation = self.mlp_classifier[0](features)
+                if len(self.mlp_classifier) >= 2 and \
+                        isinstance(self.mlp_classifier[1], nn.ReLU):
+                    representation = self.mlp_classifier[1](representation)
+        return outputs, representation
+
+    def _compute_fedproto_loss(self, labels, representations):
+        """Return a differentiable FedProto loss for every reference head.
+
+        For a linear head the sample representation is the fixed cached
+        feature, so aligning it directly would not affect training.  Preserve
+        the original standalone behavior by aligning trainable class weights
+        with the corresponding global prototypes.  Heads with a trainable
+        hidden representation use the usual per-sample prototype objective.
+        """
+        loss = torch.tensor(0.0, device=self.device)
+        if not self.use_fedproto or not self.fedproto_global_prototypes:
+            return loss
+
+        if isinstance(self.mlp_classifier, nn.Linear):
+            class_indices = []
+            prototypes = []
+            weight = self.mlp_classifier.weight
+            for class_idx, prototype in \
+                    self.fedproto_global_prototypes.items():
+                class_idx = int(class_idx)
+                if class_idx < 0 or class_idx >= weight.shape[0]:
+                    continue
+                prototype = prototype.to(
+                    device=weight.device, dtype=weight.dtype)
+                if prototype.numel() != weight.shape[1]:
+                    continue
+                class_indices.append(class_idx)
+                prototypes.append(prototype.reshape(-1))
+            if not class_indices:
+                return loss
+            embeddings = weight[torch.as_tensor(
+                class_indices, device=weight.device, dtype=torch.long)]
+            targets = torch.stack(prototypes, dim=0)
+        else:
+            if representations is None:
+                return loss
+            targets = torch.zeros_like(representations)
+            valid_mask = torch.zeros(
+                labels.shape[0], device=self.device, dtype=torch.bool)
+            for class_idx, prototype in \
+                    self.fedproto_global_prototypes.items():
+                class_mask = labels == int(class_idx)
+                if not class_mask.any():
+                    continue
+                prototype = prototype.to(
+                    device=representations.device,
+                    dtype=representations.dtype)
+                if prototype.numel() != representations.shape[1]:
+                    continue
+                targets[class_mask] = prototype.reshape(-1)
+                valid_mask |= class_mask
+            if not valid_mask.any():
+                return loss
+            embeddings = representations[valid_mask]
+            targets = targets[valid_mask]
+
+        if self.fedproto_normalize:
+            embeddings = F.normalize(embeddings, p=2, dim=1)
+            targets = F.normalize(targets, p=2, dim=1)
+        if self.fedproto_distance_metric in {'cos', 'cosine'}:
+            return 1.0 - F.cosine_similarity(
+                embeddings, targets, dim=1).mean()
+        return (embeddings - targets).pow(2).sum(dim=1).mean()
+
+    def _compute_fedproto_local_prototypes(self):
+        """Compute per-class prototypes in the trainable head hidden space."""
+        if not self.use_fedproto or self.augmented_loader is None or \
+                self.mlp_classifier is None:
+            return {}, {}
+
+        was_training = self.mlp_classifier.training
+        self.mlp_classifier.eval()
+        prototype_sums = {}
+        prototype_counts = {}
+
+        with torch.no_grad():
+            for features, labels in self.augmented_loader:
+                features = features.to(self.device)
+                labels = labels.to(self.device)
+                _, embeddings = self._forward_head_with_representation(
+                    features)
+                if embeddings is None:
+                    if was_training:
+                        self.mlp_classifier.train()
+                    return {}, {}
+
+                for class_idx in labels.unique():
+                    class_idx = int(class_idx.item())
+                    class_mask = labels == class_idx
+                    count = int(class_mask.sum().item())
+                    if count <= 0:
+                        continue
+                    embedding_sum = embeddings[class_mask].detach().sum(
+                        dim=0).cpu()
+                    if class_idx not in prototype_sums:
+                        prototype_sums[class_idx] = embedding_sum
+                        prototype_counts[class_idx] = count
+                    else:
+                        prototype_sums[class_idx] += embedding_sum
+                        prototype_counts[class_idx] += count
+
+        prototypes = {
+            class_idx: (value /
+                        float(prototype_counts[class_idx])).float()
+            for class_idx, value in prototype_sums.items()
+            if int(prototype_counts.get(class_idx, 0)) > 0
+        }
+        if was_training:
+            self.mlp_classifier.train()
+        return prototypes, prototype_counts
+
     def _train_on_augmented_data(self):
         """Train MLP classifier on augmented features with optional FedProto/FedProx regularization"""
         if self.augmented_loader is None or self.mlp_classifier is None:
             return 0, {}, {}
 
+        self.mlp_classifier = self.mlp_classifier.to(self.device)
         self.mlp_classifier.train()
         optimizer = torch.optim.Adam(self.mlp_classifier.parameters(),
                                      lr=self._cfg.train.optimizer.lr)
@@ -2771,35 +4681,24 @@ class GGEURClient(Client):
         moon_mu = getattr(self.ggeur_cfg, 'moon_mu', 5.0)
         moon_temperature = getattr(self.ggeur_cfg, 'moon_temperature', 0.5)
         if use_moon:
+            if self.moon_global_model is not None:
+                self.moon_global_model = self.moon_global_model.to(self.device)
+            if self.moon_prev_model is not None:
+                self.moon_prev_model = self.moon_prev_model.to(self.device)
             logger.info(f"Client {self.ID}: MOON enabled - mu={moon_mu}, temperature={moon_temperature}")
 
-        # FedProto settings
-        use_fedproto = getattr(self.ggeur_cfg, 'use_fedproto', False)
-        proto_weight = getattr(self.ggeur_cfg, 'proto_weight', 1.0)
-        proto_distance = getattr(self.ggeur_cfg, 'proto_distance', 'cosine')
-        proto_temperature = getattr(self.ggeur_cfg, 'proto_temperature', 0.1)
-
-        # Debug logging for FedProto
-        logger.info(f"Client {self.ID}: FedProto settings - use_fedproto={use_fedproto}, "
-                   f"proto_weight={proto_weight}, proto_distance={proto_distance}, "
-                   f"global_prototypes_count={len(self.global_prototypes) if self.global_prototypes else 0}")
+        use_fedproto = self.use_fedproto
+        self.fedproto_local_prototypes = {}
+        self.fedproto_local_counts = {}
+        logger.info(
+            f"Client {self.ID}: FedProto settings - "
+            f"use_fedproto={use_fedproto}, "
+            f"proto_weight={self.fedproto_proto_weight}, "
+            f"proto_distance={self.fedproto_distance_metric}, "
+            f"global_prototypes_count="
+            f"{len(self.fedproto_global_prototypes)}")
         if use_fedprox and fedprox_mu > 0:
             logger.info(f"Client {self.ID}: FedProx enabled - mu={fedprox_mu}")
-
-        # Prepare global prototypes tensor if using FedProto
-        proto_tensor = None
-        if use_fedproto and self.global_prototypes:
-            num_classes = self._cfg.model.num_classes
-            embedding_dim = self.embedding_dim
-            proto_tensor = torch.zeros(num_classes, embedding_dim).to(self.device)
-            for class_idx, proto in self.global_prototypes.items():
-                class_idx = int(class_idx)
-                if class_idx < num_classes:
-                    if isinstance(proto, np.ndarray):
-                        proto_tensor[class_idx] = torch.from_numpy(proto).float()
-                    else:
-                        proto_tensor[class_idx] = proto.float()
-            logger.info(f"Client {self.ID}: FedProto enabled with {len(self.global_prototypes)} prototypes")
 
         total_loss = 0.0
         total_ce_loss = 0.0
@@ -2817,63 +4716,12 @@ class GGEURClient(Client):
                 labels = labels.to(self.device)
 
                 optimizer.zero_grad()
-                outputs = self.mlp_classifier(features)
+                outputs, rep_features = \
+                    self._forward_head_with_representation(features)
                 ce_loss = criterion(outputs, labels)
 
-                # Compute FedProto prototype loss
-                proto_loss = torch.tensor(0.0, device=self.device)
-                if use_fedproto and proto_tensor is not None:
-                    # NOTE: If we compute prototype loss directly on `features`,
-                    # it will NOT affect training because `features` are inputs
-                    # (no gradients). Therefore we compute FedProto loss on
-                    # trainable quantities:
-                    #  - for linear classifier: align class weight vectors with prototypes
-                    #  - for MLP: align a trainable representation with transformed prototypes
-
-                    # Build a mask for available prototypes (some classes may be missing under LDS)
-                    proto_norms = torch.norm(proto_tensor, p=2, dim=1)
-                    proto_mask = proto_norms > 0
-
-                    if isinstance(self.mlp_classifier, nn.Linear):
-                        # Align classifier weights with corresponding prototypes
-                        if proto_mask.any():
-                            weight = self.mlp_classifier.weight  # (C, D)
-                            weight_sel = weight[proto_mask]
-                            proto_sel = proto_tensor[proto_mask]
-
-                            if proto_distance == 'cosine':
-                                weight_norm = nn.functional.normalize(weight_sel, p=2, dim=1)
-                                proto_norm = nn.functional.normalize(proto_sel, p=2, dim=1)
-                                similarity = (weight_norm * proto_norm).sum(dim=1)
-                                proto_loss = (1 - similarity).mean()
-                            else:
-                                proto_loss = nn.functional.mse_loss(weight_sel, proto_sel)
-                    else:
-                        # If the classifier is a small MLP, align the *trainable* representation.
-                        # We use the first Linear (+ ReLU if present) as a representation mapper.
-                        mapper = None
-                        mapper_act = None
-                        if isinstance(self.mlp_classifier, nn.Sequential) and len(self.mlp_classifier) >= 1:
-                            if isinstance(self.mlp_classifier[0], nn.Linear):
-                                mapper = self.mlp_classifier[0]
-                            if len(self.mlp_classifier) >= 2 and isinstance(self.mlp_classifier[1], nn.ReLU):
-                                mapper_act = self.mlp_classifier[1]
-
-                        if mapper is not None and proto_mask.any():
-                            rep = mapper(features)
-                            proto_rep = mapper(proto_tensor)
-                            if mapper_act is not None:
-                                rep = mapper_act(rep)
-                                proto_rep = mapper_act(proto_rep)
-
-                            target_protos = proto_rep[labels]
-                            if proto_distance == 'cosine':
-                                rep_norm = nn.functional.normalize(rep, p=2, dim=1)
-                                target_norm = nn.functional.normalize(target_protos, p=2, dim=1)
-                                similarity = (rep_norm * target_norm).sum(dim=1)
-                                proto_loss = (1 - similarity).mean()
-                            else:
-                                proto_loss = nn.functional.mse_loss(rep, target_protos)
+                proto_loss = self._compute_fedproto_loss(
+                    labels, rep_features)
 
                 # Compute FedProx proximal loss on model parameters
                 prox_loss = torch.tensor(0.0, device=self.device)
@@ -2913,7 +4761,7 @@ class GGEURClient(Client):
                     moon_loss = criterion(logits_con, labels_con)
 
                 # Total loss
-                loss = ce_loss + proto_weight * proto_loss
+                loss = ce_loss + self.fedproto_proto_weight * proto_loss
                 if use_fedprox and fedprox_mu > 0:
                     loss = loss + (fedprox_mu / 2.0) * prox_loss
                 if use_moon:
@@ -2950,8 +4798,25 @@ class GGEURClient(Client):
         else:
             logger.info(f"Client {self.ID}: Train loss={avg_loss:.4f}, accuracy={accuracy:.4f}")
 
-        # Get model parameters
-        model_para = copy.deepcopy(self.mlp_classifier.state_dict())
+        if use_fedproto:
+            prototypes, counts = self._compute_fedproto_local_prototypes()
+            self.fedproto_local_prototypes = prototypes
+            self.fedproto_local_counts = counts
+
+        # Get model parameters on CPU so sequential standalone clients do not
+        # accumulate GPU-resident state dicts.
+        model_para = {
+            k: v.detach().cpu().clone()
+            for k, v in self.mlp_classifier.state_dict().items()
+        }
+
+        self.mlp_classifier = self.mlp_classifier.cpu()
+        if self.moon_global_model is not None:
+            self.moon_global_model = self.moon_global_model.cpu()
+        if self.moon_prev_model is not None:
+            self.moon_prev_model = self.moon_prev_model.cpu()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         results = {
             'train_loss': avg_loss,

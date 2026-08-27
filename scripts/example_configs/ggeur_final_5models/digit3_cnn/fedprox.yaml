@@ -1,0 +1,62 @@
+use_gpu: true
+device: 0
+seed: 42
+verbose: 1
+federate:
+  method: ggeur
+  mode: standalone
+  client_num: 60
+  total_round_num: 100
+  sample_client_num: 0
+fedprox:
+  use: true
+  mu: 5.0
+data:
+  type: digits-3domain
+  root: data/digit_three_domain
+  splits: [0.7, 0.0, 0.3]
+dataloader:
+  batch_size: 32
+  num_workers: 0
+model:
+  type: ggeur_mlp
+  num_classes: 10
+train:
+  local_update_steps: 3
+  optimizer:
+    type: Adam
+    lr: 0.0001
+ggeur:
+  use: true
+  feature_extractor: cnn
+  cnn_backbone: convnext_base
+  cnn_pretrained: false
+  cnn_checkpoint_path: pretrained_models/convnext_base-6075fbad.pth
+  freeze_backbone: true
+  embedding_dim: 1024
+  use_feature_cache: true
+  feature_cache_dir: exp/distributed_feature_cache/digit3_cnn
+  require_complete_feature_cache: false
+  reuse_augmented_feature_cache: false
+  save_augmented_feature_cache: false
+  num_generated_per_sample: 0
+  num_generated_per_prototype: 0
+  target_size_per_class: 0
+  use_cross_client_prototypes: true
+  statistics_round: 0
+  use_lds: true
+  lds_alpha: 0.1
+  lds_seed: 42
+  digit3_manifest_path: ''
+  digit3_manifest_base: data/digit_three_domain/manifests
+  digit3_manifest_use_config_root: true
+  digit3_global_manifest_path: data/digit_three_domain/dataset_manifest.json
+  digit3_domains: [emnist_digits, usps, svhn]
+  task_adaptation_file: ''
+  task_class_counts: []
+  task_default_target_size: ''
+  training_distribution_dir: ''
+  mlp_hidden_dim: 0
+  mlp_dropout: 0.0
+outdir: exp/digit_three_domain
+expname: cnn/fedprox

@@ -39,7 +39,12 @@ def _resolve_timm_model_name(model_name: str) -> str:
     useful suggestions when the model is unknown.
     """
     name = str(model_name)
+    # Modern timm exposes tagged pretrained variants (for example
+    # ``vit_tiny_patch16_224.augreg_in21k_ft_in1k``) only when
+    # ``pretrained=True`` is passed to list_models. Accept both base IDs and
+    # tagged IDs so experiments can pin the exact public checkpoint.
     available = set(timm.list_models())
+    available.update(timm.list_models(pretrained=True))
     if name in available:
         return name
 
@@ -120,7 +125,10 @@ class TimmFeatureExtractor(nn.Module):
                 raise FileNotFoundError(f"timm_checkpoint_path not found: {ckpt}")
             use_pretrained = False
 
-        # num_classes=0 removes the classification head and returns embeddings
+        # num_classes=0 removes the classification head and returns embeddings.
+        # Load local timm checkpoints after model construction with strict=False:
+        # official classification checkpoints legitimately contain head.* keys,
+        # while the feature extractor intentionally has no classification head.
         try:
             self.backbone = timm.create_model(
                 resolved_name,
@@ -128,8 +136,11 @@ class TimmFeatureExtractor(nn.Module):
                 num_classes=0,
                 in_chans=self.in_chans,
                 global_pool=self.global_pool,
-                checkpoint_path=ckpt if ckpt else None,
+                checkpoint_path=None,
             )
+            if ckpt:
+                from timm.models import load_checkpoint
+                load_checkpoint(self.backbone, ckpt, strict=False)
         except Exception as e:
             if ckpt:
                 raise

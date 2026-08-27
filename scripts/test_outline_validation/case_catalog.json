@@ -1,0 +1,18 @@
+{
+  "T-01": {"name": "深度学习模型跨域协同平台并发性能测试", "family": "performance", "groups": [], "methods": []},
+  "T-02": {"name": "ViT模型跨域分布式微调训练支持测试", "family": "distributed", "groups": ["officehome_vit"], "methods": ["platform"]},
+  "T-03": {"name": "CNN模型跨域分布式微调训练支持测试", "family": "distributed", "groups": ["officehome_cnn"], "methods": ["platform"]},
+  "T-04": {"name": "MLP模型跨域分布式微调训练支持测试", "family": "distributed", "groups": ["officehome_mixer"], "methods": ["platform"]},
+  "T-05": {"name": "RNN模型跨域分布式微调训练支持测试", "family": "distributed", "groups": ["mdsent_rnn"], "methods": ["platform"]},
+  "T-06": {"name": "LSTM模型跨域分布式微调训练支持测试", "family": "distributed", "groups": ["mdsent_lstm"], "methods": ["platform"]},
+  "T-07": {"name": "平台深度学习任务自适匹配能力测试", "family": "task_adaptation", "groups": ["officehome_vit"], "methods": ["platform"]},
+  "T-08": {"name": "平台客户端动态扩展能力测试", "family": "client_scale", "groups": ["officehome_vit"], "methods": ["platform"]},
+  "T-09": {"name": "ViT模型三类数据集跨域分布式微调训练准确率测试", "family": "distributed", "groups": ["officehome_vit", "domainnet_vit", "digit3_vit"], "methods": ["fedavg", "fedprox", "platform"]},
+  "T-10": {"name": "CNN模型两类数据集跨域分布式微调训练准确率测试", "family": "distributed", "groups": ["officehome_cnn", "domainnet_cnn"], "methods": ["fedavg", "fedprox", "platform"]},
+  "T-11": {"name": "MLP模型两类数据集跨域分布式微调训练准确率测试", "family": "distributed", "groups": ["officehome_mixer", "domainnet_mixer"], "methods": ["fedavg", "fedprox", "platform"]},
+  "T-12": {"name": "MDSent数据集RNN模型跨域分布式微调训练准确率测试", "family": "distributed", "groups": ["mdsent_rnn"], "methods": ["fedavg", "fedprox", "platform"]},
+  "T-13": {"name": "MDSent数据集LSTM模型跨域分布式微调训练准确率测试", "family": "distributed", "groups": ["mdsent_lstm"], "methods": ["fedavg", "fedprox", "platform"]},
+  "T-14": {"name": "Office_31数据集隐私保护方案精度损失测试", "family": "privacy_accuracy", "groups": [], "methods": ["without_privacy", "platform"]},
+  "T-15": {"name": "Digits数据集隐私保护方案精度损失测试", "family": "privacy_accuracy", "groups": [], "methods": ["without_privacy", "platform"]},
+  "T-16": {"name": "深度学习跨域协同隐私保护技术噪声方差对比测试", "family": "privacy_variance", "groups": [], "methods": ["platform", "dpfl", "ldp_fed"]}
+}

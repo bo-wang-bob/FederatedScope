@@ -537,7 +537,11 @@ class DistributedRunner(BaseRunner):
                 'host': self.cfg.distribute.client_host,
                 'port': self.cfg.distribute.client_port
             }
-            self.client = self._setup_client(resource_info=sampled_resource)
+            configured_client_id = int(
+                getattr(self.cfg.distribute, 'client_id', -1))
+            self.client = self._setup_client(
+                client_id=configured_client_id,
+                resource_info=sampled_resource)
 
     def _get_server_args(self, resource_info, client_resource_info):
         server_data = self.data

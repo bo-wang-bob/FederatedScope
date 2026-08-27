@@ -77,6 +77,15 @@ def update_logger(cfg, clear_before_add=False):
         root_logger.warning("Skip DEBUG/INFO messages")
     root_logger.setLevel(logging_level)
 
+    # Resolve an optional operator-facing log alias before cfg.outdir is
+    # expanded with cfg.expname. This keeps a short, stable log path for
+    # manual acceptance-test instructions while retaining exp_print.log in
+    # the normal experiment directory.
+    alias_log_file = str(getattr(cfg, 'log_file', '') or '').strip()
+    if alias_log_file:
+        alias_log_file = os.path.abspath(os.path.expanduser(
+            os.path.expandvars(alias_log_file)))
+
     # ================ create outdir to save log, exp_config, models, etc,.
     is_frozen = cfg.is_frozen()
     if is_frozen:
@@ -117,6 +126,16 @@ def update_logger(cfg, clear_before_add=False):
     fh.setFormatter(logger_formatter)
     root_logger.addHandler(fh)
 
+    if alias_log_file:
+        alias_parent = os.path.dirname(alias_log_file)
+        if alias_parent:
+            os.makedirs(alias_parent, exist_ok=True)
+        alias_handler = logging.FileHandler(
+            alias_log_file, mode='w', encoding='utf-8')
+        alias_handler.setLevel(logging.DEBUG)
+        alias_handler.setFormatter(logger_formatter)
+        root_logger.addHandler(alias_handler)
+
     # set print precision for terse logging
     np.set_printoptions(precision=cfg.print_decimal_digits)
     precision_filter = LoggerPrecisionFilter(cfg.print_decimal_digits)
@@ -132,6 +151,8 @@ def update_logger(cfg, clear_before_add=False):
                      f" {socket.gethostbyname(socket.gethostname())}")
     root_logger.info(f"the current dir is {os.getcwd()}")
     root_logger.info(f"the output dir is {cfg.outdir}")
+    if alias_log_file:
+        root_logger.info(f"the operator log file is {alias_log_file}")
 
     if cfg.wandb.use:
         import sys

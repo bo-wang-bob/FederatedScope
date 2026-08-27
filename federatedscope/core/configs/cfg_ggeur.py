@@ -38,6 +38,10 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.cnn_backbone = 'convnext_base'
     # Whether to freeze CNN backbone during feature extraction
     cfg.ggeur.freeze_backbone = True
+    # Optional local CNN checkpoint. An empty value lets the extractor use its
+    # normal pretrained/default source; cached-feature runs do not need to
+    # materialize the backbone as long as the cache is complete.
+    cfg.ggeur.cnn_checkpoint_path = ''
 
     # ========== timm Feature Extractor Settings ==========
     # Only used when cfg.ggeur.feature_extractor == 'timm'
@@ -57,11 +61,32 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.clip_model_path = ''  # Local path to CLIP weights (if available)
     cfg.ggeur.embedding_dim = 512  # Feature dimension (512 for CLIP, 1024 for ConvNeXt-Base)
 
+    # ========== BERT Feature Extraction (Text) ==========
+    # Only used when cfg.ggeur.feature_extractor == 'bert'. The BERT encoder is
+    # frozen and produces sentence embeddings for the trainable RNN/LSTM head.
+    cfg.ggeur.bert_model_path = ''
+    cfg.ggeur.bert_tokenizer_path = ''  # empty = same as bert_model_path
+    cfg.ggeur.bert_max_length = 128
+    cfg.ggeur.bert_pooling = 'cls'  # 'cls' or 'mean'
+    cfg.ggeur.bert_batch_size = 32
+    cfg.ggeur.bert_local_files_only = True
+    cfg.ggeur.bert_use_pretrained_weights = True
+
+    # Optional portable classifier artifacts.  Empty/False defaults preserve
+    # all existing training behavior.  Accuracy acceptance runs enable these
+    # fields explicitly so the trained head can be loaded in a separate test.
+    cfg.ggeur.save_mlp_checkpoint = False
+    cfg.ggeur.mlp_checkpoint_dir = ''
+
     # ========== Feature Caching ==========
     # Directory to cache extracted CLIP features (empty = auto, next to data.root)
     cfg.ggeur.feature_cache_dir = ''
     # Whether to use cached features if available
     cfg.ggeur.use_feature_cache = True
+    # Fail immediately when any raw sample is absent from the cache. This is
+    # enabled for many-process distributed clients so they never load a
+    # frozen backbone or attempt a network download unexpectedly.
+    cfg.ggeur.require_complete_feature_cache = False
     # Whether to reuse generated/augmented feature files when the cache
     # metadata matches the current dataset split, client count, feature
     # extractor, and GGEUR generation parameters. This is enabled by default
@@ -92,10 +117,83 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.num_generated_per_prototype = 50
     # Target number of samples per class after augmentation
     cfg.ggeur.target_size_per_class = 50
+    # Scale the covariance used to perturb generated feature vectors. 1.0
+    # preserves the historical behavior; smaller values keep generated
+    # features closer to their source sample or cross-client prototype.
+    cfg.ggeur.generation_covariance_scale = 1.0
+    # Optional baseline-only client-local sampling target. A positive value
+    # makes a no-augmentation baseline train on exactly this many samples per
+    # client, using only that client's original cached features. Clients with
+    # more samples are downsampled without replacement; smaller clients are
+    # upsampled with replacement. Zero preserves the original dataset.
+    cfg.ggeur.baseline_target_samples_per_client = 0
+    # Optional platform-only training-set resize applied after loading or
+    # generating the augmented cache. Zero preserves the cached row count.
+    cfg.ggeur.platform_target_samples_per_client = 0
+    # Case-specific automatic target used when the command line explicitly
+    # sets platform_target_samples_per_client to zero. Zero disables the
+    # automatic fallback and preserves the cached row count.
+    cfg.ggeur.platform_auto_target_samples_per_client = 0
+    # Preserve equal per-class counts when an augmented platform dataset is
+    # resized for faster training. Disabled by default for compatibility.
+    cfg.ggeur.platform_class_balanced_sampling = False
+
+    # ========== Task-adaptive Generation ==========
+    # Optional JSON/YAML task file. It may contain:
+    #   default_target_size: 50
+    #   class_counts: {"0": 20, "1": 80}
+    # The per-class value is the final number of training samples produced by
+    # Ours for that class on each client.
+    cfg.ggeur.task_adaptation_file = ''
+    # Inline overrides use "class_id:count" or "class_name:count" entries.
+    # They take precedence over values loaded from task_adaptation_file.
+    cfg.ggeur.task_class_counts = []
+    # Empty keeps target_size_per_class as the fallback. A non-negative string
+    # overrides the task file's default for classes without an explicit entry.
+    cfg.ggeur.task_default_target_size = ''
+    # Per-client JSON reports are always logged. When this directory is empty,
+    # reports are written to <outdir>/training_distributions.
+    cfg.ggeur.training_distribution_dir = ''
 
     # ========== MLP Classifier ==========
     cfg.ggeur.mlp_hidden_dim = 0  # Hidden dim (0 means no hidden layer, just linear)
     cfg.ggeur.mlp_dropout = 0.0  # Dropout rate
+    # Non-negative values make only the classifier initialization reproducible
+    # while the experiment seed still controls data order, client sampling and
+    # stochastic training. -1 preserves the original global-RNG behavior.
+    cfg.ggeur.classifier_init_seed = -1
+    # Optional seed used only for train/validation/test and client partitioning.
+    # Keeping it separate from cfg.seed allows repeated training seeds to share
+    # an identical evaluation protocol. -1 preserves the original behavior.
+    cfg.ggeur.data_split_seed = -1
+    # Optional deterministic seed for each client's augmented-feature loader.
+    # The client id is added so clients retain different batch orders. The
+    # experiment seed still controls client sampling and model stochasticity.
+    cfg.ggeur.training_data_seed = -1
+    # Optional RNG seed for framework-level stochastic operations. This is
+    # separate from cfg.seed so a repeated-run id can be recorded while the
+    # dominant runtime RNG is held constant for low-variance comparisons.
+    cfg.ggeur.runtime_seed = -1
+    # Optional platform-only classifier initialization from the global class
+    # prototypes aggregated during round 0. Supports linear and RNN/LSTM
+    # classification heads. False preserves random initialization.
+    cfg.ggeur.prototype_classifier_init = False
+    # Optional diagonal-LDA initialization using only the class means,
+    # diagonal covariances and counts collected during round 0.
+    cfg.ggeur.lda_classifier_init = False
+    # Optional multi-prototype inference head. When positive, round-0 class
+    # prototypes are retained as non-trainable cosine centroids and each
+    # class uses its maximum prototype similarity. Zero preserves the normal
+    # trainable classifier path.
+    cfg.ggeur.domain_prototype_ensemble_per_class = 0
+    # Optional DomainNet domain-personalized linear heads.  When positive,
+    # the root trains one head per domain from the domain's client statistics
+    # and sends each terminal only its own domain head.  Zero leaves all
+    # existing training/evaluation behavior unchanged.
+    cfg.ggeur.domain_personalized_head_epochs = 0
+    cfg.ggeur.domain_personalized_head_lr = 0.01
+    cfg.ggeur.domain_personalized_head_batch_size = 2048
+    cfg.ggeur.domain_personalized_head_use_full_train_cache = False
 
     # ========== Multi-domain Settings ==========
     # Whether to use cross-client prototypes for augmentation
@@ -107,11 +205,27 @@ def extend_ggeur_cfg(cfg):
     # cross-client prototypes.
     cfg.ggeur.max_cross_client_prototypes_per_class = 0
     cfg.ggeur.cross_client_prototype_seed = 42
+    # Number of representative local feature prototypes shared per class.
+    # One preserves the historical class-mean behavior. Values above one use
+    # deterministic feature exemplars to retain intra-class diversity.
+    cfg.ggeur.local_prototypes_per_class = 1
     # Optional selected domains for DomainNet. Empty = auto-discover extracted domains.
     cfg.ggeur.domainnet_domains = []
     # If True, keep only classes present in every selected DomainNet domain.
     # If False, use the union of classes across selected domains.
     cfg.ggeur.domainnet_shared_classes_only = False
+    # Optional portable dataset manifest.  It lets cache-only distributed
+    # clients reproduce paths, labels and deterministic splits without a local
+    # copy of the large DomainNet image archive.
+    cfg.ggeur.domainnet_manifest_path = ''
+
+    # Optional portable manifests for the EMNIST Digits + USPS + SVHN
+    # three-domain test. Empty values keep all existing data paths unchanged.
+    cfg.ggeur.digit3_manifest_path = ''
+    cfg.ggeur.digit3_manifest_base = ''
+    cfg.ggeur.digit3_manifest_use_config_root = False
+    cfg.ggeur.digit3_global_manifest_path = ''
+    cfg.ggeur.digit3_domains = []
 
     # ========== Training Settings ==========
     cfg.ggeur.statistics_round = 0  # Round to collect statistics (usually 0)
@@ -121,9 +235,18 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.head_only_after_round0 = True
     cfg.ggeur.headonly_cache_version = 'fcache_v1'
     cfg.ggeur.headonly_eval_mode = 'server'
+    # When headonly_eval_mode is ``both``, keep the inexpensive root-server
+    # accuracy curve at every configured evaluation round, but request the
+    # full per-terminal evaluation only on the last round.  False preserves
+    # the historical behavior of evaluating every terminal every time.
+    cfg.ggeur.terminal_client_eval_only = False
     # Optional OfficeHome domain filter for real distributed clients that only
     # mount their own local data. Empty means all OfficeHome domains.
     cfg.ggeur.officehome_domains = []
+    # Negative preserves the historical behaviour of using cfg.seed.  Set a
+    # non-negative value to keep OfficeHome train/test and client partitions
+    # fixed while varying the training seed in repeated experiments.
+    cfg.ggeur.officehome_data_seed = -1
     # OfficeHome client split strategy.
     # - standard: split each domain uniformly, or use LDS when use_lds=True.
     # - random_fixed_per_domain: each domain owns a fixed number of clients,
@@ -139,6 +262,14 @@ def extend_ggeur_cfg(cfg):
     # loads train/val/test image lists from the manifest and does not re-split
     # data at runtime.
     cfg.ggeur.officehome_manifest_path = ''
+    # Optional directory containing client_XXXXXX/client_manifest.json files.
+    # This is used by standalone cache preparation to load the exact manifests
+    # for every client in one process.
+    cfg.ggeur.officehome_manifest_base = ''
+    # Portable manifests may be generated on another operating system. When
+    # enabled, resolve every relative record against data.root on this host
+    # instead of the source machine path embedded in the manifest.
+    cfg.ggeur.officehome_manifest_use_config_root = False
     # Cache-hot rerun mode for HeadOnly experiments. If True and the
     # per-client augmented feature cache exists, clients skip round-0 feature
     # statistics/augmentation and immediately train on cached generated samples.
@@ -153,6 +284,15 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.min_statistics_clients = 0
     cfg.ggeur.min_augmentation_clients = 0
     cfg.ggeur.min_train_updates = 0
+    # Deterministically stagger large round-0 statistics uploads. A value of
+    # zero preserves the original behaviour. Distributed runs with tens of
+    # clients should use a small positive interval to avoid simultaneous
+    # covariance payloads overwhelming the proxy/network stack.
+    cfg.ggeur.statistics_upload_stagger_seconds = 0.0
+    # Optional bandwidth-saving representation for high-dimensional feature
+    # extractors. False preserves the original full covariance matrices.
+    # When enabled, clients upload and aggregate per-dimension variances.
+    cfg.ggeur.diagonal_covariance = False
     # Fault injection for distributed validation scripts. Empty disables it.
     # Supported stages: after_statistics_upload, after_augmentation_ready,
     # before_train_round.
@@ -169,6 +309,21 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.proto_distance = 'cosine'
     # Temperature for cosine distance (only used when proto_distance='cosine')
     cfg.ggeur.proto_temperature = 0.1
+    # Compatibility aliases used by the RNN/LSTM configs from
+    # feature/ggeur-backdoor-research.
+    cfg.ggeur.fedproto_proto_weight = 1.0
+    cfg.ggeur.fedproto_distance_metric = 'mse'
+    cfg.ggeur.fedproto_normalize = False
+    cfg.ggeur.fedproto_keep_last_global_prototypes = True
+
+    # ========== Three-machine hierarchical distributed training ==========
+    # Clients still join the root server logically through a subserver. The
+    # subserver forwards control/statistics/evaluation messages unchanged and
+    # locally aggregates model updates before sending one weighted update to
+    # the root server per round.
+    cfg.ggeur.hierarchical_training = False
+    cfg.ggeur.hierarchical_subserver_num = 1
+    cfg.ggeur.hierarchical_subserver_id_base = 100000
 
     # ========== LDS (Label Distribution Skew) Settings ==========
     # Whether to use Dirichlet distribution for non-IID data split
@@ -180,6 +335,14 @@ def extend_ggeur_cfg(cfg):
     cfg.ggeur.lds_alpha = 0.1
     # Random seed for Dirichlet distribution (for reproducibility)
     cfg.ggeur.lds_seed = 42
+    # Split every domain's complete training set among its clients with a
+    # per-class Dirichlet distribution. False preserves the legacy behavior.
+    cfg.ggeur.dirichlet_within_domain_clients = False
+    # Sample clients evenly from contiguous per-domain client ranges. This is
+    # disabled by default and is useful when a small participation quorum must
+    # still cover every domain in a multi-domain test.
+    cfg.ggeur.domain_stratified_sampling = False
+    cfg.ggeur.domain_sampling_group_num = 4
 
     # ========== CNN Knowledge Distillation Settings ==========
     # Whether to enable CNN training with knowledge distillation from MLP teacher

@@ -1,4 +1,5 @@
 import logging
+import os
 
 from importlib import import_module
 from federatedscope.core.data.utils import RegexInverseMap, load_dataset, \
@@ -10,7 +11,10 @@ import federatedscope.register as register
 logger = logging.getLogger(__name__)
 
 try:
-    from federatedscope.contrib.data import *
+    if os.environ.get('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT') == '1':
+        from federatedscope.contrib.data import ggeur_data, mdsent_data
+    else:
+        from federatedscope.contrib.data import *
 except ImportError as error:
     logger.warning(
         f'{error} in `federatedscope.contrib.data`, some modules are not '

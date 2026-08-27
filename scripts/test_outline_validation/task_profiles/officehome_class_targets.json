@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "dataset": "OfficeHome",
+  "default_target_size": 8,
+  "class_counts": {
+    "0": 4,
+    "1": 12,
+    "2": 20
+  }
+}

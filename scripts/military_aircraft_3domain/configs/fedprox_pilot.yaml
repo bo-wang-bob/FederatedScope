@@ -1,0 +1,75 @@
+use_gpu: true
+device: 0
+seed: 42
+verbose: 1
+federate:
+  method: ggeur
+  mode: standalone
+  client_num: 15
+  total_round_num: 20
+  sample_client_num: 0
+
+fedprox:
+  use: true
+  mu: 5.0
+
+data:
+  type: domainnet
+  root: /root/autodl-tmp/datasets/MilitaryAircraft3D
+  splits: [0.7, 0.0, 0.3]
+
+dataloader:
+  batch_size: 16
+  num_workers: 0
+
+model:
+  type: ggeur_mlp
+  input_dim: 512
+  hidden_dim: 256
+  dropout: 0.01
+  num_classes: 5
+
+train:
+  local_update_steps: 5
+  optimizer:
+    type: Adam
+    lr: 0.00005
+
+ggeur:
+  use: true
+  feature_extractor: clip
+  clip_model: ViT-B-16
+  clip_pretrained: openai
+  clip_model_path: /root/.cache/clip/ViT-B-16.pt
+  embedding_dim: 512
+  extract_batch_size: 64
+  use_fp16_extraction: true
+  use_feature_cache: true
+  feature_cache_dir: exp/distributed_feature_cache/military_aircraft_vit_fixedsplit_v2
+  require_complete_feature_cache: false
+  reuse_augmented_feature_cache: false
+  save_augmented_feature_cache: false
+  num_generated_per_sample: 0
+  num_generated_per_prototype: 0
+  target_size_per_class: 0
+  use_cross_client_prototypes: true
+  statistics_round: 0
+  domainnet_domains: [aerial, natural, recon]
+  domainnet_shared_classes_only: true
+  use_lds: true
+  lds_alpha: 0.1
+  lds_seed: 42
+  dirichlet_within_domain_clients: true
+  mlp_hidden_dim: 256
+  mlp_dropout: 0.01
+  classifier_init_seed: -1
+  data_split_seed: 42
+  training_data_seed: -1
+  runtime_seed: -1
+  use_fedproto: false
+  use_cnn_distillation: false
+  use_feature_alignment: false
+  use_separated_training: false
+
+outdir: exp/military_aircraft_3domain/pilot/fedprox
+expname: military_aircraft_vit_mlp_fedprox_pilot

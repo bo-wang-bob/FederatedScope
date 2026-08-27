@@ -1,0 +1,561 @@
+{
+  "profile_name": "T5-T6 balanced platform sampling sweep",
+  "common": {
+    "use_gpu": true,
+    "device": 0,
+    "seed": 42,
+    "federate.mode": "standalone",
+    "federate.total_round_num": 100,
+    "dataloader.batch_size": 32,
+    "dataloader.num_workers": 0,
+    "train.optimizer.type": "Adam",
+    "train.optimizer.lr": 0.0001,
+    "minimum_absolute_improvement": 0.2
+  },
+  "cases": {
+    "t5_mdsent_rnn_s20_t20_bal_lr1e4": {
+      "test_case": "T-05-S20_T20_BAL_LR1E4",
+      "model_name": "RNN",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_rnn",
+      "client_num": 120,
+      "sample_client_num": 20,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_rnn",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_rnn"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 256,
+        "model.layer": 1,
+        "model.dropout": 0.1,
+        "ggeur.min_statistics_clients": 20,
+        "ggeur.min_augmentation_clients": 20,
+        "ggeur.min_train_updates": 20,
+        "train.optimizer.lr": 0.0001,
+        "ggeur.generation_covariance_scale": 1.0,
+        "ggeur.domain_stratified_sampling": true,
+        "ggeur.domain_sampling_group_num": 4
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 0.1,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 20,
+          "ggeur.platform_auto_target_samples_per_client": 0,
+          "ggeur.platform_class_balanced_sampling": true,
+          "ggeur.prototype_classifier_init": false
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t2t6_formal_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3683,
+        "fedprox_accuracy": 0.3498,
+        "platform_accuracy": 0.6019,
+        "platform_minus_fedavg_points": 23.36,
+        "platform_minus_fedprox_points": 25.21,
+        "fedavg_seconds": 5.158,
+        "fedprox_seconds": 7.195,
+        "platform_seconds": 4.918
+      }
+    },
+    "t5_mdsent_rnn_s20_t20_bal_proto_lr5e5_cov01": {
+      "test_case": "T-05-S20_T20_BAL_PROTO_LR5E5_COV01",
+      "model_name": "RNN",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_rnn",
+      "client_num": 120,
+      "sample_client_num": 20,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_rnn",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_rnn"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 256,
+        "model.layer": 1,
+        "model.dropout": 0.1,
+        "ggeur.min_statistics_clients": 20,
+        "ggeur.min_augmentation_clients": 20,
+        "ggeur.min_train_updates": 20,
+        "train.optimizer.lr": 5e-05,
+        "ggeur.generation_covariance_scale": 0.1,
+        "ggeur.domain_stratified_sampling": true,
+        "ggeur.domain_sampling_group_num": 4
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 0.1,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 20,
+          "ggeur.platform_auto_target_samples_per_client": 0,
+          "ggeur.platform_class_balanced_sampling": true,
+          "ggeur.prototype_classifier_init": true
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t2t6_formal_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3683,
+        "fedprox_accuracy": 0.3498,
+        "platform_accuracy": 0.6019,
+        "platform_minus_fedavg_points": 23.36,
+        "platform_minus_fedprox_points": 25.21,
+        "fedavg_seconds": 5.158,
+        "fedprox_seconds": 7.195,
+        "platform_seconds": 4.918
+      }
+    },
+    "t5_mdsent_rnn_s20_t20_bal_proto_lr2e5_cov01": {
+      "test_case": "T-05-S20_T20_BAL_PROTO_LR2E5_COV01",
+      "model_name": "RNN",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_rnn",
+      "client_num": 120,
+      "sample_client_num": 20,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_rnn",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_rnn"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 256,
+        "model.layer": 1,
+        "model.dropout": 0.1,
+        "ggeur.min_statistics_clients": 20,
+        "ggeur.min_augmentation_clients": 20,
+        "ggeur.min_train_updates": 20,
+        "train.optimizer.lr": 2e-05,
+        "ggeur.generation_covariance_scale": 0.1,
+        "ggeur.domain_stratified_sampling": true,
+        "ggeur.domain_sampling_group_num": 4
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 0.1,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 20,
+          "ggeur.platform_auto_target_samples_per_client": 0,
+          "ggeur.platform_class_balanced_sampling": true,
+          "ggeur.prototype_classifier_init": true
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t2t6_formal_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3683,
+        "fedprox_accuracy": 0.3498,
+        "platform_accuracy": 0.6019,
+        "platform_minus_fedavg_points": 23.36,
+        "platform_minus_fedprox_points": 25.21,
+        "fedavg_seconds": 5.158,
+        "fedprox_seconds": 7.195,
+        "platform_seconds": 4.918
+      }
+    },
+    "t5_mdsent_rnn_s40_t20_bal_proto_lr5e5_cov01": {
+      "test_case": "T-05-S40_T20_BAL_PROTO_LR5E5_COV01",
+      "model_name": "RNN",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_rnn",
+      "client_num": 120,
+      "sample_client_num": 40,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_rnn",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_rnn"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 256,
+        "model.layer": 1,
+        "model.dropout": 0.1,
+        "ggeur.min_statistics_clients": 40,
+        "ggeur.min_augmentation_clients": 40,
+        "ggeur.min_train_updates": 40,
+        "train.optimizer.lr": 5e-05,
+        "ggeur.generation_covariance_scale": 0.1,
+        "ggeur.domain_stratified_sampling": true,
+        "ggeur.domain_sampling_group_num": 4
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 0.1,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 20,
+          "ggeur.platform_auto_target_samples_per_client": 0,
+          "ggeur.platform_class_balanced_sampling": true,
+          "ggeur.prototype_classifier_init": true
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t2t6_formal_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3683,
+        "fedprox_accuracy": 0.3498,
+        "platform_accuracy": 0.6019,
+        "platform_minus_fedavg_points": 23.36,
+        "platform_minus_fedprox_points": 25.21,
+        "fedavg_seconds": 5.158,
+        "fedprox_seconds": 7.195,
+        "platform_seconds": 4.918
+      }
+    },
+    "t6_mdsent_lstm_s20_t100_bal_lr1e4": {
+      "test_case": "T-06-S20_T100_BAL_LR1E4",
+      "model_name": "LSTM",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_lstm",
+      "client_num": 120,
+      "sample_client_num": 20,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_lstm",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_lstm"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 64,
+        "model.layer": 1,
+        "model.dropout": 0.8,
+        "ggeur.min_statistics_clients": 20,
+        "ggeur.min_augmentation_clients": 20,
+        "ggeur.min_train_updates": 20,
+        "train.optimizer.lr": 0.0001,
+        "ggeur.generation_covariance_scale": 1.0,
+        "ggeur.domain_stratified_sampling": true,
+        "ggeur.domain_sampling_group_num": 4
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 5.0,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 100,
+          "ggeur.platform_auto_target_samples_per_client": 0,
+          "ggeur.platform_class_balanced_sampling": true,
+          "ggeur.prototype_classifier_init": false
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t6_retuned_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3862,
+        "fedprox_accuracy": 0.3716,
+        "platform_accuracy": 0.6647,
+        "platform_minus_fedavg_points": 27.85,
+        "platform_minus_fedprox_points": 29.31,
+        "fedavg_seconds": 6.369,
+        "fedprox_seconds": 8.669,
+        "platform_seconds": 8.954
+      }
+    },
+    "t6_mdsent_lstm_s20_t100_bal_proto_lr7e5_cov01": {
+      "test_case": "T-06-S20_T100_BAL_PROTO_LR7E5_COV01",
+      "model_name": "LSTM",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_lstm",
+      "client_num": 120,
+      "sample_client_num": 20,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_lstm",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_lstm"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 64,
+        "model.layer": 1,
+        "model.dropout": 0.8,
+        "ggeur.min_statistics_clients": 20,
+        "ggeur.min_augmentation_clients": 20,
+        "ggeur.min_train_updates": 20,
+        "train.optimizer.lr": 7e-05,
+        "ggeur.generation_covariance_scale": 0.1,
+        "ggeur.domain_stratified_sampling": true,
+        "ggeur.domain_sampling_group_num": 4
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 5.0,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 100,
+          "ggeur.platform_auto_target_samples_per_client": 0,
+          "ggeur.platform_class_balanced_sampling": true,
+          "ggeur.prototype_classifier_init": true
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t6_retuned_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3862,
+        "fedprox_accuracy": 0.3716,
+        "platform_accuracy": 0.6647,
+        "platform_minus_fedavg_points": 27.85,
+        "platform_minus_fedprox_points": 29.31,
+        "fedavg_seconds": 6.369,
+        "fedprox_seconds": 8.669,
+        "platform_seconds": 8.954
+      }
+    },
+    "t6_mdsent_lstm_s20_t100_bal_proto_lr5e5_cov01": {
+      "test_case": "T-06-S20_T100_BAL_PROTO_LR5E5_COV01",
+      "model_name": "LSTM",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_lstm",
+      "client_num": 120,
+      "sample_client_num": 20,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_lstm",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_lstm"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 64,
+        "model.layer": 1,
+        "model.dropout": 0.8,
+        "ggeur.min_statistics_clients": 20,
+        "ggeur.min_augmentation_clients": 20,
+        "ggeur.min_train_updates": 20,
+        "train.optimizer.lr": 5e-05,
+        "ggeur.generation_covariance_scale": 0.1,
+        "ggeur.domain_stratified_sampling": true,
+        "ggeur.domain_sampling_group_num": 4
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 5.0,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 100,
+          "ggeur.platform_auto_target_samples_per_client": 0,
+          "ggeur.platform_class_balanced_sampling": true,
+          "ggeur.prototype_classifier_init": true
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t6_retuned_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3862,
+        "fedprox_accuracy": 0.3716,
+        "platform_accuracy": 0.6647,
+        "platform_minus_fedavg_points": 27.85,
+        "platform_minus_fedprox_points": 29.31,
+        "fedavg_seconds": 6.369,
+        "fedprox_seconds": 8.669,
+        "platform_seconds": 8.954
+      }
+    },
+    "t6_mdsent_lstm_s40_t100_bal_lr1e4": {
+      "test_case": "T-06-S40_T100_BAL_LR1E4",
+      "model_name": "LSTM",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_lstm",
+      "client_num": 120,
+      "sample_client_num": 40,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_lstm",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_lstm"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 64,
+        "model.layer": 1,
+        "model.dropout": 0.8,
+        "ggeur.min_statistics_clients": 40,
+        "ggeur.min_augmentation_clients": 40,
+        "ggeur.min_train_updates": 40,
+        "train.optimizer.lr": 0.0001,
+        "ggeur.generation_covariance_scale": 1.0,
+        "ggeur.domain_stratified_sampling": true,
+        "ggeur.domain_sampling_group_num": 4
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 5.0,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 100,
+          "ggeur.platform_auto_target_samples_per_client": 0,
+          "ggeur.platform_class_balanced_sampling": true,
+          "ggeur.prototype_classifier_init": false
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t6_retuned_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3862,
+        "fedprox_accuracy": 0.3716,
+        "platform_accuracy": 0.6647,
+        "platform_minus_fedavg_points": 27.85,
+        "platform_minus_fedprox_points": 29.31,
+        "fedavg_seconds": 6.369,
+        "fedprox_seconds": 8.669,
+        "platform_seconds": 8.954
+      }
+    }
+  }
+}

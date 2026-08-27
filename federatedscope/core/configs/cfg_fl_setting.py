@@ -69,6 +69,9 @@ def extend_fl_setting_cfg(cfg):
     # must connect back through a public IP or port mapping.
     cfg.distribute.client_advertise_host = ''
     cfg.distribute.client_advertise_port = 0
+    # Optional deterministic client ID for distributed deployments. Keep -1
+    # for the legacy server-assigned behavior.
+    cfg.distribute.client_id = -1
     cfg.distribute.role = 'client'
     cfg.distribute.data_file = 'data'
     cfg.distribute.data_idx = -1  # data_idx is used to specify the data

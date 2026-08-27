@@ -1,5 +1,6 @@
 import copy
 import logging
+import os
 import federatedscope.register as register
 
 logger = logging.getLogger(__name__)
@@ -9,12 +10,13 @@ try:
 except ImportError:
     torch = None
 
-try:
-    from federatedscope.contrib.scheduler import *
-except ImportError as error:
-    logger.warning(
-        f'{error} in `federatedscope.contrib.scheduler`, some modules are not '
-        f'available.')
+if os.environ.get('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT') != '1':
+    try:
+        from federatedscope.contrib.scheduler import *
+    except ImportError as error:
+        logger.warning(
+            f'{error} in `federatedscope.contrib.scheduler`, some modules '
+            f'are not available.')
 
 
 def get_scheduler(optimizer, type, **kwargs):
