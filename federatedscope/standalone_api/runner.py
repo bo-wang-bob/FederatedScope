@@ -224,10 +224,17 @@ class StandaloneProcessRunner:
     @staticmethod
     def _parse_line(line: str) -> Dict[str, Any]:
         payload: Dict[str, Any] = {'message': line.rstrip()[-2000:]}
-        round_match = re.search(r'(?i)(?:round|轮次)[^0-9]{0,8}(\d+)', line)
+        # Match semantic progress ("Round #3", "round=3") but ignore
+        # configuration keys such as round_timeout_seconds: 1000 and
+        # global_convergence_round: 0 printed in startup/final summaries.
+        round_match = re.search(
+            r'(?i)(?:\bround\b|轮次)\s*(?:#|[:=])?\s*(\d+)', line)
         if round_match:
             payload['round'] = int(round_match.group(1))
-        client_match = re.search(r'(?i)client[^0-9]{0,5}(\d+)', line)
+        # Likewise, client_num and configured_clients are configuration and
+        # counters rather than an individual client status event.
+        client_match = re.search(
+            r'(?i)\bclient\b\s*(?:#|[:=])?\s*(\d+)', line)
         if client_match:
             payload['clientIndex'] = int(client_match.group(1))
         metrics: Dict[str, float] = {}

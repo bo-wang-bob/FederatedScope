@@ -339,6 +339,23 @@ class StandaloneApiSchemaTest(unittest.TestCase):
         self.assertEqual(parsed['metrics']['attackSuccess'], 0.22)
         self.assertEqual(parsed['metrics']['privacyRisk'], 0.61)
 
+    def test_log_parser_ignores_round_and_client_config_keys(self):
+        timeout = StandaloneProcessRunner._parse_line(
+            'round_timeout_seconds: 1000')
+        convergence = StandaloneProcessRunner._parse_line(
+            "global_convergence_round: 0, client_num: 60")
+        configured = StandaloneProcessRunner._parse_line(
+            'configured_clients=60')
+        explicit = StandaloneProcessRunner._parse_line(
+            'Server: Starting training (Round #3); Client 12 ready')
+
+        self.assertNotIn('round', timeout)
+        self.assertNotIn('round', convergence)
+        self.assertNotIn('clientIndex', convergence)
+        self.assertNotIn('clientIndex', configured)
+        self.assertEqual(explicit['round'], 3)
+        self.assertEqual(explicit['clientIndex'], 12)
+
     def test_log_parser_aggregates_real_domain_and_privacy_log_formats(self):
         parsed = StandaloneProcessRunner._parse_line(
             'Server: Round 4 MLP Test Accuracy - Art: 0.4, '
