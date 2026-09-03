@@ -202,6 +202,10 @@ def validate_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
             errors['execution.diagonalCovariance'] = '必须是布尔值'
         execution['diagonalCovariance'] = bool(
             execution.get('diagonalCovariance', False))
+        if execution.get('cacheOnly', True) is not True:
+            errors['execution.cacheOnly'] = \
+                '三机训练必须使用已验证的完整特征缓存'
+        execution['cacheOnly'] = True
 
     active_blocks: List[str] = []
     for key in EXPERIMENT_TYPES:

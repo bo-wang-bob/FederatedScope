@@ -363,11 +363,40 @@ def test_grpc_send_deduplicates_shared_proxy_endpoint():
         3: "10.0.0.3:61001",
     }
     sent = []
-    manager._send = lambda address, message: sent.append(address)
+    manager._send_request = lambda address, request: sent.append(address)
 
     manager.send(Message(msg_type="model_para", receiver=[1, 2, 3]))
 
-    assert sent == ["10.0.0.2:61000", "10.0.0.3:61001"]
+    assert sorted(sent) == ["10.0.0.2:61000", "10.0.0.3:61001"]
+
+
+def test_grpc_fanout_builds_large_request_only_once():
+    class CountingMessage(Message):
+        def __init__(self):
+            super().__init__(msg_type="model_para", receiver=[1, 2, 3])
+            self.transform_calls = 0
+
+        def transform(self, to_list=False):
+            self.transform_calls += 1
+            return object()
+
+    manager = object.__new__(gRPCCommManager)
+    manager.neighbors = {
+        1: "10.0.0.1:20001",
+        2: "10.0.0.1:20002",
+        3: "10.0.0.1:20003",
+    }
+    sent = []
+    manager._send_request = lambda address, request: sent.append(
+        (address, request))
+    message = CountingMessage()
+
+    manager.send(message)
+
+    assert message.transform_calls == 1
+    assert sorted(address for address, _ in sent) == [
+        "10.0.0.1:20001", "10.0.0.1:20002", "10.0.0.1:20003"]
+    assert len({id(request) for _, request in sent}) == 1
 
 
 def test_server_groups_identical_hierarchical_client_broadcasts():

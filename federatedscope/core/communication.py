@@ -196,7 +196,7 @@ class gRPCCommManager(object):
             # Get all neighbors
             return self.neighbors
 
-    def _send(self, receiver_address, message):
+    def _send_request(self, receiver_address, request):
         def _create_stub(receiver_address):
             """
             This part is referred to
@@ -214,7 +214,6 @@ class gRPCCommManager(object):
             stub = gRPC_comm_manager_pb2_grpc.gRPCComServeFuncStub(channel)
             return stub, channel
 
-        request = message.transform(to_list=True)
         max_attempts = 4
         for attempt in range(1, max_attempts + 1):
             stub, channel = _create_stub(receiver_address)
@@ -242,11 +241,37 @@ class gRPCCommManager(object):
             finally:
                 channel.close()
 
+    def _send(self, receiver_address, message):
+        request = message.transform(to_list=True)
+        self._send_request(receiver_address, request)
+
+    def _send_many(self, receiver_addresses, message):
+        """Send one immutable request to several peers concurrently.
+
+        Hierarchical broadcasts can carry tens of millions of covariance
+        values.  Building that protobuf once per logical client made a
+        30-client fan-out take hours on the Windows subservers.  Convert the
+        message once and bound concurrency so the shared request does not
+        create one additional in-memory copy per client.
+        """
+        request = message.transform(to_list=True)
+        worker_num = min(8, len(receiver_addresses))
+        with futures.ThreadPoolExecutor(max_workers=worker_num) as executor:
+            tasks = [
+                executor.submit(self._send_request, address, request)
+                for address in receiver_addresses
+            ]
+            # Resolve in submission order so any transport exception remains
+            # visible to the caller instead of being lost in a worker thread.
+            for task in tasks:
+                task.result()
+
     def send(self, message):
         receiver = message.receiver
         if receiver is not None:
             if not isinstance(receiver, list):
                 receiver = [receiver]
+            receiver_addresses = []
             sent_addresses = set()
             for each_receiver in receiver:
                 if each_receiver in self.neighbors:
@@ -257,16 +282,21 @@ class gRPCCommManager(object):
                     # message only once per endpoint.
                     if receiver_address in sent_addresses:
                         continue
-                    self._send(receiver_address, message)
+                    receiver_addresses.append(receiver_address)
                     sent_addresses.add(receiver_address)
         else:
+            receiver_addresses = []
             sent_addresses = set()
             for each_receiver in self.neighbors:
                 receiver_address = self.neighbors[each_receiver]
                 if receiver_address in sent_addresses:
                     continue
-                self._send(receiver_address, message)
+                receiver_addresses.append(receiver_address)
                 sent_addresses.add(receiver_address)
+        if len(receiver_addresses) == 1:
+            self._send(receiver_addresses[0], message)
+        elif receiver_addresses:
+            self._send_many(receiver_addresses, message)
 
     def receive(self, timeout=None):
         received_msg = self.server_funcs.receive(timeout=timeout)

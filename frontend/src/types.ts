@@ -174,6 +174,7 @@ interface ExperimentConfigBase {
     rootDevice?: number;
     statisticsUploadStaggerSeconds?: number;
     diagonalCovariance?: boolean;
+    cacheOnly?: boolean;
   };
 }
 
@@ -277,6 +278,22 @@ export interface Capabilities {
       model: string;
       methods: ExperimentMethod[];
       clientCount: number;
+      cachePolicy: 'complete-feature-cache-required';
+      quickStart: boolean;
+      quickValidation: {
+        method: 'fedavg';
+        rounds: number;
+        localEpochs: number;
+        participationRate: number;
+        batchSize: number;
+        learningRate: number;
+        evaluationFrequency: number;
+        clientsPerSubserver: number;
+        windowsClientCount: number;
+        statisticsUploadStaggerSeconds: number;
+        diagonalCovariance: boolean;
+        cacheOnly: true;
+      };
     }>;
   };
   metrics: Record<string, {

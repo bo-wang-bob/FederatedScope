@@ -60,12 +60,29 @@ class DistributedSchemaTest(unittest.TestCase):
         self.assertEqual(
             next(item for item in catalog
                  if item['group'] == 'mdsent_lstm')['clientCount'], 120)
+        quick = next(item for item in catalog
+                     if item['group'] == 'officehome_vit')
+        self.assertTrue(quick['quickStart'])
+        self.assertEqual(quick['cachePolicy'],
+                         'complete-feature-cache-required')
+        self.assertEqual(quick['quickValidation']['method'], 'fedavg')
+        self.assertEqual(quick['quickValidation']['rounds'], 1)
+        self.assertEqual(quick['quickValidation']['learningRate'], 0.0001)
+        self.assertTrue(quick['quickValidation']['cacheOnly'])
 
     def test_distributed_accuracy_payload_is_normalized(self):
         config = validate_experiment(distributed_payload())
         self.assertEqual(config['execution']['mode'], 'distributed')
         self.assertEqual(config['execution']['group'], 'officehome_vit')
         self.assertEqual(config['execution']['clientsPerSubserver'], 30)
+        self.assertTrue(config['execution']['cacheOnly'])
+
+    def test_distributed_rejects_non_cached_execution(self):
+        payload = distributed_payload()
+        payload['execution']['cacheOnly'] = False
+        with self.assertRaises(ValidationError) as caught:
+            validate_experiment(payload)
+        self.assertIn('execution.cacheOnly', caught.exception.field_errors)
 
     def test_distributed_rejects_unvalidated_group_method_pair(self):
         with self.assertRaises(ValidationError) as caught:

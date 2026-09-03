@@ -1,4 +1,4 @@
-import { CheckCircleFilled, DownloadOutlined, ExperimentOutlined, LockOutlined, RocketOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { CheckCircleFilled, DatabaseOutlined, DownloadOutlined, ExperimentOutlined, LockOutlined, RocketOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Alert, Button, Input, InputNumber, Select, Slider, Space, Switch, Tag, message } from 'antd';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -104,6 +104,16 @@ export function ExperimentPage() {
   }, [capabilities]);
 
   const selectedDistributedCase = capabilities?.distributed?.cases.find((item) => item.group === distributedGroup);
+  const distributedGroupOptions = useMemo(() => {
+    const cases = capabilities?.distributed?.cases || [];
+    const optionsFor = (quickStart: boolean) => cases
+      .filter((item) => item.quickStart === quickStart)
+      .map((item) => ({ value: item.group, label: groupLabels[item.group] || item.group }));
+    return [
+      { label: '轻量缓存 · 推荐先验证', options: optionsFor(true) },
+      { label: '已有缓存 · 规模较大', options: optionsFor(false) },
+    ].filter((item) => item.options.length);
+  }, [capabilities]);
   const methodOptions = executionMode === 'distributed'
     ? allMethodOptions.filter((item) => selectedDistributedCase?.methods.includes(item.value))
     : allMethodOptions.filter((item) => ['fedavg', 'fedprox', 'heterogeneous_solution'].includes(item.value));
@@ -135,7 +145,7 @@ export function ExperimentPage() {
         mode: 'distributed' as const, topologyId: 'lab-three-machine' as const,
         group: distributedGroup, evaluationFrequency, clientsPerSubserver,
         windowsClientCount, rootDevice, statisticsUploadStaggerSeconds,
-        diagonalCovariance,
+        diagonalCovariance, cacheOnly: true,
       } : { mode: 'standalone' as const },
     };
     if (mode === 'privacy') return {
@@ -208,6 +218,26 @@ export function ExperimentPage() {
     }
   };
 
+  const applyCachedQuickValidation = () => {
+    const preset = selectedDistributedCase?.quickValidation;
+    if (!preset) return;
+    setExecutionMode('distributed');
+    setMode('heterogeneity');
+    setMethod(preset.method);
+    setRounds(preset.rounds);
+    setLocalEpochs(preset.localEpochs);
+    setParticipationRate(preset.participationRate * 100);
+    setBatchSize(preset.batchSize);
+    setLearningRate(preset.learningRate);
+    setEvaluationFrequency(preset.evaluationFrequency);
+    setClientsPerSubserver(preset.clientsPerSubserver);
+    setWindowsClientCount(preset.windowsClientCount);
+    setStatisticsUploadStaggerSeconds(preset.statisticsUploadStaggerSeconds);
+    setDiagonalCovariance(preset.diagonalCovariance);
+    setName(`缓存直跑-${distributedGroup}-${new Date().toISOString().slice(0, 10)}`);
+    message.success('已应用缓存直跑配置：FedAvg 一轮，不提取特征、不生成增强数据');
+  };
+
   return <div className="page experiment-page">
     <PageHeader eyebrow="EXPERIMENT CONFIGURATION" title="实验配置" description="从同一页面启动单机任务或实验室三机分布式准确率训练。" actions={<Space><Tag color={selectedRunnerReady ? 'success' : 'warning'}>{selectedRunnerReady ? '运行环境就绪' : '运行环境待检查'}</Tag><Button icon={<DownloadOutlined />} onClick={() => exportExperimentConfig(config)}>导出配置</Button></Space>} />
 
@@ -220,10 +250,12 @@ export function ExperimentPage() {
         <Panel title="执行环境" subtitle="Linux 根服务器统一控制两台 Windows 训练节点">
           <div className="config-grid">
             <label><span>执行模式</span><Select value={executionMode} onChange={setExecutionMode} options={[{ value: 'distributed', label: '实验室三机分布式' }, { value: 'standalone', label: '本机单机' }]} /></label>
-            {executionMode === 'distributed' && <label><span>数据集 / 模型</span><Select value={distributedGroup} onChange={setDistributedGroup} options={(capabilities?.distributed?.cases || []).map((item) => ({ value: item.group, label: groupLabels[item.group] || item.group }))} /></label>}
+            {executionMode === 'distributed' && <label><span>数据集 / 模型</span><Select value={distributedGroup} onChange={setDistributedGroup} options={distributedGroupOptions} /></label>}
           </div>
           {executionMode === 'distributed' && <div className="distributed-node-strip">{(capabilities?.distributed?.nodes || []).map((node, index) => <div key={node.key}><i>{index + 1}</i><span><b>{node.label}</b><small>{node.operatingSystem === 'windows' ? 'Windows' : 'Linux'} · {node.key === 'client' ? '客户端执行' : node.key === 'subserver' ? '域级聚合' : '全局聚合与评测'}</small></span></div>)}</div>}
         </Panel>
+
+        {executionMode === 'distributed' && <Panel title="已有特征缓存快速验证" subtitle="先验证缓存链路，再进行完整轮次训练"><div className="experiment-presets"><span>当前组合</span><Tag color={selectedDistributedCase?.quickStart ? 'success' : 'warning'}>{selectedDistributedCase?.quickStart ? '轻量缓存' : '较大缓存'}</Tag><Tag color="blue">完整缓存必需</Tag><Tag>FedAvg · 1 轮</Tag><Tag>不提取特征</Tag><Tag>不生成增强数据</Tag><Button type="primary" size="small" icon={<DatabaseOutlined />} onClick={applyCachedQuickValidation}>应用缓存直跑配置</Button></div><Alert type="info" showIcon message="缓存缺失会在启动前直接失败" description="三机配置强制 cacheOnly；预检会核验客户端完整缓存标记，不会回退到原始数据或临时运行特征提取。轻量缓存组合已排在选择列表顶部。" /></Panel>}
 
         <Panel title="实验类型" subtitle="每次任务只运行一种实验类型">
           <div className="mode-card-grid">{modeCards.map((item) => <button className={mode === item.key ? 'active' : ''} key={item.key} onClick={() => { if (item.key !== 'heterogeneity') setExecutionMode('standalone'); setMode(item.key); }}><div className="mode-icon">{item.icon}</div><h3>{item.title}</h3><p>{executionMode === 'distributed' && item.key !== 'heterogeneity' ? '选择后切换到本机单机模式' : item.description}</p>{mode === item.key && <CheckCircleFilled className="mode-check" />}</button>)}</div>
@@ -254,7 +286,7 @@ export function ExperimentPage() {
         {mode === 'backdoor' && <Panel title="后门攻击与防御" subtitle="恶意真值与防御判断分别记录"><div className="config-grid"><label><span>攻击类型</span><Select value={backdoorAttack} onChange={setBackdoorAttack} options={[{ value: 'trigger_injection', label: '触发器注入' }, { value: 'label_poisoning', label: '标签污染' }, { value: 'model_update_poisoning', label: '模型更新污染' }]} /></label><label><span>启用攻击防御</span><Switch checked={backdoorDefense} onChange={setBackdoorDefense} /></label><label><span>默认恶意客户端比例</span><Slider value={maliciousRatio} min={1} max={50} onChange={setMaliciousRatio} tooltip={{ formatter: (value) => `${value}%` }} /></label><label><span>指定恶意客户端（可选）</span><Select mode="multiple" value={maliciousClients} placeholder="留空则按默认比例选择" onChange={setMaliciousClients} options={nodeRows.map((node) => ({ value: node.id, label: node.id }))} maxTagCount="responsive" /></label><label><span>攻击起始轮次</span><InputNumber value={startRound} min={0} max={rounds} onChange={(value) => setStartRound(value ?? 1)} /></label><label><span>注入比例</span><Slider value={poisonRatio} min={1} max={100} onChange={setPoisonRatio} tooltip={{ formatter: (value) => `${value}%` }} /></label><label><span>目标类别</span><InputNumber value={targetLabel} min={0} max={64} onChange={(value) => setTargetLabel(value ?? 0)} /></label></div>{backdoorDefense && <div className="defense-stage-grid"><label className={featureDefense ? 'active' : ''}><Switch checked={featureDefense} onChange={setFeatureDefense} /><span><b>特征统计阶段防御</b><small>识别并过滤异常特征摘要</small></span></label><label className={trainingDefense ? 'active' : ''}><Switch checked={trainingDefense} onChange={setTrainingDefense} /><span><b>正常训练阶段防御</b><small>识别并过滤异常模型更新</small></span></label></div>}</Panel>}
       </div>
 
-      <aside className="experiment-summary"><Panel title="运行摘要" subtitle="后端提交前校验"><div className="summary-scene"><span>基础异构环境</span><Tag color={scenarioId ? 'cyan' : 'warning'}>{scenarioId ? scenarioVersion || scenarioId : '尚未应用'}</Tag></div><div className="summary-list"><div><span>执行环境</span><b>{executionMode === 'distributed' ? '实验室三机' : '本机单机'}</b></div>{executionMode === 'distributed' && <div><span>数据与模型</span><b>{groupLabels[distributedGroup] || distributedGroup}</b></div>}<div><span>实验类型</span><b>{modeCards.find((item) => item.key === mode)?.title}</b></div><div><span>运行方案</span><b>{allMethodOptions.find((item) => item.value === method)?.label}</b></div><div><span>客户端参与</span><b>{participationRate}%</b></div><div><span>训练轮次</span><b>{rounds}</b></div><div><span>保护/防御</span><b>{mode === 'privacy' ? (privacyDefense ? '启用' : '关闭') : mode === 'backdoor' ? (backdoorDefense ? '启用' : '关闭') : '不适用'}</b></div></div>{scenarioId ? <div className="validation-pass"><CheckCircleFilled />场景快照已绑定</div> : <Alert type="warning" showIcon message="请先设置基础异构环境" action={<Button size="small" onClick={() => navigate('/scenario-analysis')}>前往设置</Button>} />}{preflightResult && <div className="preflight-checks">{preflightResult.checks.map((check) => <div key={check.name} className={check.ready ? 'ready' : 'failed'}><i>{check.ready ? '✓' : '!'}</i><span>{check.message}</span></div>)}</div>}<Space direction="vertical" className="experiment-actions" style={{ width: '100%' }}><Button block icon={<DownloadOutlined />} onClick={() => exportExperimentConfig(config)}>导出当前配置</Button><Button block loading={preflighting} disabled={!scenarioId || Boolean(capabilityError)} onClick={runPreflight}>运行预检</Button><Button type="primary" size="large" block icon={<RocketOutlined />} loading={submitting} disabled={!scenarioId || Boolean(capabilityError) || !selectedRunnerReady} onClick={startExperiment}>创建并启动实验</Button></Space></Panel></aside>
+      <aside className="experiment-summary"><Panel title="运行摘要" subtitle="后端提交前校验"><div className="summary-scene"><span>基础异构环境</span><Tag color={scenarioId ? 'cyan' : 'warning'}>{scenarioId ? scenarioVersion || scenarioId : '尚未应用'}</Tag></div><div className="summary-list"><div><span>执行环境</span><b>{executionMode === 'distributed' ? '实验室三机' : '本机单机'}</b></div>{executionMode === 'distributed' && <><div><span>数据与模型</span><b>{groupLabels[distributedGroup] || distributedGroup}</b></div><div><span>数据输入</span><b>完整特征缓存（禁止临时提取）</b></div></>}<div><span>实验类型</span><b>{modeCards.find((item) => item.key === mode)?.title}</b></div><div><span>运行方案</span><b>{allMethodOptions.find((item) => item.value === method)?.label}</b></div><div><span>客户端参与</span><b>{participationRate}%</b></div><div><span>训练轮次</span><b>{rounds}</b></div><div><span>保护/防御</span><b>{mode === 'privacy' ? (privacyDefense ? '启用' : '关闭') : mode === 'backdoor' ? (backdoorDefense ? '启用' : '关闭') : '不适用'}</b></div></div>{scenarioId ? <div className="validation-pass"><CheckCircleFilled />场景快照已绑定</div> : <Alert type="warning" showIcon message="请先设置基础异构环境" action={<Button size="small" onClick={() => navigate('/scenario-analysis')}>前往设置</Button>} />}{preflightResult && <div className="preflight-checks">{preflightResult.checks.map((check) => <div key={check.name} className={check.ready ? 'ready' : 'failed'}><i>{check.ready ? '✓' : '!'}</i><span>{check.message}</span></div>)}</div>}<Space direction="vertical" className="experiment-actions" style={{ width: '100%' }}><Button block icon={<DownloadOutlined />} onClick={() => exportExperimentConfig(config)}>导出当前配置</Button><Button block loading={preflighting} disabled={!scenarioId || Boolean(capabilityError)} onClick={runPreflight}>运行预检</Button><Button type="primary" size="large" block icon={<RocketOutlined />} loading={submitting} disabled={!scenarioId || Boolean(capabilityError) || !selectedRunnerReady} onClick={startExperiment}>创建并启动实验</Button></Space></Panel></aside>
     </div>
   </div>;
 }

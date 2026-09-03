@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import yaml
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, List, Sequence
@@ -31,6 +32,38 @@ SCRIPT_RELATIVE = PurePosixPath(
     'scripts/distributed_scripts/ggeur_hierarchical_3machine')
 SOURCE_RELATIVE = PurePosixPath('scripts/example_configs/ggeur_final_5models')
 METHOD_TO_SOURCE = {'heterogeneous_solution': 'ggeur'}
+QUICK_CACHE_GROUPS = frozenset({
+    'digit3_cnn', 'digit3_vit',
+    'officehome_cnn', 'officehome_mixer', 'officehome_vit',
+})
+
+
+def _cached_quick_validation(group_dir: Path,
+                             client_count: int) -> Dict[str, Any]:
+    """Build a one-round cache-only preset from the validated FedAvg case."""
+    source = yaml.safe_load(
+        (group_dir / 'fedavg.yaml').read_text(encoding='utf-8')) or {}
+    federate = source.get('federate') or {}
+    train = source.get('train') or {}
+    optimizer = train.get('optimizer') or {}
+    dataloader = source.get('dataloader') or {}
+    sampled = int(federate.get('sample_client_num', 0) or 0)
+    participation = (1.0 if sampled <= 0 else
+                     min(1.0, sampled / float(client_count)))
+    return {
+        'method': 'fedavg',
+        'rounds': 1,
+        'localEpochs': int(train.get('local_update_steps', 1)),
+        'participationRate': participation,
+        'batchSize': int(dataloader.get('batch_size', 32)),
+        'learningRate': float(optimizer.get('lr', 0.001)),
+        'evaluationFrequency': 1,
+        'clientsPerSubserver': 30,
+        'windowsClientCount': client_count,
+        'statisticsUploadStaggerSeconds': 0.0,
+        'diagonalCovariance': False,
+        'cacheOnly': True,
+    }
 
 
 @dataclass(frozen=True)
@@ -140,6 +173,7 @@ def distributed_catalog(repo_root: Path) -> List[Dict[str, Any]]:
     for group_dir in sorted(path for path in source_root.iterdir()
                             if path.is_dir()):
         dataset, model = group_dir.name.split('_', 1)
+        client_count = 120 if dataset == 'mdsent' else 60
         methods = []
         for config_path in sorted(group_dir.glob('*.yaml')):
             method = ('heterogeneous_solution'
@@ -150,7 +184,11 @@ def distributed_catalog(repo_root: Path) -> List[Dict[str, Any]]:
             'dataset': dataset,
             'model': model,
             'methods': methods,
-            'clientCount': 120 if dataset == 'mdsent' else 60,
+            'clientCount': client_count,
+            'cachePolicy': 'complete-feature-cache-required',
+            'quickStart': group_dir.name in QUICK_CACHE_GROUPS,
+            'quickValidation': _cached_quick_validation(
+                group_dir, client_count),
         })
     return cases
 
@@ -313,7 +351,12 @@ class DistributedProcessRunner:
                 "if(-not(Test-Path -LiteralPath $repo)){$missing+='repo'};"
                 "if(-not(Test-Path -LiteralPath $python)){$missing+='python'};"
                 f"foreach($path in @({checks})){{"
-                "if(-not(Test-Path -LiteralPath $path)){$missing+=$path}};"
+                "if(-not(Test-Path -LiteralPath $path)){$missing+=$path}"
+                "elseif($path.EndsWith('.ggeur_feature_cache_ready.json')){"
+                "try{$state=Get-Content -LiteralPath $path -Raw|"
+                "ConvertFrom-Json;if(-not $state.require_complete_feature_cache)"
+                "{$missing+=($path+'[not-complete]')}}"
+                "catch{$missing+=($path+'[invalid-marker]')}}};"
                 "if($missing.Count -eq 0){"
                 "& $python -c \"import torch;print(torch.__version__)\";"
                 "if($LASTEXITCODE -ne 0){throw 'python cannot import torch'};"
