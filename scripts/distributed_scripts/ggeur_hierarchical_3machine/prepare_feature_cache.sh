@@ -10,6 +10,8 @@ SOURCE_CONFIG="${REPO_DIR}/scripts/example_configs/ggeur_final_5models/${GROUP}/
 FEATURE_CACHE_ROOT="${FEATURE_CACHE_ROOT:-${REPO_DIR}/exp/distributed_feature_cache}"
 OFFICEHOME_MANIFEST_ROOT="${OFFICEHOME_MANIFEST_ROOT:-${REPO_DIR}/exp/distributed_manifests/officehome_60c_lds01_seed42}"
 DOMAINNET_MANIFEST_PATH="${DOMAINNET_MANIFEST_PATH:-${REPO_DIR}/exp/distributed_manifests/domainnet_4domains/domainnet_manifest.json}"
+DIGIT3_ROOT="${DIGIT3_ROOT:-${REPO_DIR}/data/digit_three_domain}"
+DIGIT3_MANIFEST_ROOT="${DIGIT3_MANIFEST_ROOT:-${DIGIT3_ROOT}/manifests}"
 CACHE_DIR="${FEATURE_CACHE_ROOT%/}/${GROUP}"
 LOG_DIR="${REPO_DIR}/exp/cache_warmup/${GROUP}"
 LOG_PATH="${LOG_DIR}/prepare_feature_cache.log"
@@ -53,6 +55,14 @@ case "${GROUP}" in
     args+=(
       data.root /root/autodl-tmp/datasets/DomainNet
       ggeur.domainnet_manifest_path "${DOMAINNET_MANIFEST_PATH}"
+    )
+    ;;
+  digit3_*)
+    test -d "${DIGIT3_MANIFEST_ROOT}"
+    args+=(
+      data.root "${DIGIT3_ROOT}"
+      ggeur.digit3_manifest_base "${DIGIT3_MANIFEST_ROOT}"
+      ggeur.digit3_manifest_use_config_root True
     )
     ;;
   mdsent_*) args+=(data.root /root/autodl-tmp/datasets/sentiment) ;;

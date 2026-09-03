@@ -156,6 +156,37 @@ class DistributedRunnerCommandTest(unittest.TestCase):
             self.assertFalse(
                 (run_root.parent / f'.{run_id}.sync.zip').exists())
 
+    def test_cached_windows_clients_do_not_require_raw_data_or_backbone(self):
+        runner = DistributedProcessRunner(
+            REPO_ROOT, topology=load_lab_topology(), probe_remote=False)
+        resources = runner._resource_paths(
+            'domainnet_mixer', validate_experiment(distributed_payload(
+                'domainnet_mixer', 'fedavg')))
+
+        client_paths = resources['client']
+        self.assertTrue(any('domainnet_mixer' in path
+                            for path in client_paths))
+        self.assertTrue(any('domainnet_manifest.json' in path
+                            for path in client_paths))
+        self.assertFalse(any(path.endswith('/data/DomainNet')
+                             for path in client_paths))
+        self.assertFalse(any(path.endswith('mixer_b16_224_complete.pth')
+                             for path in client_paths))
+
+    def test_digit3_preflight_keeps_portable_manifest_contract(self):
+        runner = DistributedProcessRunner(
+            REPO_ROOT, topology=load_lab_topology(), probe_remote=False)
+        resources = runner._resource_paths(
+            'digit3_cnn', validate_experiment(distributed_payload(
+                'digit3_cnn', 'fedavg')))
+
+        self.assertTrue(any(path.endswith(
+            'data/digit_three_domain/manifests')
+            for path in resources['client']))
+        self.assertTrue(any(path.endswith(
+            'data/digit_three_domain/dataset_manifest.json')
+            for path in resources['root']))
+
 
 if __name__ == '__main__':
     unittest.main()

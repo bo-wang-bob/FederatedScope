@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet(
+        "digit3_vit", "digit3_cnn",
         "officehome_vit", "officehome_cnn", "officehome_mixer",
         "domainnet_vit", "domainnet_cnn", "domainnet_mixer",
         "mdsent_rnn", "mdsent_lstm"
@@ -14,6 +15,8 @@ param(
     [string]$DomainNetRoot = "D:/Projects/FederatedScope/data/DomainNet",
     [string]$DomainNetManifestPath = "D:/Projects/FederatedScope/exp/distributed_manifests/domainnet_4domains/domainnet_manifest.json",
     [string]$MDSentRoot = "D:/Projects/FederatedScope/data/sentiment",
+    [string]$Digit3Root = "D:/Projects/FederatedScope/data/digit_three_domain",
+    [string]$Digit3ManifestRoot = "D:/Projects/FederatedScope/data/digit_three_domain/manifests",
     [string]$ClipModelPath = "D:/Projects/FederatedScope/pretrained_models/ViT-B-16.pt",
     [string]$MixerCheckpointPath = "D:/Projects/FederatedScope/pretrained_models/mixer_b16_224_complete.pth",
     [string]$BertModelPath = "D:/Projects/FederatedScope/pretrained_models/nlptown_bert_base_multilingual_uncased_senti"
@@ -81,6 +84,15 @@ if ($Group.StartsWith("officehome_")) {
     $Arguments += @(
         "data.root", $DomainNetRoot,
         "ggeur.domainnet_manifest_path", $DomainNetManifestPath
+    )
+} elseif ($Group.StartsWith("digit3_")) {
+    if (-not (Test-Path -LiteralPath $Digit3ManifestRoot)) {
+        throw "Digit3 manifest root does not exist: $Digit3ManifestRoot"
+    }
+    $Arguments += @(
+        "data.root", $Digit3Root,
+        "ggeur.digit3_manifest_base", $Digit3ManifestRoot,
+        "ggeur.digit3_manifest_use_config_root", "True"
     )
 } else {
     $Arguments += @("data.root", $MDSentRoot)

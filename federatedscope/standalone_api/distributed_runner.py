@@ -257,15 +257,16 @@ class DistributedProcessRunner:
             ],
         }
         if windows_clients:
-            result['client'].extend([
-                f'{client_base}/{data_rel}',
+            # Formal Windows clients are head-only workers.  Their launcher
+            # accepts only a cache that was validated on that host with
+            # require_complete_feature_cache=true, so neither raw images nor
+            # a frozen backbone are runtime dependencies.  The portable
+            # manifests below are still required to reconstruct sample IDs.
+            result['client'].append(
                 f'{client_base}/exp/distributed_feature_cache/{group}/'
-                '.ggeur_feature_cache_ready.json',
-            ])
+                '.ggeur_feature_cache_ready.json')
         if root_clients:
             result['root'].append(f'{root_base}/{data_rel}')
-        if model_rel and windows_clients:
-            result['client'].append(f'{client_base}/{model_rel}')
         if model_rel and root_clients:
             root_model = {
                 'vit': '/root/.cache/clip/ViT-B-16.pt',
@@ -286,8 +287,18 @@ class DistributedProcessRunner:
                         'domainnet_manifest.json')
             if windows_clients:
                 result['client'].append(f'{client_base}/{manifest}')
+            # The root evaluator also uses the portable manifest when no raw
+            # DomainNet tree is deployed beside the isolated worktree.
+            result['root'].append(f'{root_base}/{manifest}')
+        if family == 'digit3':
+            manifest_root = 'data/digit_three_domain/manifests'
+            global_manifest = 'data/digit_three_domain/dataset_manifest.json'
+            if windows_clients:
+                result['client'].append(
+                    f'{client_base}/{manifest_root}')
             if root_clients:
-                result['root'].append(f'{root_base}/{manifest}')
+                result['root'].append(f'{root_base}/{manifest_root}')
+            result['root'].append(f'{root_base}/{global_manifest}')
         return result
 
     def _probe_node(self, node: DistributedNode,
