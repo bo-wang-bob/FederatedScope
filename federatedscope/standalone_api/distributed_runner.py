@@ -175,6 +175,7 @@ class DistributedProcessRunner:
     def _powershell_encoded(script: str) -> str:
         prefix = (
             "$ErrorActionPreference='Stop';"
+            "$ProgressPreference='SilentlyContinue';"
             "[Console]::OutputEncoding=[Text.UTF8Encoding]::new();")
         return base64.b64encode(
             (prefix + script).encode('utf-16-le')).decode('ascii')
@@ -511,40 +512,72 @@ class DistributedProcessRunner:
 
     def _sync_run(self, run_root: Path, run_id: str,
                   emit: EventCallback) -> None:
-        for node in self.topology.nodes:
-            remote_runs = (
-                f"{node.repo.rstrip('/')}/{SCRIPT_RELATIVE}/runs")
-            if node.local:
-                destination = Path(remote_runs) / run_id
-                if destination.exists():
-                    raise RuntimeError(
-                        f'运行目录已存在，拒绝覆盖：{destination}')
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(run_root, destination)
+        archive_path: Path | None = None
+        try:
+            for node in self.topology.nodes:
+                remote_runs = (
+                    f"{node.repo.rstrip('/')}/{SCRIPT_RELATIVE}/runs")
+                if node.local:
+                    destination = Path(remote_runs) / run_id
+                    if destination.exists():
+                        raise RuntimeError(
+                            f'运行目录已存在，拒绝覆盖：{destination}')
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(run_root, destination)
+                    emit('topology.status.changed', {
+                        'node': node.key, 'label': node.label,
+                        'status': '配置已同步', 'ready': True,
+                    })
+                    continue
+                if node.is_windows:
+                    self._remote(
+                        node,
+                        f"New-Item -ItemType Directory -Force -Path "
+                        f"'{remote_runs}' | Out-Null;"
+                        f"if(Test-Path -LiteralPath "
+                        f"'{remote_runs}/{run_id}')"
+                        "{throw 'run directory already exists'}")
+                    if archive_path is None:
+                        archive_base = run_root.parent / \
+                            f'.{run_id}.sync'
+                        archive_path = Path(shutil.make_archive(
+                            str(archive_base), 'zip',
+                            root_dir=run_root.parent,
+                            base_dir=run_root.name))
+                    # OpenSSH scp does not reliably accept a Windows drive
+                    # path as its remote destination.  Upload to the SSH
+                    # user's home and let PowerShell move the extracted run
+                    # into the isolated worktree.
+                    remote_archive = f'.federatedscope-{run_id}.zip'
+                    command = [
+                        *self._scp_base(node), str(archive_path),
+                        f'{node.target}:{remote_archive}',
+                    ]
+                    self._run_command(command, timeout=600)
+                    self._remote(
+                        node,
+                        f"$archive=Join-Path $HOME '{remote_archive}';"
+                        f"Expand-Archive -LiteralPath $archive "
+                        f"-DestinationPath '{remote_runs}';"
+                        "Remove-Item -LiteralPath $archive -Force",
+                        timeout=600)
+                else:
+                    self._remote(
+                        node,
+                        f"mkdir -p {shlex.quote(remote_runs)}; "
+                        f"test ! -e "
+                        f"{shlex.quote(remote_runs + '/' + run_id)}")
+                    target = f'{node.target}:{remote_runs}/'
+                    command = [
+                        *self._scp_base(node), '-r', str(run_root), target]
+                    self._run_command(command, timeout=600)
                 emit('topology.status.changed', {
                     'node': node.key, 'label': node.label,
                     'status': '配置已同步', 'ready': True,
                 })
-                continue
-            if node.is_windows:
-                self._remote(
-                    node,
-                    f"New-Item -ItemType Directory -Force -Path "
-                    f"'{remote_runs}' | Out-Null;"
-                    f"if(Test-Path -LiteralPath '{remote_runs}/{run_id}')"
-                    "{throw 'run directory already exists'}")
-            else:
-                self._remote(
-                    node,
-                    f"mkdir -p {shlex.quote(remote_runs)}; "
-                    f"test ! -e {shlex.quote(remote_runs + '/' + run_id)}")
-            target = f'{node.target}:{remote_runs}/'
-            command = [*self._scp_base(node), '-r', str(run_root), target]
-            self._run_command(command, timeout=600)
-            emit('topology.status.changed', {
-                'node': node.key, 'label': node.label,
-                'status': '配置已同步', 'ready': True,
-            })
+        finally:
+            if archive_path is not None:
+                archive_path.unlink(missing_ok=True)
 
     @staticmethod
     def _windows_path(value: str) -> str:

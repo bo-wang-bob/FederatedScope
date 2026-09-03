@@ -1,8 +1,11 @@
 import unittest
+import subprocess
+import tempfile
 from pathlib import Path
 
 from federatedscope.standalone_api.distributed_runner import (
-    DistributedProcessRunner, distributed_catalog, load_lab_topology)
+    DistributedNode, DistributedProcessRunner, LabTopology,
+    SCRIPT_RELATIVE, distributed_catalog, load_lab_topology)
 from federatedscope.standalone_api.schemas import (
     ValidationError, validate_experiment)
 
@@ -103,6 +106,55 @@ class DistributedRunnerCommandTest(unittest.TestCase):
         self.assertTrue(result['ready'])
         self.assertEqual(result['executionMode'], 'distributed')
         self.assertEqual(len(result['topology']), 3)
+
+    def test_windows_run_sync_stages_archive_in_ssh_home(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            run_id = 'EXP-SYNC-TEST'
+            run_root = base / 'control' / run_id
+            run_root.mkdir(parents=True)
+            (run_root / 'matrix_manifest.json').write_text(
+                '{}', encoding='utf-8')
+            root_repo = base / 'root-repo'
+            topology = LabTopology(
+                topology_id='test',
+                client=DistributedNode(
+                    key='client', label='client', target='client@test',
+                    operating_system='windows', repo='D:/isolated',
+                    python='D:/python.exe'),
+                subserver=DistributedNode(
+                    key='subserver', label='subserver', target='third@test',
+                    operating_system='windows', repo='C:/isolated',
+                    python='C:/python.exe'),
+                root=DistributedNode(
+                    key='root', label='root', target='root@test',
+                    operating_system='linux', repo=str(root_repo),
+                    python='/python', local=True),
+                client_resource_repo='D:/resources',
+                subserver_resource_repo='C:/resources',
+                root_resource_repo='/resources')
+            runner = DistributedProcessRunner(
+                REPO_ROOT, topology=topology, probe_remote=False)
+            remote_scripts = []
+            commands = []
+            runner._remote = lambda node, script, **kwargs: (
+                remote_scripts.append((node.key, script)) or '')
+            runner._run_command = lambda command, **kwargs: (
+                commands.append(command) or subprocess.CompletedProcess(
+                    command, 0, ''))
+
+            runner._sync_run(run_root, run_id, lambda *_: None)
+
+            scp_targets = [command[-1] for command in commands]
+            self.assertEqual(scp_targets, [
+                'client@test:.federatedscope-EXP-SYNC-TEST.zip',
+                'third@test:.federatedscope-EXP-SYNC-TEST.zip'])
+            self.assertTrue(all('Expand-Archive' in script
+                                for _, script in remote_scripts[1::2]))
+            self.assertTrue((root_repo / str(SCRIPT_RELATIVE) / 'runs' /
+                             run_id / 'matrix_manifest.json').is_file())
+            self.assertFalse(
+                (run_root.parent / f'.{run_id}.sync.zip').exists())
 
 
 if __name__ == '__main__':

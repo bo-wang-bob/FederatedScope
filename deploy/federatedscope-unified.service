@@ -1,0 +1,22 @@
+[Unit]
+Description=FederatedScope unified experiment web and API service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/autodl-tmp/FederatedScope-worktrees/unified-security-standalone
+Environment=PYTHONPATH=/root/autodl-tmp/FederatedScope-worktrees/unified-security-standalone
+Environment=PYTHONUNBUFFERED=1
+Environment=FEDERATEDSCOPE_API_STATE_DIR=/root/autodl-tmp/FederatedScope-worktrees/unified-security-standalone/exp/unified_api/state
+Environment=FEDERATEDSCOPE_FRONTEND_DIST=/root/autodl-tmp/FederatedScope-worktrees/unified-security-standalone/frontend/dist
+Environment=FEDERATEDSCOPE_ROOT_LOCAL=1
+ExecStart=/root/.local/share/mamba/envs/GGEUR/bin/python -m federatedscope.standalone_api.app --host 0.0.0.0 --port 8000 --state-dir /root/autodl-tmp/FederatedScope-worktrees/unified-security-standalone/exp/unified_api/state
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
