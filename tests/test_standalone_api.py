@@ -130,6 +130,14 @@ class DefenseRunner(FakeRunner):
         return 0
 
 
+class RegressiveRoundRunner(FakeRunner):
+    def run(self, config, output_dir, stop_event, emit, on_metric):
+        emit('round.started', {'phaseIndex': 2, 'round': 1})
+        on_metric({'round': 1, 'accuracy': 0.5})
+        emit('round.started', {'phaseIndex': 2, 'round': 0})
+        return 0
+
+
 class StandaloneApiSchemaTest(unittest.TestCase):
     def test_structured_training_event_round_trip(self):
         output = io.StringIO()
@@ -410,6 +418,20 @@ class StandaloneTaskManagerTest(unittest.TestCase):
                 break
             time.sleep(0.01)
         self.assertEqual(current['status'], 'stopped')
+
+    def test_terminal_log_round_cannot_regress_public_progress(self):
+        manager = ExperimentTaskManager(
+            self.repository, RegressiveRoundRunner(),
+            Path(self.temporary.name) / 'runs')
+        record = manager.create(validate_experiment(experiment_payload()),
+                                self.scenario)
+        for _ in range(100):
+            current = manager.get(record['experimentId'])
+            if current['status'] == 'completed':
+                break
+            time.sleep(0.01)
+        self.assertEqual(current['round'], 1)
+        self.assertEqual(manager.snapshot(record['experimentId'])['round'], 1)
 
     def test_defense_event_persists_truth_based_detection_metrics(self):
         manager = ExperimentTaskManager(

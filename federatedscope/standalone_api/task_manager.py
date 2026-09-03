@@ -286,7 +286,11 @@ class ExperimentTaskManager:
             if 'phaseIndex' in payload:
                 record['phaseIndex'] = int(payload['phaseIndex'])
             if 'round' in payload:
-                record['round'] = int(payload['round'])
+                # Terminal monitoring summaries can contain unrelated fields
+                # such as global_convergence_round=0 after the final training
+                # round.  A task's public progress must never move backwards.
+                record['round'] = max(
+                    int(record.get('round', 0)), int(payload['round']))
             if event_type == 'client.status.changed' and payload.get('clientId'):
                 previous = record['clients'].get(payload['clientId'], {})
                 record['clients'][payload['clientId']] = {
@@ -407,6 +411,11 @@ class ExperimentTaskManager:
     def _public_record(record: Dict[str, Any]) -> Dict[str, Any]:
         result = copy.deepcopy(record)
         result.pop('events', None)
+        metric_rounds = [
+            int(metric['round']) for metric in result.get('metrics', [])
+            if isinstance(metric.get('round'), int)]
+        result['round'] = max(
+            [int(result.get('round', 0)), *metric_rounds])
         return result
 
     def get(self, experiment_id: str) -> Dict[str, Any]:
@@ -421,11 +430,16 @@ class ExperimentTaskManager:
     def snapshot(self, experiment_id: str) -> Dict[str, Any]:
         with self._lock:
             record = self._get_record(experiment_id)
+            metric_rounds = [
+                int(metric['round']) for metric in record.get('metrics', [])
+                if isinstance(metric.get('round'), int)]
+            effective_round = max(
+                [int(record.get('round', 0)), *metric_rounds])
             return {
                 'experimentId': experiment_id,
                 'sequence': record['sequence'],
                 'phaseIndex': record['phaseIndex'],
-                'round': record['round'],
+                'round': effective_round,
                 'totalRounds': record['totalRounds'],
                 'status': record['status'],
                 'clients': record['clients'],
