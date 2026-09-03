@@ -1,6 +1,13 @@
 import logging
+import os
 
-from scipy.sparse.csc import csc_matrix
+if os.environ.get('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT') == '1':
+    class csc_matrix:  # pragma: no cover - sentinel for isinstance only
+        """Lightweight sentinel; GGEUR feature data never uses SciPy CSC."""
+
+        pass
+else:
+    from scipy.sparse.csc import csc_matrix
 
 from federatedscope.core.data.utils import merge_data
 from federatedscope.core.auxiliaries.dataloader_builder import get_dataloader

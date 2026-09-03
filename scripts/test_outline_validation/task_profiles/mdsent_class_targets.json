@@ -1,0 +1,9 @@
+{
+  "default_target_size": 50,
+  "class_counts": {
+    "0": 50,
+    "1": 50,
+    "2": 50,
+    "3": 50
+  }
+}

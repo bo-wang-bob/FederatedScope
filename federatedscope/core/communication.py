@@ -1,6 +1,7 @@
 import grpc
 from concurrent import futures
 import logging
+import time
 import torch.distributed as dist
 
 from collections import deque
@@ -119,6 +120,22 @@ class gRPCCommManager(object):
             ("grpc.max_receive_message_length",
              cfg.grpc_max_receive_message_length),
             ("grpc.enable_http_proxy", cfg.grpc_enable_http_proxy),
+            # A CNN covariance upload can exceed 10 minutes when 30 remote
+            # clients concurrently send ~300 MB each.  Do not issue a
+            # keepalive ping during such an active, back-pressured RPC: gRPC
+            # may otherwise report GOAWAY/ping_timeout even though payload
+            # bytes are still making progress.  The distributed-stage
+            # timeout remains the authoritative liveness bound.
+            ("grpc.keepalive_time_ms", 86400000),
+            ("grpc.keepalive_timeout_ms", 3600000),
+            ("grpc.http2.max_pings_without_data", 0),
+            ("grpc.keepalive_permit_without_calls", 1),
+            # gRPC's HTTP/2 bandwidth-delay-product probe uses PING frames
+            # independently of keepalive.  With many concurrent, compressed
+            # 200-300 MB unary uploads the peer can fail to ACK that probe in
+            # time and the C-core closes an otherwise progressing RPC with
+            # GOAWAY/ping_timeout.  Disable the probe for these bounded RPCs.
+            ("grpc.http2.bdp_probe", 0),
         ]
 
         if cfg.grpc_compression.lower() == 'deflate':
@@ -147,7 +164,11 @@ class gRPCCommManager(object):
             options=options)
         gRPC_comm_manager_pb2_grpc.add_gRPCComServeFuncServicer_to_server(
             self.server_funcs, server)
-        server.add_insecure_port("{}:{}".format(host, port))
+        bound_port = server.add_insecure_port("{}:{}".format(host, port))
+        if bound_port == 0:
+            raise OSError(
+                "gRPC could not bind to {}:{}; the address may already be "
+                "in use or unavailable".format(host, port))
         server.start()
 
         return server
@@ -181,35 +202,71 @@ class gRPCCommManager(object):
             This part is referred to
             https://grpc.io/docs/languages/python/basics/#creating-a-stub
             """
-            channel = grpc.insecure_channel(receiver_address,
-                                            compression=self.comp_method,
-                                            options=(('grpc.enable_http_proxy',
-                                                      0), ))
+            channel = grpc.insecure_channel(
+                receiver_address,
+                compression=self.comp_method,
+                options=(('grpc.enable_http_proxy', 0),
+                         ('grpc.keepalive_time_ms', 86400000),
+                         ('grpc.keepalive_timeout_ms', 3600000),
+                         ('grpc.http2.max_pings_without_data', 0),
+                         ('grpc.keepalive_permit_without_calls', 1),
+                         ('grpc.http2.bdp_probe', 0)))
             stub = gRPC_comm_manager_pb2_grpc.gRPCComServeFuncStub(channel)
             return stub, channel
 
-        stub, channel = _create_stub(receiver_address)
         request = message.transform(to_list=True)
-        try:
-            stub.sendMessage(request)
-        except grpc._channel._InactiveRpcError as error:
-            logger.warning(error)
-            pass
-        channel.close()
+        max_attempts = 4
+        for attempt in range(1, max_attempts + 1):
+            stub, channel = _create_stub(receiver_address)
+            try:
+                stub.sendMessage(request)
+                return
+            except grpc.RpcError as error:
+                code = error.code()
+                transient = code in {
+                    grpc.StatusCode.UNAVAILABLE,
+                    grpc.StatusCode.DEADLINE_EXCEEDED,
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                }
+                if not transient or attempt >= max_attempts:
+                    logger.error(
+                        "gRPC send to %s failed after %s attempt(s): %s",
+                        receiver_address, attempt, error)
+                    raise
+                backoff = 2 ** attempt
+                logger.warning(
+                    "Transient gRPC send failure to %s (%s/%s, code=%s); "
+                    "retrying in %ss",
+                    receiver_address, attempt, max_attempts, code, backoff)
+                time.sleep(backoff)
+            finally:
+                channel.close()
 
     def send(self, message):
         receiver = message.receiver
         if receiver is not None:
             if not isinstance(receiver, list):
                 receiver = [receiver]
+            sent_addresses = set()
             for each_receiver in receiver:
                 if each_receiver in self.neighbors:
                     receiver_address = self.neighbors[each_receiver]
+                    # A hierarchical proxy can represent multiple logical
+                    # workers at one network endpoint. Keep the full receiver
+                    # list for proxy-side fan-out, but transmit the identical
+                    # message only once per endpoint.
+                    if receiver_address in sent_addresses:
+                        continue
                     self._send(receiver_address, message)
+                    sent_addresses.add(receiver_address)
         else:
+            sent_addresses = set()
             for each_receiver in self.neighbors:
                 receiver_address = self.neighbors[each_receiver]
+                if receiver_address in sent_addresses:
+                    continue
                 self._send(receiver_address, message)
+                sent_addresses.add(receiver_address)
 
     def receive(self, timeout=None):
         received_msg = self.server_funcs.receive(timeout=timeout)

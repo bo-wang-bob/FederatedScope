@@ -31,7 +31,9 @@ def main():
     init_cfg.merge_from_list(cfg_opt)
 
     update_logger(init_cfg, clear_before_add=True)
-    setup_seed(init_cfg.seed)
+    runtime_seed = int(getattr(
+        init_cfg.ggeur, 'runtime_seed', -1))
+    setup_seed(init_cfg.seed if runtime_seed < 0 else runtime_seed)
 
     # load clients' cfg file
     if args.client_cfg_file:

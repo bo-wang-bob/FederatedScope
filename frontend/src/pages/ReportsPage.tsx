@@ -10,7 +10,7 @@ import { useAppStore } from '../store/useAppStore';
 import type { ExperimentConfig, ExperimentRecord, ScenarioRecord } from '../types';
 
 const typeLabels = { heterogeneity: '异构协同', privacy: '隐私保护', backdoor: '后门攻防' };
-const methodLabels = { fedavg: 'FedAvg', fedprox: 'FedProx', heterogeneous_solution: '异构解决方案' };
+const methodLabels = { fedavg: 'FedAvg', fedprox: 'FedProx', fedproto: 'FedProto', fedopt: 'FedOpt', moon: 'MOON', heterogeneous_solution: '异构解决方案' };
 const statusLabels: Record<string, string> = { queued: '排队中', running: '运行中', stopping: '停止中', stopped: '已停止', completed: '已完成', failed: '失败' };
 const statusColors: Record<string, string> = { queued: 'default', running: 'processing', stopping: 'warning', stopped: 'default', completed: 'success', failed: 'error' };
 

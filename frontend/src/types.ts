@@ -1,6 +1,13 @@
 export type DomainKey = 'Art' | 'Clipart' | 'Product' | 'Real_World';
 export type ExperimentMode = 'heterogeneity' | 'privacy' | 'backdoor';
-export type ExperimentMethod = 'fedavg' | 'fedprox' | 'heterogeneous_solution';
+export type ExperimentMethod =
+  | 'fedavg'
+  | 'fedprox'
+  | 'fedproto'
+  | 'fedopt'
+  | 'moon'
+  | 'heterogeneous_solution';
+export type ExecutionMode = 'standalone' | 'distributed';
 export type DataSourceKind = 'backend' | 'frontend_simulation';
 export type ExperimentStatus =
   | 'created'
@@ -157,6 +164,17 @@ interface ExperimentConfigBase {
   name: string;
   scenarioId: string;
   common: ExperimentCommonConfig;
+  execution?: {
+    mode: ExecutionMode;
+    topologyId?: 'lab-three-machine';
+    group?: string;
+    evaluationFrequency?: number;
+    clientsPerSubserver?: number;
+    windowsClientCount?: number;
+    rootDevice?: number;
+    statisticsUploadStaggerSeconds?: number;
+    diagonalCovariance?: boolean;
+  };
 }
 
 export type ExperimentConfig =
@@ -201,6 +219,9 @@ export interface ExperimentRecord {
   name: string;
   type: ExperimentMode;
   method: ExperimentMethod;
+  executionMode?: ExecutionMode;
+  topologyId?: string;
+  group?: string;
   scenarioId: string;
   scenarioSummary: {
     dataset: string;
@@ -240,6 +261,24 @@ export interface Capabilities {
     modelReady: boolean;
     templatesReady: boolean;
   };
+  executionModes?: ExecutionMode[];
+  distributed?: {
+    ready: boolean;
+    remoteReadinessCheckedByPreflight: boolean;
+    topologyId: 'lab-three-machine';
+    nodes: Array<{
+      key: 'client' | 'subserver' | 'root';
+      label: string;
+      operatingSystem: 'windows' | 'linux';
+    }>;
+    cases: Array<{
+      group: string;
+      dataset: string;
+      model: string;
+      methods: ExperimentMethod[];
+      clientCount: number;
+    }>;
+  };
   metrics: Record<string, {
     label: string;
     unit: 'ratio' | 'number' | 'dB';
@@ -266,6 +305,14 @@ export interface PreflightResult {
   dataRoot: string;
   modelPath: string;
   partitionManifest: string;
+  executionMode?: ExecutionMode;
+  topologyId?: string;
+  topology?: Array<{
+    node: string;
+    label: string;
+    ready: boolean | null;
+    message: string;
+  }>;
 }
 
 export type TrainingEventType =
@@ -281,6 +328,7 @@ export type TrainingEventType =
   | 'metric.updated'
   | 'warning.raised'
   | 'log.received'
+  | 'topology.status.changed'
   | 'experiment.completed'
   | 'experiment.failed';
 
@@ -317,6 +365,13 @@ export interface TrainingSnapshot {
   round: number;
   status: ExperimentStatus | 'disconnected';
   clients: Record<string, ClientTrainingState>;
+  topology?: Record<string, {
+    node: string;
+    label: string;
+    status: string;
+    ready: boolean;
+    source: DataSourceKind;
+  }>;
   totalRounds?: number;
   metrics?: ExperimentMetricPoint[];
   recentEvents?: TrainingEvent[];

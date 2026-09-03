@@ -11,7 +11,24 @@ from typing import Any, Dict, List
 
 DOMAIN_KEYS = ['Art', 'Clipart', 'Product', 'Real_World']
 EXPERIMENT_TYPES = {'heterogeneity', 'privacy', 'backdoor'}
-METHODS = {'fedavg', 'fedprox', 'heterogeneous_solution'}
+STANDALONE_METHODS = {'fedavg', 'fedprox', 'heterogeneous_solution'}
+DISTRIBUTED_METHODS = {
+    'fedavg', 'fedprox', 'fedproto', 'fedopt', 'moon',
+    'heterogeneous_solution',
+}
+METHODS = STANDALONE_METHODS | DISTRIBUTED_METHODS
+DISTRIBUTED_GROUP_METHODS = {
+    'digit3_cnn': {'fedavg', 'fedprox', 'heterogeneous_solution'},
+    'digit3_vit': {'fedavg', 'fedprox', 'heterogeneous_solution'},
+    'domainnet_cnn': DISTRIBUTED_METHODS,
+    'domainnet_mixer': DISTRIBUTED_METHODS,
+    'domainnet_vit': DISTRIBUTED_METHODS,
+    'mdsent_lstm': DISTRIBUTED_METHODS - {'moon'},
+    'mdsent_rnn': DISTRIBUTED_METHODS - {'moon'},
+    'officehome_cnn': DISTRIBUTED_METHODS,
+    'officehome_mixer': DISTRIBUTED_METHODS,
+    'officehome_vit': DISTRIBUTED_METHODS,
+}
 PRIVACY_ATTACKS = {'membership', 'property', 'reconstruction'}
 BACKDOOR_ATTACKS = {'trigger_injection', 'label_poisoning',
                     'model_update_poisoning'}
@@ -100,13 +117,40 @@ def validate_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not re.fullmatch(r'SCN-[A-Z0-9-]{4,64}', scenario_id):
         errors['scenarioId'] = '必须先应用一个场景快照'
 
+    execution = normalized.get('execution') or {'mode': 'standalone'}
+    if not isinstance(execution, dict):
+        errors['execution'] = '执行配置必须是对象'
+        execution = {'mode': 'standalone'}
+    execution_mode = execution.get('mode', 'standalone')
+    if execution_mode not in {'standalone', 'distributed'}:
+        errors['execution.mode'] = '必须选择单机或三机分布式执行'
+        execution_mode = 'standalone'
+    execution['mode'] = execution_mode
+    if execution_mode == 'distributed':
+        if experiment_type != 'heterogeneity':
+            errors['type'] = '三机分布式阶段当前仅开放准确率实验'
+        if execution.get('topologyId', 'lab-three-machine') != \
+                'lab-three-machine':
+            errors['execution.topologyId'] = '不支持该分布式拓扑'
+        execution['topologyId'] = 'lab-three-machine'
+        group = str(execution.get('group', '')).strip().lower()
+        if group not in DISTRIBUTED_GROUP_METHODS:
+            errors['execution.group'] = '必须选择已验证的数据集/模型组合'
+        execution['group'] = group
+
     common = normalized.get('common')
     if not isinstance(common, dict):
         errors['common'] = '公共参数不能为空'
         common = {}
     method = common.get('method')
-    if method not in METHODS:
+    allowed_methods = (DISTRIBUTED_METHODS if execution_mode == 'distributed'
+                       else STANDALONE_METHODS)
+    if method not in allowed_methods:
         errors['common.method'] = '不支持该运行方案'
+    if execution_mode == 'distributed' and \
+            execution.get('group') in DISTRIBUTED_GROUP_METHODS and \
+            method not in DISTRIBUTED_GROUP_METHODS[execution['group']]:
+        errors['common.method'] = '该数据集/模型组合不支持此方案'
 
     try:
         common['rounds'] = _integer(common.get('rounds', 30),
@@ -134,6 +178,30 @@ def validate_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
             errors.update(error.field_errors)
     else:
         common.pop('fedproxMu', None)
+
+    if execution_mode == 'distributed':
+        try:
+            execution['evaluationFrequency'] = _integer(
+                execution.get('evaluationFrequency', 1),
+                'execution.evaluationFrequency', 1, 500)
+            execution['clientsPerSubserver'] = _integer(
+                execution.get('clientsPerSubserver', 30),
+                'execution.clientsPerSubserver', 1, 120)
+            execution['windowsClientCount'] = _integer(
+                execution.get('windowsClientCount', 60),
+                'execution.windowsClientCount', 0, 120)
+            execution['rootDevice'] = _integer(
+                execution.get('rootDevice', 1),
+                'execution.rootDevice', 0, 15)
+            execution['statisticsUploadStaggerSeconds'] = _number(
+                execution.get('statisticsUploadStaggerSeconds', 3.0),
+                'execution.statisticsUploadStaggerSeconds', 0.0, 120.0)
+        except ValidationError as error:
+            errors.update(error.field_errors)
+        if not isinstance(execution.get('diagonalCovariance', False), bool):
+            errors['execution.diagonalCovariance'] = '必须是布尔值'
+        execution['diagonalCovariance'] = bool(
+            execution.get('diagonalCovariance', False))
 
     active_blocks: List[str] = []
     for key in EXPERIMENT_TYPES:
@@ -232,6 +300,7 @@ def validate_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
     normalized['name'] = name
     normalized['scenarioId'] = scenario_id
     normalized['common'] = common
+    normalized['execution'] = execution
     for key in EXPERIMENT_TYPES:
         if key != experiment_type:
             normalized[key] = None
@@ -241,6 +310,8 @@ def validate_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
 def capabilities(repo_root: Path) -> Dict[str, Any]:
     from federatedscope.standalone_api.metric_registry import \
         public_metric_registry
+    from federatedscope.standalone_api.distributed_runner import \
+        distributed_catalog, load_lab_topology
     data_root = Path(os.environ.get(
         'FEDERATEDSCOPE_DATA_ROOT',
         '/root/autodl-tmp/datasets/OfficeHomeDataset_10072016'))
@@ -255,6 +326,12 @@ def capabilities(repo_root: Path) -> Dict[str, Any]:
             devices.append('cuda')
     except ImportError:
         pass
+    distributed_cases = distributed_catalog(repo_root)
+    topology = load_lab_topology()
+    distributed_local_ready = bool(
+        distributed_cases and
+        (repo_root / 'scripts' / 'distributed_scripts' /
+         'ggeur_hierarchical_3machine' / 'generate_matrix.py').is_file())
     return {
         'apiVersion': '1.0',
         'datasets': [{
@@ -265,13 +342,27 @@ def capabilities(repo_root: Path) -> Dict[str, Any]:
             'available': data_root.exists(),
         }],
         'devices': devices,
-        'methods': ['fedavg', 'fedprox', 'heterogeneous_solution'],
+        'methods': [
+            'fedavg', 'fedprox', 'fedproto', 'fedopt', 'moon',
+            'heterogeneous_solution'],
         'experimentTypes': sorted(EXPERIMENT_TYPES),
+        'executionModes': ['standalone', 'distributed'],
         'runner': {
             'ready': data_root.exists() and model_path.exists() and templates.exists(),
             'dataReady': data_root.exists(),
             'modelReady': model_path.exists(),
             'templatesReady': templates.exists(),
+        },
+        'distributed': {
+            'ready': distributed_local_ready,
+            'remoteReadinessCheckedByPreflight': True,
+            'topologyId': topology.topology_id,
+            'nodes': [
+                {'key': node.key, 'label': node.label,
+                 'operatingSystem': node.operating_system}
+                for node in topology.nodes
+            ],
+            'cases': distributed_cases,
         },
         'limits': {'maxConcurrentCpu': 1, 'maxConcurrentGpu': 1},
         'metrics': public_metric_registry(),
@@ -289,5 +380,11 @@ def capabilities(repo_root: Path) -> Dict[str, Any]:
                                 'default': 50},
             'featureBatchSize': {'minimum': 1, 'maximum': 1024,
                                  'default': 64},
+            'evaluationFrequency': {'minimum': 1, 'maximum': 500,
+                                    'default': 1},
+            'clientsPerSubserver': {'minimum': 1, 'maximum': 120,
+                                    'default': 30},
+            'statisticsUploadStaggerSeconds': {
+                'minimum': 0, 'maximum': 120, 'default': 3},
         },
     }

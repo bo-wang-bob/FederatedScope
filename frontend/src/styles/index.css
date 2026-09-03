@@ -233,6 +233,12 @@ body::before {
 @media(prefers-reduced-motion:reduce){.map-central-link.active,.map-client-link.active{animation:none!important}.process-step.active{transform:none}.map-central-link.active,.map-client-link.active{stroke-dasharray:none}}
 
 .experiment-actions { margin-top: 12px; }
+.mode-card-grid button:disabled { cursor: not-allowed; opacity: .48; filter: grayscale(.35); }
+.distributed-node-strip { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; margin-top: 15px; }
+.distributed-node-strip > div { display: flex; align-items: center; gap: 10px; min-height: 58px; padding: 10px 12px; border: 1px solid rgba(68,216,255,.2); border-radius: 7px; background: linear-gradient(120deg,rgba(68,216,255,.08),rgba(5,21,35,.72)); }
+.distributed-node-strip i { display: grid; flex: 0 0 26px; width: 26px; height: 26px; place-items: center; border: 1px solid var(--cyan); border-radius: 50%; color: var(--cyan); font: normal 10px 'JetBrains Mono'; box-shadow: 0 0 10px rgba(68,216,255,.18); }
+.distributed-node-strip b,.distributed-node-strip small { display: block; }.distributed-node-strip b { color: #dcedf7; font-size: 10px; }.distributed-node-strip small { margin-top: 3px; color: #69859a; font-size: 8px; }
+.runtime-node-strip { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; margin-bottom: 12px; }.runtime-node-strip > div { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border: 1px solid rgba(141,211,255,.14); border-radius: 6px; background: rgba(5,20,34,.62); }.runtime-node-strip i { width: 8px; height: 8px; border-radius: 50%; background: #65798a; box-shadow: 0 0 7px #65798a; }.runtime-node-strip .ready i { background: var(--green); box-shadow: 0 0 8px var(--green); }.runtime-node-strip b,.runtime-node-strip small { display: block; }.runtime-node-strip b { color: #dcecf5; font-size: 10px; }.runtime-node-strip small { margin-top: 2px; color: #718a9d; font-size: 8px; }
 .experiment-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(141, 211, 255, 0.12); }
 .experiment-presets > span { margin-right: 4px; color: var(--text-muted); font-size: 12px; }
 .preflight-checks { display: grid; gap: 7px; margin-top: 14px; padding: 12px; border: 1px solid rgba(141, 211, 255, 0.12); border-radius: 10px; background: rgba(4, 19, 37, 0.42); }

@@ -9,6 +9,7 @@ Example:
 """
 
 import logging
+import json
 import os
 import os.path as osp
 
@@ -75,6 +76,33 @@ def discover_domainnet_metadata(root,
     return domains, classes
 
 
+def load_domainnet_manifest(manifest_path, selected_domains=None):
+    """Load portable DomainNet metadata without requiring local images.
+
+    The manifest stores dataset-root-relative paths.  Distributed clients can
+    therefore construct the exact same split as the cache-preparation host,
+    even when only the prepared feature cache is present locally.
+    """
+    with open(manifest_path, 'r', encoding='utf-8') as stream:
+        manifest = json.load(stream)
+
+    classes = list(manifest.get('classes') or [])
+    records_by_domain = manifest.get('records') or {}
+    available_domains = list(manifest.get('domains') or records_by_domain)
+    domains = list(selected_domains or available_domains)
+    missing = [domain for domain in domains if domain not in records_by_domain]
+    if missing:
+        raise ValueError(
+            f"DomainNet manifest lacks selected domains: {missing}")
+    if not classes:
+        raise ValueError("DomainNet manifest has no classes")
+    for domain in domains:
+        if not records_by_domain[domain]:
+            raise ValueError(
+                f"DomainNet manifest has no records for domain: {domain}")
+    return domains, classes, records_by_domain
+
+
 class DomainNet(Dataset):
     """Single-domain DomainNet dataset with deterministic train/val/test split."""
 
@@ -87,7 +115,8 @@ class DomainNet(Dataset):
                  train_ratio=0.7,
                  val_ratio=0.0,
                  seed=123,
-                 exclude_indices=None):
+                 exclude_indices=None,
+                 records=None):
         assert split in ['train', 'val', 'test'], "Split must be train, val, or test"
 
         self.root = root
@@ -103,12 +132,26 @@ class DomainNet(Dataset):
         self.val_ratio = val_ratio
         self.seed = seed
         self.exclude_indices = exclude_indices or set()
+        self.records = list(records) if records is not None else None
 
         self.data, self.targets = self._load_data()
         logger.info(
             f"Loaded {len(self.data)} images from DomainNet/{domain} ({split} split)")
 
     def _load_data(self):
+        if self.records is not None:
+            all_images = []
+            all_labels = []
+            for record in self.records:
+                path = str(record['path'])
+                all_images.append(path if osp.isabs(path) else
+                                  osp.join(self.root, path))
+                all_labels.append(int(record['label']))
+            if not all_images:
+                raise ValueError(
+                    f"No images listed in DomainNet manifest for: {self.domain}")
+            return self._split_records(all_images, all_labels)
+
         domain_dir = osp.join(self.root, self.domain)
         if not osp.exists(domain_dir):
             raise FileNotFoundError(f"DomainNet domain directory not found: {domain_dir}")
@@ -134,6 +177,9 @@ class DomainNet(Dataset):
         if not all_images:
             raise ValueError(f"No images found in DomainNet domain: {domain_dir}")
 
+        return self._split_records(all_images, all_labels)
+
+    def _split_records(self, all_images, all_labels):
         if self.exclude_indices:
             kept_images = []
             kept_labels = []
@@ -187,7 +233,8 @@ def load_domainnet_domain_data(root,
                                val_transform=None,
                                test_transform=None,
                                seed=123,
-                               exclude_indices=None):
+                               exclude_indices=None,
+                               records=None):
     """Load a single DomainNet domain into train/val/test datasets."""
     train_ratio, val_ratio, _ = splits
 
@@ -213,7 +260,8 @@ def load_domainnet_domain_data(root,
         train_ratio=train_ratio,
         val_ratio=val_ratio,
         seed=seed,
-        exclude_indices=exclude_indices)
+        exclude_indices=exclude_indices,
+        records=records)
 
     val_dataset = DomainNet(
         root=root,
@@ -224,7 +272,8 @@ def load_domainnet_domain_data(root,
         train_ratio=train_ratio,
         val_ratio=val_ratio,
         seed=seed,
-        exclude_indices=exclude_indices)
+        exclude_indices=exclude_indices,
+        records=records)
 
     test_dataset = DomainNet(
         root=root,
@@ -235,7 +284,8 @@ def load_domainnet_domain_data(root,
         train_ratio=train_ratio,
         val_ratio=val_ratio,
         seed=seed,
-        exclude_indices=exclude_indices)
+        exclude_indices=exclude_indices,
+        records=records)
 
     return {
         'train': train_dataset,

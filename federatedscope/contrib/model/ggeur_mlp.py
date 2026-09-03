@@ -36,7 +36,9 @@ class GGEURMLP(nn.Module):
 
 def build_ggeur_mlp(model_config, local_data=None):
     """Build GGEUR_Clip MLP model based on config."""
-    input_dim = model_config.input_dim if hasattr(model_config, 'input_dim') else 512
+    configured_input_dim = model_config.input_dim \
+        if hasattr(model_config, 'input_dim') else 0
+    input_dim = configured_input_dim if configured_input_dim > 0 else 512
     num_classes = model_config.num_classes if hasattr(model_config, 'num_classes') else 65
     hidden_dim = model_config.hidden_dim if hasattr(model_config, 'hidden_dim') else 0
     dropout = model_config.dropout if hasattr(model_config, 'dropout') else 0.0

@@ -1,11 +1,15 @@
 import logging
+import os
 import numpy as np
 import federatedscope.register as register
 
 logger = logging.getLogger(__name__)
 
 try:
-    from federatedscope.contrib.model import *
+    if os.environ.get('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT') == '1':
+        from federatedscope.contrib.model import ggeur_mlp, ggeur_text_rnn
+    else:
+        from federatedscope.contrib.model import *
 except ImportError as error:
     logger.warning(
         f'{error} in `federatedscope.contrib.model`, some modules are not '
@@ -24,6 +28,15 @@ def get_shape_from_data(data, model_config, backend='torch'):
         shape (tuple): the input shape
     """
     # Handle some special cases
+    if model_config.type.lower() == 'ggeur_mlp':
+        # The registered GGEUR MLP builder does not consume ``input_shape``;
+        # it uses ``model.input_dim`` and defaults to 512.  Avoid advancing a
+        # raw-image DataLoader merely to infer an unused shape.  This is
+        # essential for head-only/cache-backed runs whose physical host does
+        # not intentionally carry the source images.
+        return (getattr(model_config, 'input_dim', 512), )
+    if model_config.type.lower() in ['ggeur_rnn', 'ggeur_lstm']:
+        return (model_config.in_channels, )
     if model_config.type.lower() in ['vmfnet', 'hmfnet']:
         return data['train'].n_col if model_config.type.lower(
         ) == 'vmfnet' else data['train'].n_row

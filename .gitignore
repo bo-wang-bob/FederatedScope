@@ -157,3 +157,28 @@ open_clip_vitb16.bin
 *.tar.gz
 *.7z
 scripts/distributed_scripts/headonly_hierarchical_qps/runs/
+
+# Local task helpers and report render workspaces
+/_codex_*
+/_inspect_*/
+/_qa_*/
+/_render_*/
+/.tmp_*/
+/artifacts/
+/docx_render_*/
+/qa_*/
+/temp/
+/tmp/
+/tmp_*/
+*.docx
+
+# Generated report inputs and raw validation evidence
+/docs/dataset_domain_examples/
+/docs/figures/
+/docs/test_logs/
+/docs/T2-T6_4090_实验日志_20260819/
+
+# One-off local maintenance helpers and experiment outputs
+/scripts/_*.py
+/scripts/_*.ps1
+/scripts/distributed_scripts/**/runs/

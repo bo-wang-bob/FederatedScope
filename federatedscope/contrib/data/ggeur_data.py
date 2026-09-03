@@ -17,8 +17,6 @@ from torchvision import transforms
 
 from federatedscope.register import register_data
 from federatedscope.core.data.utils import convert_data_mode
-from federatedscope.core.data.dirichlet_partition import \
-    partition_indices_by_label
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +93,10 @@ def load_ggeur_data(config, client_cfgs=None):
             config, client_cfgs)
     elif data_type in ['domainnet', 'domain-net', 'domain_net']:
         data, modified_config = _load_domainnet_ggeur_data(
+            config, client_cfgs)
+    elif data_type in ['digits-3domain', 'digits_3domain', 'digit3',
+                       'digit-three-domain']:
+        data, modified_config = _load_digit_three_domain_ggeur_data(
             config, client_cfgs)
     else:
         logger.warning(f"Data type {data_type} not specifically supported for GGEUR_Clip, "
@@ -247,6 +249,43 @@ def _split_subset_for_clients(subset, num_clients, seed=123):
         subsets.append(Subset(subset.dataset, original_indices))
 
     return subsets
+
+
+def _split_dataset_dirichlet_clients(dataset,
+                                     num_clients,
+                                     alpha,
+                                     seed=123):
+    """Partition every row in one domain among non-IID clients."""
+    rng = np.random.RandomState(seed)
+    targets = np.asarray(dataset.targets)
+    client_indices = [[] for _ in range(int(num_clients))]
+    for class_idx in np.unique(targets):
+        indices = np.flatnonzero(targets == class_idx)
+        rng.shuffle(indices)
+        proportions = rng.dirichlet(
+            np.full(int(num_clients), float(alpha), dtype=np.float64))
+        counts = rng.multinomial(int(indices.size), proportions)
+        offsets = np.cumsum(counts)[:-1]
+        for client_idx, part in enumerate(np.split(indices, offsets)):
+            client_indices[client_idx].extend(part.tolist())
+
+    # Very small alpha can leave a client empty. Move one row from the
+    # largest partition so all configured clients remain active.
+    for client_idx, values in enumerate(client_indices):
+        if values:
+            continue
+        donor = max(range(int(num_clients)),
+                    key=lambda idx: len(client_indices[idx]))
+        if len(client_indices[donor]) <= 1:
+            raise RuntimeError(
+                "not enough samples to create non-empty Dirichlet clients")
+        values.append(client_indices[donor].pop())
+
+    assigned = sum(len(values) for values in client_indices)
+    if assigned != len(dataset):
+        raise RuntimeError(
+            f"Dirichlet partition assigned {assigned}/{len(dataset)} rows")
+    return [Subset(dataset, values) for values in client_indices]
 
 
 def _sample_dataset_for_clients(dataset,
@@ -421,109 +460,269 @@ def _load_pacs_ggeur_data(config, client_cfgs=None):
     return data_dict, config
 
 
-def _resolve_manifest_path(config):
+def _digit_three_domain_transform(config):
+    """Return the normalization expected by the configured ViT extractor."""
+    extractor = str(getattr(config.ggeur, 'feature_extractor', 'clip')).lower()
+    if extractor == 'clip':
+        mean = [0.48145466, 0.4578275, 0.40821073]
+        std = [0.26862954, 0.26130258, 0.27577711]
+    else:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+    return transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=mean, std=std),
+    ])
+
+
+def _resolve_digit_three_domain_manifest_paths(config):
+    manifest_path = str(getattr(
+        config.ggeur, 'digit3_manifest_path', '') or '')
+    manifest_base = str(getattr(
+        config.ggeur, 'digit3_manifest_base', '') or '')
+    if manifest_path:
+        return [manifest_path]
+    if not manifest_base:
+        return []
+
+    client_num = int(config.federate.client_num)
+    paths = [
+        os.path.join(manifest_base, f'client_{client_id:06d}',
+                     'client_manifest.json')
+        for client_id in range(1, client_num + 1)
+    ]
+    missing = [path for path in paths if not os.path.exists(path)]
+    if missing:
+        preview = ', '.join(missing[:3])
+        raise FileNotFoundError(
+            'Three-domain digit manifest set is incomplete: '
+            f'{len(missing)}/{client_num} missing under {manifest_base}; '
+            f'examples: {preview}')
+    return paths
+
+
+def _resolve_digit_three_domain_root(config, manifest, manifest_path):
+    use_config_root = bool(getattr(
+        config.ggeur, 'digit3_manifest_use_config_root', False))
+    if use_config_root:
+        # data.root is intentionally host-specific and relative values are
+        # resolved from the process working directory, just like every other
+        # FederatedScope data root. Do not make it relative to a client
+        # manifest nested several directories below the repository root.
+        root = os.path.abspath(config.data.root)
+    else:
+        root = manifest.get('root') or config.data.root
+    if not use_config_root and not os.path.isabs(root):
+        root = os.path.abspath(os.path.join(os.path.dirname(manifest_path),
+                                            root))
+    return root
+
+
+def _load_digit_three_domain_ggeur_data(config, client_cfgs=None):
+    """Load fixed EMNIST Digits, USPS and SVHN per-client manifests."""
+    del client_cfgs
+    manifest_paths = _resolve_digit_three_domain_manifest_paths(config)
+    if not manifest_paths:
+        raise ValueError(
+            'Set ggeur.digit3_manifest_path for a distributed client or '
+            'ggeur.digit3_manifest_base for standalone execution')
+
+    transform = _digit_three_domain_transform(config)
+    batch_size = int(config.dataloader.batch_size)
+    num_workers = int(config.dataloader.num_workers)
+    allowed_domains = list(getattr(config.ggeur, 'digit3_domains', []))
+    data_dict = {}
+
+    for manifest_path in manifest_paths:
+        with open(manifest_path, 'r', encoding='utf-8') as stream:
+            manifest = json.load(stream)
+        if manifest.get('dataset') != 'digits-3domain':
+            raise ValueError(
+                f'Unexpected dataset in digit manifest {manifest_path}: '
+                f"{manifest.get('dataset')!r}")
+
+        client_id = int(manifest.get('client_id', 0))
+        if client_id <= 0 or client_id in data_dict:
+            raise ValueError(
+                f'Invalid or duplicate digit client_id={client_id}: '
+                f'{manifest_path}')
+        domain = str(manifest.get('domain', ''))
+        if allowed_domains and domain not in allowed_domains:
+            raise ValueError(
+                f'Digit client {client_id} domain {domain!r} is not in '
+                f'configured domains {allowed_domains}')
+
+        root = _resolve_digit_three_domain_root(
+            config, manifest, manifest_path)
+        splits = manifest.get('splits', {})
+        client_data = {}
+        for split in ('train', 'val', 'test'):
+            records = list(splits.get(split, []))
+            dataset = ManifestImageDataset(
+                root, records, transform=transform, domain=domain,
+                client_id=client_id)
+            client_data[split] = None if split == 'val' and not records else \
+                DataLoader(dataset,
+                           batch_size=batch_size,
+                           shuffle=(split == 'train'),
+                           num_workers=num_workers,
+                           drop_last=False)
+        if len(client_data['train'].dataset) == 0:
+            raise ValueError(
+                f'Digit client {client_id} has an empty training split')
+        if len(client_data['test'].dataset) == 0:
+            raise ValueError(f'Digit client {client_id} has an empty test split')
+        data_dict[client_id] = client_data
+        logger.info(
+            'Three-domain digit manifest loaded: '
+            f'client={client_id}, domain={domain}, '
+            f"train={len(splits.get('train', []))}, "
+            f"test={len(splits.get('test', []))}")
+
+    config.model.num_classes = 10
+    logger.info(
+        'Three-domain digit data loaded: clients=%d, domains=%s',
+        len(data_dict), sorted({
+            data['train'].dataset.domain for data in data_dict.values()
+        }))
+    return data_dict, config
+
+
+def _resolve_manifest_paths(config):
     manifest_path = ''
+    manifest_base = ''
     if hasattr(config, 'ggeur'):
         manifest_path = getattr(config.ggeur, 'officehome_manifest_path', '')
+        manifest_base = getattr(config.ggeur, 'officehome_manifest_base', '')
     if manifest_path:
-        return manifest_path
+        return [manifest_path]
+
+    if manifest_base:
+        client_num = int(config.federate.client_num)
+        paths = [
+            os.path.join(manifest_base, f'client_{client_id:06d}',
+                         'client_manifest.json')
+            for client_id in range(1, client_num + 1)
+        ]
+        missing = [path for path in paths if not os.path.exists(path)]
+        if missing:
+            preview = ', '.join(missing[:3])
+            raise FileNotFoundError(
+                'OfficeHome manifest set is incomplete: '
+                f'{len(missing)}/{client_num} missing under '
+                f'{manifest_base}; examples: {preview}')
+        return paths
 
     candidate = os.path.join(config.data.root, 'client_manifest.json')
     if os.path.exists(candidate):
-        return candidate
-    return ''
+        return [candidate]
+    return []
 
 
-def _load_officehome_manifest_data(config, transform):
-    manifest_path = _resolve_manifest_path(config)
-    if not manifest_path:
-        return None
-    if not os.path.exists(manifest_path):
-        raise FileNotFoundError(
-            f"OfficeHome manifest not found: {manifest_path}")
-
-    with open(manifest_path, 'r', encoding='utf-8') as file:
-        manifest = json.load(file)
-
-    root = manifest.get('root') or config.data.root
+def _resolve_officehome_manifest_root(config, manifest, manifest_path):
+    use_config_root = bool(getattr(
+        config.ggeur, 'officehome_manifest_use_config_root', False)) \
+        if hasattr(config, 'ggeur') else False
+    root = config.data.root if use_config_root else \
+        (manifest.get('root') or config.data.root)
     if not os.path.isabs(root):
         root = os.path.abspath(os.path.join(os.path.dirname(manifest_path),
                                             root))
+    return root
+
+
+def _load_officehome_manifest_data(config, transform):
+    manifest_paths = _resolve_manifest_paths(config)
+    if not manifest_paths:
+        return None
 
     batch_size = config.dataloader.batch_size
     num_workers = config.dataloader.num_workers
     data_dict = {}
-    if str(manifest.get('schemaVersion', '1.0')) == '2.0':
-        domains = manifest.get('domains', {})
-        clients = manifest.get('clients', [])
-        if not clients:
-            raise ValueError('OfficeHome replay manifest has no clients')
-        expected_ids = list(range(1, len(clients) + 1))
-        actual_ids = sorted(int(item.get('clientId', -1))
-                            for item in clients)
-        if actual_ids != expected_ids:
+    for manifest_path in manifest_paths:
+        if not os.path.exists(manifest_path):
+            raise FileNotFoundError(
+                f"OfficeHome manifest not found: {manifest_path}")
+
+        with open(manifest_path, 'r', encoding='utf-8') as file:
+            manifest = json.load(file)
+
+        root = _resolve_officehome_manifest_root(
+            config, manifest, manifest_path)
+        if str(manifest.get('schemaVersion', '1.0')) == '2.0':
+            domains = manifest.get('domains', {})
+            clients = manifest.get('clients', [])
+            if not clients:
+                raise ValueError('OfficeHome replay manifest has no clients')
+            expected_ids = list(range(1, len(clients) + 1))
+            actual_ids = sorted(int(item.get('clientId', -1))
+                                for item in clients)
+            if actual_ids != expected_ids:
+                raise ValueError(
+                    'OfficeHome replay manifest client ids must be contiguous')
+            for client in clients:
+                client_id = int(client['clientId'])
+                domain = client['domain']
+                domain_splits = domains.get(domain, {})
+                split_records = {
+                    'train': client.get('train', []),
+                    'val': domain_splits.get('val', []),
+                    'test': domain_splits.get('test', []),
+                }
+                client_data = {}
+                for split, records in split_records.items():
+                    dataset = ManifestImageDataset(
+                        root, records, transform=transform, domain=domain,
+                        client_id=client_id)
+                    client_data[split] = (
+                        None if len(dataset) == 0 else
+                        DataLoader(
+                            dataset, batch_size=batch_size,
+                            shuffle=(split == 'train'),
+                            num_workers=num_workers, drop_last=False))
+                data_dict[client_id] = client_data
+            config.federate.client_num = len(clients)
+            logger.info(
+                'OfficeHome replay manifest loaded: '
+                f'manifest={manifest_path}, clients={len(clients)}, '
+                f"partition={manifest.get('partitionVersion')}, "
+                f"fingerprint={manifest.get('datasetFingerprint')}")
+            return data_dict, config
+        client_id = int(manifest.get('client_id', 1))
+        if client_id in data_dict:
             raise ValueError(
-                'OfficeHome replay manifest client ids must be contiguous')
-        for client in clients:
-            client_id = int(client['clientId'])
-            domain = client['domain']
-            domain_splits = domains.get(domain, {})
-            split_records = {
-                'train': client.get('train', []),
-                'val': domain_splits.get('val', []),
-                'test': domain_splits.get('test', []),
-            }
-            client_data = {}
-            for split, records in split_records.items():
-                dataset = ManifestImageDataset(
-                    root, records, transform=transform, domain=domain,
-                    client_id=client_id)
-                client_data[split] = (
-                    None if split == 'val' and len(dataset) == 0 else
-                    DataLoader(dataset,
-                               batch_size=batch_size,
-                               shuffle=(split == 'train'),
-                               num_workers=num_workers,
-                               drop_last=False))
-            data_dict[client_id] = client_data
-        config.federate.client_num = len(clients)
+                f"Duplicate OfficeHome manifest client_id={client_id}: "
+                f"{manifest_path}")
+        domain = manifest.get('domain', None)
+        splits = manifest.get('splits', {})
+
+        client_data = {}
+        for split in ('train', 'val', 'test'):
+            records = splits.get(split, [])
+            dataset = ManifestImageDataset(root,
+                                           records,
+                                           transform=transform,
+                                           domain=domain,
+                                           client_id=client_id)
+            if split == 'val' and len(dataset) == 0:
+                client_data[split] = None
+            else:
+                client_data[split] = DataLoader(
+                    dataset,
+                    batch_size=batch_size,
+                    shuffle=(split == 'train'),
+                    num_workers=num_workers,
+                    drop_last=False)
+
+        data_dict[client_id] = client_data
         logger.info(
-            "OfficeHome replay manifest loaded: "
-            f"manifest={manifest_path}, clients={len(clients)}, "
-            f"partition={manifest.get('partitionVersion')}, "
-            f"fingerprint={manifest.get('datasetFingerprint')}")
-        return data_dict, config
-
-    client_id = int(manifest.get('client_id', 1))
-    domain = manifest.get('domain', None)
-    splits = manifest.get('splits', {})
-
-    client_data = {}
-    for split in ('train', 'val', 'test'):
-        records = splits.get(split, [])
-        dataset = ManifestImageDataset(root,
-                                       records,
-                                       transform=transform,
-                                       domain=domain,
-                                       client_id=client_id)
-        if split == 'val' and len(dataset) == 0:
-            client_data[split] = None
-        else:
-            client_data[split] = DataLoader(
-                dataset,
-                batch_size=batch_size,
-                shuffle=(split == 'train'),
-                num_workers=num_workers,
-                drop_last=False)
-
-    data_dict[client_id] = client_data
-    logger.info(
-        "GGEUR_Clip Office-Home manifest loaded: "
-        f"manifest={manifest_path}, root={root}, client_id={client_id}, "
-        f"domain={domain}, "
-        f"train={len(splits.get('train', []))}, "
-        f"val={len(splits.get('val', []))}, "
-        f"test={len(splits.get('test', []))}")
+            "GGEUR_Clip Office-Home manifest loaded: "
+            f"manifest={manifest_path}, root={root}, client_id={client_id}, "
+            f"domain={domain}, "
+            f"train={len(splits.get('train', []))}, "
+            f"val={len(splits.get('val', []))}, "
+            f"test={len(splits.get('test', []))}")
     return data_dict, config
 
 
@@ -567,6 +766,10 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
     split_strategy = getattr(config.ggeur, 'officehome_split_strategy',
                              'standard') if hasattr(config, 'ggeur') else 'standard'
     split_strategy = str(split_strategy).lower()
+    officehome_data_seed = int(getattr(
+        config.ggeur, 'officehome_data_seed', -1))
+    if officehome_data_seed < 0:
+        officehome_data_seed = int(config.seed)
     if split_strategy not in ['standard', 'random_fixed_per_domain']:
         raise ValueError(
             f"Unsupported OfficeHome split strategy: {split_strategy}")
@@ -615,16 +818,15 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
             f"within_client_replacement={random_sample_with_replacement}")
         dirichlet_matrix = None
     elif use_lds:
-        # Keep every OfficeHome feature domain intact and introduce label
-        # imbalance only among clients within that domain.
+        # LDS mode: use Dirichlet distribution for non-IID data split
         lds_alpha = getattr(config.ggeur, 'lds_alpha', 0.1)
         lds_seed = getattr(config.ggeur, 'lds_seed', 42)
 
-        logger.info(
-            "Office-Home within-domain Dirichlet partition: "
-            f"alpha={lds_alpha}, {total_clients} clients "
-            f"({clients_per_domain} per fixed domain)")
-        dirichlet_matrix = None
+        logger.info(f"GGEUR_Clip Office-Home with LDS: alpha={lds_alpha}, "
+                   f"{total_clients} clients ({clients_per_domain} per domain)")
+
+        # Generate Dirichlet matrix for domain-level LDS
+        dirichlet_matrix = _generate_dirichlet_matrix(num_domains, num_classes, lds_alpha, lds_seed)
     else:
         logger.info(f"GGEUR_Clip Office-Home: {total_clients} clients, {clients_per_domain} per domain")
         dirichlet_matrix = None
@@ -641,16 +843,12 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
         logger.info(f"Loading Office-Home domain '{domain}'")
 
         try:
-            # The scenario partition seed controls both the deterministic
-            # train/test split and the within-domain client allocation.  The
-            # experiment seed remains available for model training randomness.
-            domain_split_seed = lds_seed if use_lds else config.seed
             domain_data = load_office_home_domain_data(
                 root=root,
                 domain=domain,
                 splits=splits,
                 transform=transform,
-                seed=domain_split_seed
+                seed=officehome_data_seed
             )
 
             train_dataset = domain_data['train']
@@ -664,7 +862,7 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
                     train_dataset,
                     clients_per_domain,
                     random_samples_per_client,
-                    seed=config.seed + domain_idx * 1009,
+                    seed=officehome_data_seed + domain_idx * 1009,
                     replace=random_sample_with_replacement)
                 logger.info(
                     f"  OfficeHome random-fixed domain {domain}: "
@@ -675,28 +873,27 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
                     "within_client_replacement="
                     f"{random_summary['sample_with_replacement']}")
             elif use_lds:
-                client_indices = partition_indices_by_label(
-                    train_dataset.targets,
-                    clients_per_domain,
-                    lds_alpha,
-                    lds_seed + domain_idx * 1009)
-                train_subsets = [
-                    Subset(train_dataset, indices)
-                    for indices in client_indices
-                ]
-                allocated = sum(len(subset) for subset in train_subsets)
-                if allocated != len(train_dataset):
-                    raise RuntimeError(
-                        f"OfficeHome domain {domain} partition lost samples: "
-                        f"{allocated}/{len(train_dataset)}")
-                logger.info(
-                    f"  Domain {domain}: partitioned all {allocated} train "
-                    f"samples among {clients_per_domain} clients")
+                # LDS mode: first apply Dirichlet distribution to get domain's portion
+                lds_subset, class_counts = _split_dataset_with_lds(
+                    train_dataset,
+                    dirichlet_matrix[domain_idx],
+                    seed=officehome_data_seed + domain_idx
+                )
+
+                # Then split among multiple clients if needed
+                if clients_per_domain > 1:
+                    train_subsets = _split_subset_for_clients(
+                        lds_subset, clients_per_domain,
+                        seed=officehome_data_seed + domain_idx
+                    )
+                else:
+                    train_subsets = [lds_subset]
             else:
                 # Standard mode: uniform split
                 if clients_per_domain > 1:
                     train_subsets = _split_dataset_for_clients(
-                        train_dataset, clients_per_domain, seed=config.seed
+                        train_dataset, clients_per_domain,
+                        seed=officehome_data_seed
                     )
                 else:
                     train_subsets = [train_dataset]
@@ -747,12 +944,10 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
         logger.info(f"  Logical train samples: {total_train_samples}")
         logger.info(f"  Original train samples: {total_original_samples}")
     elif use_lds:
-        logger.info("Office-Home within-domain partition summary:")
+        logger.info(f"GGEUR_Clip Office-Home LDS Summary:")
         logger.info(f"  Total clients: {total_clients}")
-        logger.info(f"  Fixed domains: {domains}")
         logger.info(f"  Original train samples: {total_original_samples}")
-        logger.info(f"  Partitioned train samples: {total_train_samples} "
-                    f"({100*total_train_samples/total_original_samples:.1f}%)")
+        logger.info(f"  LDS allocated samples: {total_train_samples} ({100*total_train_samples/total_original_samples:.1f}%)")
         logger.info(f"  Alpha: {lds_alpha}")
     else:
         logger.info(f"GGEUR_Clip Office-Home data loaded: {len(data_dict)} clients, "
@@ -764,7 +959,8 @@ def _load_officehome_ggeur_data(config, client_cfgs=None):
 def _load_domainnet_ggeur_data(config, client_cfgs=None):
     """Load DomainNet dataset for GGEUR."""
     from federatedscope.cv.dataset.domainnet import (
-        discover_domainnet_metadata, load_domainnet_domain_data)
+        discover_domainnet_metadata, load_domainnet_domain_data,
+        load_domainnet_manifest)
 
     root = config.data.root
     batch_size = config.dataloader.batch_size
@@ -784,14 +980,26 @@ def _load_domainnet_ggeur_data(config, client_cfgs=None):
     shared_classes_only = getattr(config.ggeur,
                                   'domainnet_shared_classes_only',
                                   False) if hasattr(config, 'ggeur') else False
-    domains, classes = discover_domainnet_metadata(root, selected_domains,
-                                                   shared_classes_only)
+    manifest_path = str(getattr(config.ggeur,
+                                'domainnet_manifest_path', '') or '')
+    records_by_domain = None
+    if manifest_path:
+        domains, classes, records_by_domain = load_domainnet_manifest(
+            manifest_path, selected_domains)
+        logger.info("Using portable DomainNet manifest: %s", manifest_path)
+    else:
+        domains, classes = discover_domainnet_metadata(
+            root, selected_domains, shared_classes_only)
     num_domains = len(domains)
     num_classes = len(classes)
 
     use_lds = getattr(config.ggeur, 'use_lds', False) if hasattr(config,
                                                                   'ggeur') else False
     configured_client_num = config.federate.client_num
+    configured_split_seed = int(getattr(
+        config.ggeur, 'data_split_seed', -1))
+    data_split_seed = (int(config.seed) if configured_split_seed < 0
+                       else configured_split_seed)
 
     if configured_client_num % num_domains != 0:
         logger.warning(f"client_num ({configured_client_num}) is not divisible by "
@@ -828,28 +1036,42 @@ def _load_domainnet_ggeur_data(config, client_cfgs=None):
                                                      classes=classes,
                                                      splits=splits,
                                                      transform=transform,
-                                                     seed=config.seed)
+                                                     seed=data_split_seed,
+                                                     records=(
+                                                         records_by_domain[domain]
+                                                         if records_by_domain
+                                                         else None))
 
             train_dataset = domain_data['train']
             val_dataset = domain_data['val']
             test_dataset = domain_data['test']
             total_original_samples += len(train_dataset)
 
-            if use_lds:
+            within_domain_dirichlet = bool(getattr(
+                config.ggeur, 'dirichlet_within_domain_clients', False))
+            if use_lds and within_domain_dirichlet:
+                train_subsets = _split_dataset_dirichlet_clients(
+                    train_dataset,
+                    clients_per_domain,
+                    alpha=lds_alpha,
+                    seed=data_split_seed + domain_idx)
+            elif use_lds:
                 lds_subset, _ = _split_dataset_with_lds(
                     train_dataset,
                     dirichlet_matrix[domain_idx],
-                    seed=config.seed + domain_idx)
+                    seed=data_split_seed + domain_idx)
 
                 if clients_per_domain > 1:
                     train_subsets = _split_subset_for_clients(
-                        lds_subset, clients_per_domain, seed=config.seed + domain_idx)
+                        lds_subset, clients_per_domain,
+                        seed=data_split_seed + domain_idx)
                 else:
                     train_subsets = [lds_subset]
             else:
                 if clients_per_domain > 1:
                     train_subsets = _split_dataset_for_clients(
-                        train_dataset, clients_per_domain, seed=config.seed)
+                        train_dataset, clients_per_domain,
+                        seed=data_split_seed)
                 else:
                     train_subsets = [train_dataset]
 
@@ -906,6 +1128,10 @@ def _load_domainnet_ggeur_data(config, client_cfgs=None):
         logger.info(f"  LDS allocated samples: {total_train_samples} "
                     f"({100 * total_train_samples / total_original_samples:.1f}%)")
         logger.info(f"  Alpha: {lds_alpha}")
+        logger.info(
+            "  Within-domain full partition: %s",
+            bool(getattr(config.ggeur,
+                         'dirichlet_within_domain_clients', False)))
     else:
         logger.info(f"GGEUR DomainNet data loaded: {len(data_dict)} clients, "
                     f"domains={domains}, classes={num_classes}, "

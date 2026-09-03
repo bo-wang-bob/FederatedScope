@@ -48,6 +48,18 @@ export function mergeTrainingEvent(
       },
     };
   }
+  if (event.type === 'topology.status.changed') {
+    const payload = event.payload as {
+      node: string; label: string; status: string; ready: boolean;
+    };
+    return {
+      ...base,
+      topology: {
+        ...(base.topology ?? {}),
+        [payload.node]: { ...payload, source: event.source },
+      },
+    };
+  }
   if (event.type === 'defense.decision') {
     const payload = event.payload as {
       round?: number;

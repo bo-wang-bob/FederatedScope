@@ -19,7 +19,7 @@ const statusLabels: Record<string, string> = {
 };
 
 const typeLabels = { heterogeneity: '异构协同', privacy: '隐私保护', backdoor: '后门攻防' };
-const methodLabels = { fedavg: 'FedAvg', fedprox: 'FedProx', heterogeneous_solution: '异构解决方案' };
+const methodLabels = { fedavg: 'FedAvg', fedprox: 'FedProx', fedproto: 'FedProto', fedopt: 'FedOpt', moon: 'MOON', heterogeneous_solution: '异构解决方案' };
 const terminal = new Set(['completed', 'failed', 'stopped']);
 const eventTypeLabels: Record<string, string> = {
   'experiment.started': '实验启动',
@@ -35,6 +35,7 @@ const eventTypeLabels: Record<string, string> = {
   'metric.updated': '指标更新',
   'defense.decision': '防御判定',
   'warning.raised': '运行告警',
+  'topology.status.changed': '三机拓扑状态',
 };
 
 function eventDescription(event: TrainingEvent) {
@@ -47,6 +48,7 @@ function eventDescription(event: TrainingEvent) {
   if (event.type === 'client.metric.updated') return `${String(payload.clientId ?? '节点')} 已完成上传保护处理`;
   if (event.type === 'defense.decision') return `${payload.stage === 'feature_statistics' ? '特征统计阶段' : '正常训练阶段'}过滤 ${Array.isArray(payload.droppedClientIds) ? payload.droppedClientIds.length : 0} 个节点`;
   if (event.type === 'metric.updated') return `第 ${String(payload.round ?? '--')} 轮指标已更新`;
+  if (event.type === 'topology.status.changed') return `${String(payload.label ?? payload.node ?? '节点')}：${String(payload.status ?? '状态更新')}`;
   return `事件序号 ${event.sequence}`;
 }
 
@@ -192,6 +194,7 @@ export function LiveMonitorPage() {
     <PageHeader eyebrow="LIVE EXPERIMENT MONITOR" title="实验运行监控" description={`${record.name} · ${record.experimentId}`} actions={<Space><Tag color={connectionState === 'connected' ? 'processing' : 'warning'}>{connectionState === 'connected' ? '实时连接' : connectionState === 'recovering' ? '正在恢复' : connectionState}</Tag><Tag color={status === 'failed' ? 'error' : terminal.has(status) ? 'default' : 'success'}>{statusLabels[status] || status}</Tag>{!terminal.has(status) && <Popconfirm title="停止当前实验？" description="停止后不能从当前轮次恢复。" onConfirm={stopExperiment}><Button danger icon={<StopOutlined />} loading={stopping}>停止实验</Button></Popconfirm>}</Space>} />
 
     {snapshot.error && <Alert type="error" showIcon message="实验运行失败" description={snapshot.error.message} />}
+    {record.executionMode === 'distributed' && <div className="runtime-node-strip">{['client', 'subserver', 'root'].map((key) => { const node = snapshot.topology?.[key]; return <div key={key} className={node?.ready ? 'ready' : ''}><i /> <span><b>{node?.label ?? ({ client: '8G 客户端机', subserver: '4090 子服务器', root: '双 4090 根服务器' } as Record<string, string>)[key]}</b><small>{node?.status ?? '等待启动'}</small></span></div>; })}</div>}
     <div className="stage-strip">{phases.map((phase, index) => <div key={phase} className={index === phaseIndex ? 'active' : index < phaseIndex ? 'done' : ''}><i>{index < phaseIndex ? '✓' : index + 1}</i><span>{phase}</span></div>)}</div>
     <div className="metrics-grid five">
       <MetricCard label="当前轮次" value={snapshot.round} suffix={` / ${snapshot.totalRounds ?? record.totalRounds}`} delta={`${typeLabels[record.type]} · ${methodLabels[record.method]}`} />

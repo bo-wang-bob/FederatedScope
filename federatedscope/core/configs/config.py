@@ -299,6 +299,10 @@ def init_global_cfg(cfg):
     cfg.outdir = 'exp'
     cfg.expname = ''  # detailed exp name to distinguish different sub-exp
     cfg.expname_tag = ''  # detailed exp tag to distinguish different
+    # Optional operator-facing log alias. When set, the same plain-text log
+    # that is written to <outdir>/exp_print.log is also written to this path.
+    # A relative path is resolved from the directory where main.py is run.
+    cfg.log_file = ''
     # sub-exp with the same expname
 
     # extend user customized configs

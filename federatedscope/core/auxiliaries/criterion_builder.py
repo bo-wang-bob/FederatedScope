@@ -1,21 +1,27 @@
 import logging
+import os
 import federatedscope.register as register
 
 logger = logging.getLogger(__name__)
 
 try:
     from torch import nn
-    from federatedscope.nlp.loss import *
-    from federatedscope.cl.loss import *
 except ImportError:
     nn = None
 
-try:
-    from federatedscope.contrib.loss import *
-except ImportError as error:
-    logger.warning(
-        f'{error} in `federatedscope.contrib.loss`, some modules are not '
-        f'available.')
+if os.environ.get('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT') != '1':
+    try:
+        from federatedscope.nlp.loss import *
+        from federatedscope.cl.loss import *
+    except ImportError:
+        pass
+
+    try:
+        from federatedscope.contrib.loss import *
+    except ImportError as error:
+        logger.warning(
+            f'{error} in `federatedscope.contrib.loss`, some modules are not '
+            f'available.')
 
 
 def get_criterion(criterion_type, device):

@@ -1,13 +1,17 @@
 import logging
+import os
 import importlib
 
 import federatedscope.register as register
-from federatedscope.core.trainers import Trainer
+from federatedscope.core.trainers.trainer import Trainer
 
 logger = logging.getLogger(__name__)
 
 try:
-    from federatedscope.contrib.trainer import *
+    if os.environ.get('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT') == '1':
+        from federatedscope.contrib.trainer import ggeur_trainer
+    else:
+        from federatedscope.contrib.trainer import *
 except ImportError as error:
     logger.warning(
         f'{error} in `federatedscope.contrib.trainer`, some modules are not '

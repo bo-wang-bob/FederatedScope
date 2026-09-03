@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import mimetypes
 import os
 import re
 import uuid
@@ -13,11 +14,13 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from federatedscope.standalone_api.repository import JsonRepository
 from federatedscope.standalone_api.runner import (
     RunnerPreflightError, StandaloneProcessRunner)
+from federatedscope.standalone_api.distributed_runner import (
+    DispatchingExperimentRunner, DistributedProcessRunner)
 from federatedscope.standalone_api.scenarios import (
     build_partition, build_partition_artifacts)
 from federatedscope.standalone_api.schemas import (
@@ -42,10 +45,17 @@ def public_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
 class ApiContext:
     def __init__(self, repo_root: Path, state_root: Path):
         self.repo_root = repo_root
+        self.frontend_dist = Path(os.environ.get(
+            'FEDERATEDSCOPE_FRONTEND_DIST',
+            str(repo_root / 'frontend' / 'dist'))).resolve()
         self.repository = JsonRepository(state_root)
+        runner = DispatchingExperimentRunner(
+            StandaloneProcessRunner(repo_root),
+            DistributedProcessRunner(repo_root),
+        )
         self.manager = ExperimentTaskManager(
             self.repository,
-            StandaloneProcessRunner(repo_root),
+            runner,
             state_root / 'runs',
         )
 
@@ -140,6 +150,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         match = re.fullmatch(r'/api/experiments/([^/]+)(?:/(snapshot|events|metrics|logs))?', path)
         if not match:
+            if not path.startswith('/api') and self._serve_frontend(parsed.path):
+                return
             self._error(HTTPStatus.NOT_FOUND, 'NOT_FOUND', '接口不存在')
             return
         experiment_id, action = match.groups()
@@ -165,6 +177,37 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._events(experiment_id, sequence)
         else:
             self._data(self.context.manager.get(experiment_id))
+
+    def _serve_frontend(self, request_path: str) -> bool:
+        """Serve the production SPA from the same origin as the API."""
+        root = self.context.frontend_dist
+        index = root / 'index.html'
+        if not index.is_file():
+            return False
+        relative = unquote(request_path).lstrip('/')
+        candidate = (root / relative).resolve() if relative else index
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            self._error(HTTPStatus.FORBIDDEN, 'FORBIDDEN', '静态资源路径非法')
+            return True
+        if candidate.is_dir():
+            candidate = candidate / 'index.html'
+        if not candidate.is_file():
+            candidate = index
+        body = candidate.read_bytes()
+        media_type = mimetypes.guess_type(candidate.name)[0] or \
+            'application/octet-stream'
+        self.send_response(HTTPStatus.OK)
+        self.send_header('Content-Type', media_type)
+        self.send_header('Content-Length', str(len(body)))
+        if candidate != index:
+            self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
+        else:
+            self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        self.wfile.write(body)
+        return True
 
     def _events(self, experiment_id: str, sequence: int) -> None:
         self.context.manager.get(experiment_id)
@@ -278,13 +321,13 @@ def create_server(host: str = '127.0.0.1', port: int = 8000,
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='FederatedScope standalone experiment API')
+        description='FederatedScope unified experiment web/API service')
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--state-dir', type=Path)
     args = parser.parse_args()
     server = create_server(args.host, args.port, args.state_dir)
-    print(f'Standalone API listening on http://{args.host}:{args.port}')
+    print(f'FederatedScope service listening on http://{args.host}:{args.port}')
     try:
         server.serve_forever()
     except KeyboardInterrupt:

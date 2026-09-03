@@ -1,0 +1,80 @@
+use_gpu: True
+device: 0
+seed: 42
+verbose: 1
+log_file: t6_mdsent_lstm_formal_fedprox.log
+
+federate:
+  method: 'ggeur'
+  mode: 'standalone'
+  client_num: 120
+  total_round_num: 100
+  sample_client_num: 10
+
+data:
+  type: 'mdsent'
+  root: 'data/sentiment'
+  splits: [0.8, 0.0, 0.2]
+  dirichlet_alpha: 0.01
+  args:
+    - include_unlabeled: True
+      balance_test: True
+      seed: 42
+      use_cache: True
+
+dataloader:
+  batch_size: 32
+  num_workers: 0
+
+model:
+  type: 'ggeur_lstm'
+  num_classes: 4
+  in_channels: 768
+  hidden: 64
+  layer: 1
+  dropout: 0.8
+
+train:
+  local_update_steps: 5
+  optimizer:
+    type: 'Adam'
+    lr: 0.1
+
+fedprox:
+  use: True
+  mu: 10.0
+
+ggeur:
+  use: True
+  feature_extractor: 'bert'
+  bert_model_path: 'pretrained_models/nlptown_bert_base_multilingual_uncased_senti'
+  bert_tokenizer_path: ''
+  bert_max_length: 128
+  bert_pooling: 'cls'
+  bert_batch_size: 32
+  bert_local_files_only: True
+  bert_use_pretrained_weights: True
+  embedding_dim: 768
+  use_feature_cache: True
+  feature_cache_dir: 'exp/distributed_feature_cache/mdsent_lstm'
+  require_complete_feature_cache: False
+  reuse_augmented_feature_cache: False
+  save_augmented_feature_cache: False
+  num_generated_per_sample: 0
+  num_generated_per_prototype: 0
+  target_size_per_class: 0
+  baseline_target_samples_per_client: 2
+  min_statistics_clients: 3
+  min_augmentation_clients: 3
+  min_train_updates: 3
+  use_cross_client_prototypes: True
+  statistics_round: 0
+  mlp_hidden_dim: 0
+  mlp_dropout: 0.0
+  classifier_init_seed: -1
+  training_data_seed: -1
+  runtime_seed: -1
+  use_fedproto: False
+
+outdir: 'exp/ggeur_final_5models/mdsent_lstm/fedprox'
+expname: 'mdsent_lstm_fedprox'

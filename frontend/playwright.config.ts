@@ -13,7 +13,10 @@ export default defineConfig({
     viewport: { width: 1600, height: 1000 },
   },
   webServer: {
-    command: 'VITE_DATA_SOURCE=frontend_simulation npm run dev -- --port 4173',
+    command: 'npm run dev -- --port 4173',
+    env: {
+      VITE_DATA_SOURCE: 'frontend_simulation',
+    },
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: true,
     timeout: 60_000,

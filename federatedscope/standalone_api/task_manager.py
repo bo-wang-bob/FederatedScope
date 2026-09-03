@@ -31,7 +31,7 @@ class TaskConflict(RuntimeError):
 
 class ExperimentTaskManager:
     def __init__(self, repository: JsonRepository,
-                 runner: StandaloneProcessRunner,
+                 runner: Any,
                  output_root: Path):
         self.repository = repository
         self.runner = runner
@@ -65,10 +65,12 @@ class ExperimentTaskManager:
                           'experimentId': 'preflight'}
         result = copy.deepcopy(self.runner.preflight(runtime_config))
         result['template'] = Path(result.get('template', '')).name
-        result['dataRoot'] = 'OfficeHome'
-        result['modelPath'] = (
-            Path(result.get('modelPath', '')).name
-            if result.get('modelPath') else '')
+        if config.get('execution', {}).get('mode', 'standalone') == \
+                'standalone':
+            result['dataRoot'] = 'OfficeHome'
+            result['modelPath'] = (
+                Path(result.get('modelPath', '')).name
+                if result.get('modelPath') else '')
         result['partitionManifest'] = (
             Path(result.get('partitionManifest', '')).name
             if result.get('partitionManifest') else '')
@@ -81,16 +83,22 @@ class ExperimentTaskManager:
         with self._lock:
             if key and key in self._idempotency:
                 return self.get(self._idempotency[key])
+            execution_mode = config.get('execution', {}).get(
+                'mode', 'standalone')
             requested_device = config['common']['device']
             active = [
                 record for record in self.repository.list_experiments()
                 if record.get('status') in {'queued', 'running', 'stopping'}
-                and record.get('config', {}).get('common', {}).get('device') ==
-                requested_device
+                and (
+                    execution_mode == 'distributed' or
+                    record.get('config', {}).get('common', {}).get('device') ==
+                    requested_device)
             ]
             if active:
+                resource = ('实验室三机拓扑' if execution_mode == 'distributed'
+                            else requested_device.upper())
                 raise TaskConflict(
-                    f'{requested_device.upper()} 已有实验正在运行：'
+                    f'{resource} 已有实验正在运行：'
                     f"{active[0]['experimentId']}")
         self.preflight(config, scenario)
         experiment_id = f"EXP-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6].upper()}"
@@ -115,6 +123,10 @@ class ExperimentTaskManager:
             'name': public_config['name'],
             'type': public_config['type'],
             'method': public_config['common']['method'],
+            'executionMode': public_config.get('execution', {}).get(
+                'mode', 'standalone'),
+            'topologyId': public_config.get('execution', {}).get('topologyId'),
+            'group': public_config.get('execution', {}).get('group'),
             'scenarioId': public_config['scenarioId'],
             'scenarioSummary': {
                 'dataset': scenario['request']['dataset'],
@@ -133,6 +145,7 @@ class ExperimentTaskManager:
             'round': 0,
             'totalRounds': public_config['common']['rounds'],
             'clients': initial_clients,
+            'topology': {},
             'metrics': [],
             'events': [],
             'finalMetrics': {},
@@ -288,6 +301,12 @@ class ExperimentTaskManager:
                     **payload,
                     'source': 'backend',
                 }
+            if event_type == 'topology.status.changed' and payload.get('node'):
+                record.setdefault('topology', {})[payload['node']] = {
+                    **record.get('topology', {}).get(payload['node'], {}),
+                    **payload,
+                    'source': 'backend',
+                }
             if event_type == 'defense.decision':
                 dropped_display_ids = []
                 for client_id in payload.get('droppedClientIds', []):
@@ -410,6 +429,7 @@ class ExperimentTaskManager:
                 'totalRounds': record['totalRounds'],
                 'status': record['status'],
                 'clients': record['clients'],
+                'topology': record.get('topology', {}),
                 'metrics': record['metrics'],
                 'recentEvents': record['events'][-100:],
                 'source': 'backend',

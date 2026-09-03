@@ -1,9 +1,16 @@
 import importlib
 import glob
 import logging
+import os
 from os.path import dirname, basename, isfile, join
 
-modules = glob.glob(join(dirname(__file__), "*.py"))
+if os.environ.get('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT') == '1':
+    modules = [
+        join(dirname(__file__), 'ggeur_data.py'),
+        join(dirname(__file__), 'mdsent_data.py'),
+    ]
+else:
+    modules = glob.glob(join(dirname(__file__), "*.py"))
 __all__ = [
     basename(f)[:-3] for f in modules
     if isfile(f) and not f.endswith('__init__.py')

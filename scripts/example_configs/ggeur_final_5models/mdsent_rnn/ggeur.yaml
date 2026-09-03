@@ -1,0 +1,84 @@
+use_gpu: True
+device: 0
+seed: 42
+verbose: 1
+log_file: t5_mdsent_rnn_formal_platform.log
+
+federate:
+  method: 'ggeur'
+  mode: 'standalone'
+  client_num: 120
+  total_round_num: 200
+  sample_client_num: 10
+
+data:
+  type: 'mdsent'
+  root: 'data/sentiment'
+  splits: [0.8, 0.0, 0.2]
+  dirichlet_alpha: 0.01
+  args:
+    - include_unlabeled: True
+      balance_test: True
+      seed: 42
+      use_cache: True
+
+dataloader:
+  batch_size: 32
+  num_workers: 0
+
+model:
+  type: 'ggeur_rnn'
+  num_classes: 4
+  in_channels: 768
+  hidden: 256
+  layer: 1
+  dropout: 0.1
+
+train:
+  local_update_steps: 3
+  optimizer:
+    type: 'Adam'
+    lr: 1e-3
+
+ggeur:
+  use: True
+  feature_extractor: 'bert'
+  bert_model_path: 'pretrained_models/nlptown_bert_base_multilingual_uncased_senti'
+  bert_tokenizer_path: ''
+  bert_max_length: 128
+  bert_pooling: 'cls'
+  bert_batch_size: 32
+  bert_local_files_only: True
+  bert_use_pretrained_weights: True
+  embedding_dim: 768
+  use_feature_cache: True
+  feature_cache_dir: 'exp/distributed_feature_cache/mdsent_rnn'
+  require_complete_feature_cache: False
+  reuse_augmented_feature_cache: True
+  save_augmented_feature_cache: True
+  augmented_feature_cache_dir: 'exp/t2t6_4090_platform_cache/mdsent_rnn_fullstats_t200'
+  augmented_feature_cache_version: 'outline_mdsent_rnn_fullstats_t200_v3'
+  num_generated_per_sample: 50
+  num_generated_per_prototype: 50
+  target_size_per_class: 50
+  platform_target_samples_per_client: 200
+  platform_auto_target_samples_per_client: 0
+  platform_class_balanced_sampling: True
+  prototype_classifier_init: True
+  min_statistics_clients: 3
+  min_augmentation_clients: 3
+  min_train_updates: 3
+  use_cross_client_prototypes: True
+  max_cross_client_prototypes_per_class: 0
+  local_prototypes_per_class: 1
+  generation_covariance_scale: 0.1
+  statistics_round: 0
+  mlp_hidden_dim: 0
+  mlp_dropout: 0.0
+  classifier_init_seed: -1
+  training_data_seed: -1
+  runtime_seed: -1
+  use_fedproto: False
+
+outdir: 'exp/ggeur_final_5models/mdsent_rnn/ggeur'
+expname: 'mdsent_rnn_ggeur'

@@ -13,10 +13,16 @@ try:
 except ImportError:
     torch = None
 
-try:
-    import tensorflow as tf
-except ImportError:
+if os.environ.get('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT') == '1':
+    # The distributed GGEUR workers are PyTorch-only. Importing TensorFlow
+    # here eagerly costs hundreds of megabytes in every independent client
+    # process even though it is never used.
     tf = None
+else:
+    try:
+        import tensorflow as tf
+    except ImportError:
+        tf = None
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +106,7 @@ def param2tensor(param):
         param = torch.tensor(param, dtype=torch.long)
     elif isinstance(param, float):
         param = torch.tensor(param, dtype=torch.float)
-    elif isinstance(param, str):
+    elif isinstance(param, (str, bytes)):
         param = pickle.loads((base64.b64decode(param)))
     return param
 

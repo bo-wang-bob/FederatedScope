@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "profile_name": "T2-T6 4090 final",
+  "description": "Final single-node T2-T6 accuracy profile. Raw feature caches may be shared by all methods; generated/augmented feature caches are platform-only.",
+  "common": {
+    "use_gpu": true,
+    "device": 0,
+    "seed": 42,
+    "federate.mode": "standalone",
+    "federate.total_round_num": 100,
+    "dataloader.batch_size": 32,
+    "dataloader.num_workers": 0,
+    "train.optimizer.type": "Adam",
+    "train.optimizer.lr": 0.0001,
+    "minimum_absolute_improvement": 0.2
+  },
+  "cases": {
+    "t2_digit3_vit": {
+      "test_case": "T-02",
+      "model_name": "ViT",
+      "dataset_name": "MDDigits",
+      "config_dir": "digit3_vit",
+      "client_num": 60,
+      "sample_client_num": 0,
+      "local_update_steps": 5,
+      "dirichlet_concentration": 0.1,
+      "feature_cache_dir": "exp/distributed_feature_cache/digit3_vit",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/digit3_vit",
+        "/root/autodl-tmp/FederatedScope_t2t6_20260814/exp/distributed_feature_cache/digit3_vit"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mddigits_class_targets.json",
+      "task_class_count": 10,
+      "task_target_per_class": 40,
+      "resource_overrides": {
+        "ggeur.clip_model_path": "/root/.cache/clip/ViT-B-16.pt",
+        "ggeur.mlp_hidden_dim": 0,
+        "ggeur.mlp_dropout": 0.0
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 5.0,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 10,
+          "ggeur.num_generated_per_prototype": 20,
+          "ggeur.target_size_per_class": 40,
+          "ggeur.max_cross_client_prototypes_per_class": 12
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t2t6_formal_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3993,
+        "fedprox_accuracy": 0.4473,
+        "platform_accuracy": 0.7927,
+        "platform_minus_fedavg_points": 39.34,
+        "platform_minus_fedprox_points": 34.54,
+        "fedavg_seconds": 56.69,
+        "fedprox_seconds": 67.967,
+        "platform_seconds": 175.597
+      }
+    },
+    "t3_officehome_cnn": {
+      "test_case": "T-03",
+      "model_name": "CNN (ConvNeXt_Base)",
+      "dataset_name": "OfficeHome",
+      "config_dir": "officehome_cnn",
+      "client_num": 60,
+      "sample_client_num": 0,
+      "local_update_steps": 3,
+      "dirichlet_concentration": 0.1,
+      "feature_cache_dir": "exp/distributed_feature_cache/officehome_cnn",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/officehome_cnn"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/officehome_accuracy_class_targets.json",
+      "task_class_count": 65,
+      "task_target_per_class": 20,
+      "resource_overrides": {
+        "ggeur.cnn_pretrained": false,
+        "ggeur.cnn_checkpoint_path": "pretrained_models/convnext_base-6075fbad.pth",
+        "ggeur.mlp_hidden_dim": 0,
+        "ggeur.mlp_dropout": 0.0
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 5.0,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 20
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t2t6_formal_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.4513,
+        "fedprox_accuracy": 0.4712,
+        "platform_accuracy": 0.7525,
+        "platform_minus_fedavg_points": 30.12,
+        "platform_minus_fedprox_points": 28.13,
+        "fedavg_seconds": 23.977,
+        "fedprox_seconds": 28.795,
+        "platform_seconds": 395.53
+      }
+    },
+    "t4_officehome_mlp": {
+      "test_case": "T-04",
+      "model_name": "MLP (Mixer-B/16)",
+      "dataset_name": "OfficeHome",
+      "config_dir": "officehome_mixer",
+      "client_num": 60,
+      "sample_client_num": 0,
+      "local_update_steps": 3,
+      "dirichlet_concentration": 0.1,
+      "feature_cache_dir": "exp/distributed_feature_cache/officehome_mixer",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/officehome_mixer"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/officehome_accuracy_class_targets.json",
+      "task_class_count": 65,
+      "task_target_per_class": 20,
+      "resource_overrides": {
+        "ggeur.timm_pretrained": false,
+        "ggeur.timm_checkpoint_path": "/root/autodl-tmp/models/mixer_b16_224_complete.pth",
+        "ggeur.mlp_hidden_dim": 0,
+        "ggeur.mlp_dropout": 0.0
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 5.0,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 100,
+          "ggeur.num_generated_per_prototype": 100,
+          "ggeur.target_size_per_class": 20
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t2t6_formal_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.2776,
+        "fedprox_accuracy": 0.2884,
+        "platform_accuracy": 0.6187,
+        "platform_minus_fedavg_points": 34.11,
+        "platform_minus_fedprox_points": 33.03,
+        "fedavg_seconds": 22.963,
+        "fedprox_seconds": 27.822,
+        "platform_seconds": 347.917
+      }
+    },
+    "t5_mdsent_rnn": {
+      "test_case": "T-05",
+      "model_name": "RNN",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_rnn",
+      "client_num": 120,
+      "sample_client_num": 3,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_rnn",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_rnn"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 256,
+        "model.layer": 1,
+        "model.dropout": 0.1,
+        "ggeur.min_statistics_clients": 3,
+        "ggeur.min_augmentation_clients": 3,
+        "ggeur.min_train_updates": 3
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 0.1,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 20
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t2t6_formal_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3683,
+        "fedprox_accuracy": 0.3498,
+        "platform_accuracy": 0.6019,
+        "platform_minus_fedavg_points": 23.36,
+        "platform_minus_fedprox_points": 25.21,
+        "fedavg_seconds": 5.158,
+        "fedprox_seconds": 7.195,
+        "platform_seconds": 4.918
+      }
+    },
+    "t6_mdsent_lstm": {
+      "test_case": "T-06",
+      "model_name": "LSTM",
+      "dataset_name": "MDSent",
+      "config_dir": "mdsent_lstm",
+      "client_num": 120,
+      "sample_client_num": 6,
+      "local_update_steps": 2,
+      "dirichlet_concentration": 0.01,
+      "feature_cache_dir": "exp/distributed_feature_cache/mdsent_lstm",
+      "feature_cache_candidates": [
+        "exp/distributed_feature_cache/mdsent_lstm"
+      ],
+      "task_profile": "scripts/test_outline_validation/task_profiles/mdsent_class_targets.json",
+      "task_class_count": 4,
+      "task_target_per_class": 50,
+      "resource_overrides": {
+        "ggeur.bert_model_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_tokenizer_path": "/root/autodl-tmp/models/nlptown_bert_base_multilingual_uncased_senti",
+        "ggeur.bert_local_files_only": true,
+        "model.hidden": 64,
+        "model.layer": 1,
+        "model.dropout": 0.8,
+        "ggeur.min_statistics_clients": 6,
+        "ggeur.min_augmentation_clients": 6,
+        "ggeur.min_train_updates": 6
+      },
+      "method_overrides": {
+        "fedavg": {
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "fedprox": {
+          "fedprox.use": true,
+          "fedprox.mu": 5.0,
+          "ggeur.num_generated_per_sample": 0,
+          "ggeur.num_generated_per_prototype": 0,
+          "ggeur.target_size_per_class": 0,
+          "ggeur.baseline_target_samples_per_client": 2
+        },
+        "platform": {
+          "ggeur.num_generated_per_sample": 50,
+          "ggeur.num_generated_per_prototype": 50,
+          "ggeur.target_size_per_class": 50,
+          "ggeur.platform_target_samples_per_client": 0,
+          "ggeur.platform_auto_target_samples_per_client": 100
+        }
+      },
+      "recorded_result": {
+        "source": "docs/test_logs/t6_retuned_final_20260819/evidence_audit.json",
+        "fedavg_accuracy": 0.3862,
+        "fedprox_accuracy": 0.3716,
+        "platform_accuracy": 0.6647,
+        "platform_minus_fedavg_points": 27.85,
+        "platform_minus_fedprox_points": 29.31,
+        "fedavg_seconds": 6.369,
+        "fedprox_seconds": 8.669,
+        "platform_seconds": 8.954
+      }
+    }
+  }
+}
