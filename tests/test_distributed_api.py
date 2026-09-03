@@ -204,6 +204,31 @@ class DistributedRunnerCommandTest(unittest.TestCase):
             'data/digit_three_domain/dataset_manifest.json')
             for path in resources['root']))
 
+    def test_cleanup_uses_deterministic_case_and_continues_after_error(self):
+        config = validate_experiment(distributed_payload(
+            'officehome_vit', 'fedavg'))
+        runner = DistributedProcessRunner(
+            REPO_ROOT, topology=load_lab_topology(), probe_remote=False)
+        calls = []
+
+        def remote(node, script, **_kwargs):
+            calls.append((node.key, script))
+            if len(calls) == 1:
+                raise RuntimeError('client unreachable')
+            return ''
+
+        runner._remote = remote
+        errors = runner.cleanup(
+            config, REPO_ROOT / 'missing-output-directory')
+
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('client unreachable', errors[0])
+        self.assertTrue(all(
+            'EXP-DISTRIBUTED-TEST' in script for _, script in calls))
+        self.assertTrue(all(
+            'officehome_vit_fedavg' in script for _, script in calls))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -120,6 +120,15 @@ class SlowRunner(FakeRunner):
         return -15
 
 
+class RecoveryRunner(FakeRunner):
+    def __init__(self):
+        self.cleanup_calls = []
+
+    def cleanup(self, config, output_dir, emit=None):
+        self.cleanup_calls.append((config, output_dir, emit))
+        return []
+
+
 class DefenseRunner(FakeRunner):
     def run(self, config, output_dir, stop_event, emit, on_metric):
         emit('defense.decision', {
@@ -435,6 +444,37 @@ class StandaloneTaskManagerTest(unittest.TestCase):
                 break
             time.sleep(0.01)
         self.assertEqual(current['status'], 'stopped')
+
+    def test_restart_cleans_interrupted_distributed_processes(self):
+        config = experiment_payload()
+        config['execution'] = {
+            'mode': 'distributed', 'group': 'officehome_vit'}
+        record = {
+            'experimentId': 'EXP-INTERRUPTED',
+            'executionMode': 'distributed',
+            'config': config,
+            'status': 'running',
+            'topology': {
+                'root': {'ready': True, 'status': '根聚合服务运行中'},
+                'client': {'ready': True, 'status': '逻辑客户端运行中'},
+            },
+        }
+        self.repository.save_experiment(record)
+        runner = RecoveryRunner()
+
+        ExperimentTaskManager(
+            self.repository, runner, Path(self.temporary.name) / 'runs')
+
+        recovered = self.repository.get_experiment('EXP-INTERRUPTED')
+        self.assertEqual(recovered['status'], 'failed')
+        self.assertEqual(recovered['error']['code'], 'API_RESTARTED')
+        self.assertIn('已清理', recovered['error']['message'])
+        self.assertEqual(len(runner.cleanup_calls), 1)
+        self.assertEqual(
+            runner.cleanup_calls[0][0]['experimentId'], 'EXP-INTERRUPTED')
+        self.assertFalse(recovered['topology']['root']['ready'])
+        self.assertEqual(recovered['topology']['root']['status'],
+                         '服务重启后已清理')
 
     def test_terminal_log_round_cannot_regress_public_progress(self):
         manager = ExperimentTaskManager(

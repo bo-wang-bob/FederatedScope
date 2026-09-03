@@ -50,14 +50,53 @@ class ExperimentTaskManager:
                 record.get('config', {}).get('idempotencyKey', '')).strip()
             if idempotency_key:
                 self._idempotency[idempotency_key] = record['experimentId']
-            if record.get('status') in {'created', 'validating', 'queued',
-                                        'running', 'stopping'}:
+            interrupted = record.get('status') in {
+                'created', 'validating', 'queued', 'running', 'stopping'}
+            topology_may_be_live = any(
+                bool(node.get('ready'))
+                for node in record.get('topology', {}).values()
+                if isinstance(node, dict))
+            recover_failed = (
+                record.get('status') == 'failed' and
+                record.get('executionMode') == 'distributed' and
+                topology_may_be_live)
+            cleanup_errors: List[str] = []
+            should_cleanup = recover_failed or (
+                interrupted and topology_may_be_live)
+            if should_cleanup:
+                cleanup = getattr(self.runner, 'cleanup', None)
+                if cleanup is not None:
+                    runtime_config = {
+                        **copy.deepcopy(record.get('config', {})),
+                        'experimentId': record['experimentId'],
+                    }
+                    try:
+                        cleanup_errors = cleanup(
+                            runtime_config,
+                            self.output_root / record['experimentId']) or []
+                    except Exception as error:
+                        cleanup_errors = [str(error)]
+                if not cleanup_errors:
+                    for node in record.get('topology', {}).values():
+                        if isinstance(node, dict):
+                            node.update({
+                                'status': '服务重启后已清理',
+                                'ready': False,
+                            })
+            if interrupted:
                 record['status'] = 'failed'
                 record['endedAt'] = utc_now()
                 record['error'] = {
                     'code': 'API_RESTARTED',
-                    'message': '控制服务重启，原训练进程状态无法恢复',
+                    'message': (
+                        '控制服务重启，原训练进程已清理'
+                        if should_cleanup and not cleanup_errors else
+                        '控制服务重启，残留进程清理失败：' +
+                        '；'.join(cleanup_errors)
+                        if cleanup_errors else
+                        '控制服务重启，原任务状态无法恢复'),
                 }
+            if interrupted or recover_failed:
                 self.repository.save_experiment(record)
 
     def preflight(self, config: Dict[str, Any], scenario: Dict[str, Any]) -> Dict[str, Any]:

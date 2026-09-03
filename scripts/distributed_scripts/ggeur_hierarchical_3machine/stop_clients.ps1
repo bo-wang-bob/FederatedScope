@@ -28,15 +28,18 @@ Get-ChildItem -LiteralPath $PidDir -Filter "client_*.pid" -ErrorAction SilentlyC
                 Write-Warning "Refuse to stop reused/unrelated PID $clientPid"
                 return
             }
-            Stop-Process -Id $clientPid
-            try {
-                Wait-Process -Id $clientPid -Timeout 30 -ErrorAction Stop
-            } catch {
-                if ($Force) {
-                    Stop-Process -Id $clientPid -Force
-                    Wait-Process -Id $clientPid -Timeout 10 `
-                        -ErrorAction SilentlyContinue
-                } else {
+            if ($Force) {
+                # Failure rollback must release dozens of well-known ports
+                # promptly. A graceful 30-second wait per client can take
+                # half an hour and leave a partially cleaned experiment.
+                Stop-Process -Id $clientPid -Force
+                Wait-Process -Id $clientPid -Timeout 10 `
+                    -ErrorAction SilentlyContinue
+            } else {
+                Stop-Process -Id $clientPid
+                try {
+                    Wait-Process -Id $clientPid -Timeout 30 -ErrorAction Stop
+                } catch {
                     Write-Warning "PID $clientPid did not stop; rerun with -Force"
                     return
                 }

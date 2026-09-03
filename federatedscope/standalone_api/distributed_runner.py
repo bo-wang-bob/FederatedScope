@@ -692,7 +692,14 @@ class DistributedProcessRunner:
                 f"{shlex.quote(root_case)}", timeout=3600)
 
     def _stop_remote(self, case_relative: str,
-                     emit: EventCallback) -> None:
+                     emit: EventCallback | None = None,
+                     status: str | None = '已停止') -> List[str]:
+        """Best-effort cleanup for every role belonging to one case.
+
+        Cleanup must never stop at the first unreachable node.  Otherwise a
+        client-side failure can leave the root and subservers holding their
+        well-known ports and every later experiment will fail preflight.
+        """
         client = self.topology.client
         third = self.topology.subserver
         root = self.topology.root
@@ -715,13 +722,53 @@ class DistributedProcessRunner:
                    f"{shlex.quote(root_script + '/stop_role.sh')} "
                    f"{shlex.quote(root_case)} root true"),
         ])
+        errors: List[str] = []
         for node, command in commands:
             try:
                 self._remote(node, command, timeout=180, check=False)
+            except Exception as error:  # cleanup must continue on other nodes
+                errors.append(f'{node.key}: {error}')
+                if emit is not None:
+                    emit('warning.raised', {
+                        'level': 'error',
+                        'message': f'{node.label}清理失败：{error}',
+                    })
             finally:
-                emit('topology.status.changed', {
-                    'node': node.key, 'label': node.label,
-                    'status': '已停止', 'ready': False})
+                if emit is not None and status is not None:
+                    emit('topology.status.changed', {
+                        'node': node.key, 'label': node.label,
+                        'status': status, 'ready': False})
+        return errors
+
+    def cleanup(self, config: Dict[str, Any], output_dir: Path,
+                emit: EventCallback | None = None) -> List[str]:
+        """Recover processes for an interrupted or failed experiment.
+
+        The case path is deterministic, so cleanup also works after the API
+        process has restarted and lost its in-memory worker/thread state.
+        """
+        run_id = re.sub(
+            r'[^A-Za-z0-9_.-]', '_', str(config['experimentId']))
+        group = str(config.get('execution', {}).get('group', '')).strip()
+        if not group:
+            return []
+        method = self._source_method(config['common']['method'])
+        case_name = f'{group}_{method}'
+        matrix_path = (output_dir / 'distributed_cases' / run_id /
+                       'matrix_manifest.json')
+        if matrix_path.is_file():
+            try:
+                matrix = json.loads(
+                    matrix_path.read_text(encoding='utf-8-sig'))
+                case_name = str(matrix['cases'][0]['case'])
+            except (KeyError, IndexError, TypeError, ValueError, OSError):
+                # Fall back to the generator's deterministic case name.
+                pass
+        case_relative = str(
+            SCRIPT_RELATIVE / 'runs' / run_id / case_name)
+        return self._stop_remote(
+            case_relative, emit=emit,
+            status='失败后已清理' if emit is not None else None)
 
     def _root_status(self, remote_case: str) -> str:
         node = self.topology.root
@@ -820,17 +867,18 @@ class DistributedProcessRunner:
                 return -15
             emit('stage.changed', {
                 'phaseIndex': 1, 'round': 0, 'stage': '分布式角色启动'})
-            self._launch(case_relative, has_root_clients, emit)
-            remote_case = (
-                f"{self.topology.root.repo.rstrip('/')}/{case_relative}")
-            emit('stage.changed', {
-                'phaseIndex': 2, 'round': 0, 'stage': '分布式训练'})
-            state: Dict[str, Any] = {'round': -1, 'line': 1}
-            stopped_polls = 0
+            cleanup_status: str | None = None
             try:
+                self._launch(case_relative, has_root_clients, emit)
+                remote_case = (
+                    f"{self.topology.root.repo.rstrip('/')}/{case_relative}")
+                emit('stage.changed', {
+                    'phaseIndex': 2, 'round': 0, 'stage': '分布式训练'})
+                state: Dict[str, Any] = {'round': -1, 'line': 1}
+                stopped_polls = 0
                 while True:
                     if stop_event.is_set():
-                        self._stop_remote(case_relative, emit)
+                        cleanup_status = '已停止'
                         return -15
                     new_text = self._root_log(remote_case, state['line'])
                     if new_text:
@@ -846,27 +894,35 @@ class DistributedProcessRunner:
                     if stopped_polls >= 2:
                         break
                     time.sleep(2.0)
+                final_text = self._root_log(remote_case, 1)
+                if final_text:
+                    full_lines = final_text.splitlines()
+                    already = max(0, state['line'] - 1)
+                    if already < len(full_lines):
+                        self._consume_log(
+                            '\n'.join(full_lines[already:]),
+                            config['execution']['group'], state, log_stream,
+                            emit, on_metric)
+                success = ('Best Average Accuracy:' in final_text and
+                           'Traceback (most recent call last)' not in
+                           final_text)
+                if not success:
+                    cleanup_status = '异常退出后已清理'
+                for node in self.topology.nodes:
+                    emit('topology.status.changed', {
+                        'node': node.key, 'label': node.label,
+                        'status': ('任务完成' if success else
+                                   '任务异常退出'),
+                        'ready': success})
+                return 0 if success else 1
             except Exception:
-                self._stop_remote(case_relative, emit)
+                cleanup_status = '失败后已清理'
                 raise
-
-            final_text = self._root_log(remote_case, 1)
-            if final_text:
-                full_lines = final_text.splitlines()
-                already = max(0, state['line'] - 1)
-                if already < len(full_lines):
-                    self._consume_log(
-                        '\n'.join(full_lines[already:]),
-                        config['execution']['group'], state, log_stream,
-                        emit, on_metric)
-            success = ('Best Average Accuracy:' in final_text and
-                       'Traceback (most recent call last)' not in final_text)
-            for node in self.topology.nodes:
-                emit('topology.status.changed', {
-                    'node': node.key, 'label': node.label,
-                    'status': '任务完成' if success else '任务异常退出',
-                    'ready': success})
-            return 0 if success else 1
+            finally:
+                # Also reap normally exited roles to remove scheduled tasks,
+                # pid files and any late/stuck client process.
+                self._stop_remote(
+                    case_relative, emit=emit, status=cleanup_status)
 
 
 class DispatchingExperimentRunner:
@@ -889,3 +945,11 @@ class DispatchingExperimentRunner:
             on_metric: MetricCallback) -> int:
         return self._select(config).run(
             config, output_dir, stop_event, emit, on_metric)
+
+    def cleanup(self, config: Dict[str, Any], output_dir: Path,
+                emit: EventCallback | None = None) -> List[str]:
+        selected = self._select(config)
+        cleanup = getattr(selected, 'cleanup', None)
+        if cleanup is None:
+            return []
+        return cleanup(config, output_dir, emit)
