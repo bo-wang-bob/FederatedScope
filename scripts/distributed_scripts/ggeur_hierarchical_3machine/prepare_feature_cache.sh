@@ -116,13 +116,22 @@ import numpy as np
 
 for path in sys.argv[1:]:
     with np.load(path, allow_pickle=True) as cache:
-        if 'paths' not in cache or 'features' not in cache:
-            raise SystemExit(f'invalid feature cache keys: {path}')
-        paths = cache['paths']
+        if 'features' not in cache:
+            raise SystemExit(f'missing feature cache vectors: {path}')
         features = cache['features']
-        if len(paths) == 0 or features.ndim != 2 or \
-                len(paths) != len(features):
+        if features.ndim != 2 or len(features) == 0:
             raise SystemExit(f'invalid feature cache shape: {path}')
+        if 'paths' in cache:
+            identifiers = cache['paths']
+        elif 'labels' in cache:
+            # Root-side held-out evaluation caches intentionally store labels
+            # instead of raw paths.  They are as much a runtime dependency as
+            # the client-side path-keyed training caches.
+            identifiers = cache['labels']
+        else:
+            raise SystemExit(f'invalid feature cache keys: {path}')
+        if len(identifiers) != len(features):
+            raise SystemExit(f'feature cache length mismatch: {path}')
         if not np.isfinite(features).all():
             raise SystemExit(f'non-finite feature cache values: {path}')
 PY
