@@ -55,7 +55,9 @@ function Workspace() {
       busy = true;
       try {
         const [c, j, l, r] = await Promise.all([api<Catalog>('catalog'), api<Job[]>('jobs'), api<Library>('library'), api<Resource>('resources')]);
-        const training = j.find(job => job.action === 'train' && !terminal(job.status)) || j.find(job => job.action === 'train');
+        const training = j.find(job => job.action === 'train' && !terminal(job.status))
+          || j.find(job => job.action === 'train' && job.status === 'completed')
+          || j.find(job => job.action === 'train');
         const detail = training ? await api<Job>(`jobs/${training.id}`) : undefined;
         if (active) { setCatalog(c); setJobs(j); setLibrary(l); setResources(old => [...old, r].slice(-60)); setOverview(detail); setError(''); }
       } catch (e) { if (active) setError((e as Error).message); }
@@ -109,7 +111,9 @@ function Workspace() {
         <div className="platform-grid"><Panel title="最近实验的训练曲线" extra={overview && <Button type="link" onClick={() => open(overview.id)}>查看实验 →</Button>}><Curves points={overview?.metrics || []} /></Panel><Panel title="实验记录" extra={<Button type="link" onClick={() => setQuery({ view: 'jobs' })}>全部任务 →</Button>}><JobTable jobs={jobs.filter(j => j.action !== 'inspect').slice(0, 5)} open={open} /></Panel></div>
         <Alert type="info" showIcon title="默认仅使用已有特征缓存；GGEUR 增强缓存尚未通过来源核验时不可启动。" />
       </>}
-      {view === 'cache' && <><p className="platform-muted">这里只列出磁盘发现结果。预检会校验每个客户端样本、测试标签、特征维度与缓存哈希。</p><div className="platform-cache-grid">{catalog.groups.map(g => <Card key={g.id} title={g.dataset} extra={<Tag color={g.cacheFound ? 'blue' : 'error'}>{g.cacheFound ? '缓存已发现' : '缓存缺失'}</Tag>}><span className="platform-backbone">{g.backbone.toUpperCase()}</span><p>{g.domains} 个域 · {g.cacheFiles} 个文件 · {bytes(g.cacheBytes)}</p><p className="platform-muted">{g.methods.filter(m => m.enabled).map(m => m.label).join(' / ')}</p><Button disabled={!g.cacheFound || !!error} onClick={() => setQuery({ view: 'train', group: g.id })}>配置与完整预检</Button></Card>)}</div></>}
+      {view === 'cache' && <><p className="platform-muted">已通过预检的配置优先显示。历史预检不代替本次校验；缓存版本或参数变化会明确报错。</p><div className="platform-cache-grid">{[...catalog.groups].sort((a, b) => Number(b.lastPreflight?.status === 'completed') - Number(a.lastPreflight?.status === 'completed')).map(g => <Card key={g.id} title={g.dataset} extra={<Tag color={g.lastPreflight?.status === 'completed' ? 'success' : g.cacheFound ? 'blue' : 'error'}>{g.lastPreflight?.status === 'completed' ? '上次预检通过' : g.cacheFound ? '缓存已发现' : '缓存缺失'}</Tag>}><span className="platform-backbone">{g.backbone.toUpperCase()}</span><p>{g.domains} 个域 · {g.cacheFiles} 个文件 · {bytes(g.cacheBytes)}</p><p className="platform-muted">{g.methods.filter(m => m.enabled).map(m => m.label).join(' / ')}</p>
+        {g.lastPreflight && <p className="platform-muted">最近预检：{new Date(g.lastPreflight.at).toLocaleString()}<br />{g.lastPreflight.error && <span style={{ color: '#f392a0' }}>{g.lastPreflight.error}</span>}</p>}
+        <Space wrap><Button disabled={!g.cacheFound || !!error} onClick={() => setQuery({ view: 'train', group: g.id, ...(g.lastPreflight?.status === 'completed' ? { source: g.lastPreflight.id } : {}) })}>{g.lastPreflight?.status === 'completed' ? '复用已核验配置' : '配置与完整预检'}</Button>{g.lastPreflight && <Button type="link" onClick={() => open(g.lastPreflight!.id)}>预检记录</Button>}</Space></Card>)}</div></>}
       {view === 'train' && <TrainingForm catalog={catalog} initialGroup={query.get('group') || undefined} sourceId={query.get('source') || undefined} resources={latest} running={running} disconnected={!!error} create={create} open={open} />}
       {view === 'jobs' && <>{selectedId ? <><Button type="link" onClick={() => setQuery({ view: 'jobs' })}>← 返回任务列表</Button>{detailError && <Alert type="error" title={detailError} />}{showJob ? <JobDetail job={showJob} resources={latest} library={library} stop={stop} rerun={() => setQuery({ view: 'train', source: showJob.id, group: showJob.request.group })} /> : !detailError && <Spin />}</> : <Panel title="所有任务"><JobTable jobs={jobs} open={open} /></Panel>}</>}
       {view === 'evaluate' && <EvaluationPanel library={library} disabled={!!error || !!running} create={create} open={open} />}

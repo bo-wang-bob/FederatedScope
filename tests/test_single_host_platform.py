@@ -70,7 +70,8 @@ class PlatformTests(unittest.TestCase):
     def test_reject_invalid_and_ignored_parameters(self):
         for extra in ({'rounds': True}, {'learningRate': float('nan')}, {'gpu': '1'},
                       {'clientCount': 59}, {'sampleClients': 61}, {'unexpected': 2},
-                      {'group': '../officehome_vit'}, {'method': 'heterogeneous_solution'}):
+                      {'group': '../officehome_vit'}, {'method': []}, {'group': {}},
+                      {'method': 'heterogeneous_solution'}):
             with self.subTest(extra=extra), self.assertRaises(PlatformError):
                 self.configs.normalize(dict(self.payload, **extra))
 
@@ -78,6 +79,19 @@ class PlatformTests(unittest.TestCase):
         for extra in ({'alpha': .5}, {'splitSeed': 5}, {'clientCount': 30}):
             with self.assertRaises(PlatformError):
                 self.configs.normalize(dict(group='digit3_vit', method='fedavg', **extra))
+
+    def test_registered_test_cache_does_not_replace_training_cache(self):
+        with patch.dict(os.environ, {'FS_PLATFORM_CACHE_OFFICEHOME_VIT': '/existing/train',
+                                    'FS_PLATFORM_TEST_CACHE_OFFICEHOME_VIT': '/existing/test'}):
+            config, provenance = self.configs.build(self.configs.normalize(self.payload), self.temp.name)
+        self.assertEqual(config['ggeur']['feature_cache_dir'], str(Path('/existing/train')))
+        self.assertEqual(provenance['testCacheDir'], '/existing/test')
+
+    def test_catalog_reports_latest_terminal_preflight(self):
+        job = self.complete_preflight()
+        group = next(g for g in self.service.catalog()['groups'] if g['id'] == self.payload['group'])
+        self.assertEqual(group['lastPreflight']['id'], job['id'])
+        self.assertEqual(group['lastPreflight']['status'], 'completed')
 
     def test_idempotency_and_exclusive_reservation(self):
         first = self.create_without_start()

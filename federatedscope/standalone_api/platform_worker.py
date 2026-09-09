@@ -148,6 +148,13 @@ def prepare(spec):
     server_probe = object.__new__(GGEURServer)
     server_probe._cfg, server_probe.ggeur_cfg = cfg, cfg.ggeur
     server_probe.feature_extractor_type = cfg.ggeur.feature_extractor
+    test_root = spec.get('provenance', {}).get('testCacheDir')
+    if test_root:
+        if not Path(test_root).is_dir():
+            raise ValueError(f'缺少已登记的测试缓存目录：{test_root}')
+        # A separate existing test cache must never replace the training cache.
+        server_probe.ggeur_cfg = cfg.ggeur.clone()
+        server_probe.ggeur_cfg.feature_cache_dir = test_root
     for domain, rows in tests.items():
         if all(key in caches[domain] for key in rows):
             test_provenance[domain] = 'embedded-sample-ids'
@@ -190,6 +197,7 @@ def prepare(spec):
         'runtime': {'torch': str(torch.__version__), 'numpy': np.__version__,
                     'cuda': torch.version.cuda, 'inference': 'CPU float32 / batch 256 / threads 2'},
         'testFingerprint': test_fingerprint, 'cacheFiles': files,
+        'cacheLocations': {'features': str(cache_root), 'tests': test_root or str(cache_root)},
         'featureDimension': int(cfg.ggeur.embedding_dim),
         'classCount': int(cfg.model.num_classes),
         'classes': class_names or [str(i) for i in range(cfg.model.num_classes)],

@@ -6,6 +6,7 @@ export interface RequestConfig {
 export interface Group {
   id: string; dataset: string; backbone: string; domains: number; cacheFound: boolean;
   cacheFiles: number; cacheBytes: number; partitionLocked: boolean;
+  lastPreflight?: { id: string; status: string; at: string; error: string | null } | null;
   methods: { id: string; label: string; enabled: boolean; reason: string | null; defaults: RequestConfig }[];
 }
 export interface Catalog { groups: Group[]; host: string; address: string; protocol: string; evaluationPolicy: string }

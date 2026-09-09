@@ -42,7 +42,8 @@ class ConfigFactory:
                                            '/root/autodl-tmp/datasets'))
 
     def source(self, group, method):
-        if group not in self.groups() or method not in METHODS:
+        if (not isinstance(group, str) or not isinstance(method, str)
+                or group not in self.groups() or method not in METHODS):
             raise PlatformError('不支持的数据配置或算法')
         name = 'ggeur' if method == 'heterogeneous_solution' else method
         path = self.sources / group / (name + '.yaml')
@@ -53,6 +54,10 @@ class ConfigFactory:
     def groups(self):
         return sorted(p.name for p in self.sources.iterdir() if p.is_dir()
                       and p.name.split('_')[0] in FAMILIES)
+
+    def cache_dir(self, group):
+        return Path(os.environ.get('FS_PLATFORM_CACHE_' + group.upper(),
+                    str(self.resources / 'exp/distributed_feature_cache' / group)))
 
     def defaults(self, group, method):
         raw = yaml.safe_load(self.source(group, method).read_text(encoding='utf-8'))
@@ -71,7 +76,7 @@ class ConfigFactory:
         entries = []
         for group in self.groups():
             family, backbone = group.split('_', 1)
-            cache = self.resources / 'exp/distributed_feature_cache' / group
+            cache = self.cache_dir(group)
             files = list(cache.glob('*.npz'))
             methods = []
             for method, label in METHODS.items():
@@ -153,7 +158,7 @@ class ConfigFactory:
         g = raw['ggeur']
         g.update(hierarchical_training=False, use_feature_cache=True,
                  require_complete_feature_cache=True,
-                 feature_cache_dir=str(self.resources / 'exp/distributed_feature_cache' / req['group']),
+                 feature_cache_dir=str(self.cache_dir(req['group'])),
                  reuse_augmented_feature_cache=False, save_augmented_feature_cache=False,
                  num_generated_per_sample=0, num_generated_per_prototype=0,
                  target_size_per_class=0, baseline_target_samples_per_client=req['samplesPerClient'],
@@ -178,6 +183,7 @@ class ConfigFactory:
             raw['data']['args'][0]['seed'] = req['splitSeed']
             g['bert_model_path'] = str(self.resources / 'pretrained_models/nlptown_bert_base_multilingual_uncased_senti')
         return raw, {'source': str(path.relative_to(self.repo)), 'sourceSha256': sha256(path),
+                     'testCacheDir': os.environ.get('FS_PLATFORM_TEST_CACHE_' + req['group'].upper()),
                      'protocol': 'cache-only-v1', 'parameterBindings': {
                          'rounds': 'federate.total_round_num = rounds + 1 (round 0 is initialization)', 'clientCount': 'federate.client_num',
                          'sampleClients': 'federate.sample_client_num (0=all)',

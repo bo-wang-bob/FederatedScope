@@ -79,7 +79,7 @@ class PlatformHandler(ApiHandler):
         service = self.context.platform
         if not write:
             endpoints = {'/api/health': lambda: {'status': 'ok', 'mode': 'single-host', 'commit': service.commit},
-                         '/api/platform/catalog': service.configs.catalog,
+                         '/api/platform/catalog': service.catalog,
                          '/api/platform/resources': service.resources,
                          '/api/platform/jobs': service.list,
                          '/api/platform/library': service.library}

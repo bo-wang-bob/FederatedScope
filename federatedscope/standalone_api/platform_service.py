@@ -326,6 +326,18 @@ class PlatformService:
                                      sha256=result['artifactHashes']['pretrained_test_features.pt']))
         return dict(models=models, testsets=testsets)
 
+    def catalog(self):
+        catalog = self.configs.catalog()
+        latest = {}
+        for job in self.list():
+            if job['action'] == 'inspect' and job['status'] in TERMINAL:
+                latest.setdefault(job['request']['group'], {
+                    'id': job['id'], 'status': job['status'], 'at': job['updatedAt'],
+                    'error': job['error']})
+        for group in catalog['groups']:
+            group['lastPreflight'] = latest.get(group['id'])
+        return catalog
+
     def _evaluation_request(self, payload):
         if set(payload) - {'modelId', 'testsetId', 'domains', 'classes', 'name', 'idempotencyKey'}:
             raise PlatformError('评测含未知参数')
