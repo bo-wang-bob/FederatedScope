@@ -1,0 +1,91 @@
+/* Extend the existing command-center shell, panel and metric-card system. */
+:root { color-scheme: dark; }
+html, body, #root { min-width: 360px; }
+body { background: #07101f; color: #e5f1fb; }
+.platform-shell { display: block; position: relative; z-index: 1; }
+.platform-shell .app-layout { width: 100%; }
+.platform-shell .app-sider { width: 228px; }
+.platform-shell .app-sider + .ant-layout { min-width: 0; }
+.platform-main { margin-left: 0; max-width: 1950px; margin-right: auto; padding: 26px 30px 0; }
+.platform-main h1, .platform-main h2 { color: #eff8ff; }
+.platform-header { border-color: rgba(122,175,218,.15); padding-bottom: 18px; margin-bottom: 16px; }
+.platform-eyebrow { color: #5fbcd8; letter-spacing: .16em; font-size: 12px; }
+.platform-muted, .platform-intro p { color: #8ca4b9; }
+.platform-intro { margin: 18px 0 23px; }
+.platform-intro h2 { font-size: 23px; letter-spacing: .02em; }
+.platform-shell .brand { height: 96px; padding-inline: 21px; }
+.platform-shell .brand-title { font-size: 21px; letter-spacing: .16em; }
+.platform-shell .brand-subtitle { font: 10px/1.8 Inter,sans-serif; color: #7095b1; }
+.platform-shell .system-label { font-size: 12px; color: #7894ac; padding-bottom: 13px; }
+.platform-shell .side-menu .ant-menu-item { height: 48px; line-height: 48px; margin-block: 5px; font-size: 14px; }
+.platform-shell .side-menu .ant-menu-item-selected { background: linear-gradient(90deg, #15466280, #13334833)!important; }
+.platform-shell .sidebar-status { bottom: 23px; border-color: #2d495d; padding: 16px; }
+.platform-shell .engine-row { font-size: 13px; }
+.platform-shell .engine-row strong { font: 600 16px/1.5 Consolas,monospace; }
+.platform-shell .app-header { height: 62px!important; background: #091523dd!important; }
+.platform-shell .context-name { font-size: 14px; }
+.platform-shell .ant-tag { font-size: 12px; line-height: 22px; border-radius: 5px; }
+.platform-shell .ant-alert { border-radius: 8px; }
+.platform-shell .ant-form-item-label > label { color: #d3e2ee; font-size: 14px; }
+.platform-shell .ant-form-item-extra { font-size: 12px; color: #7b98b0; min-height: 22px; }
+.platform-shell .ant-form-item-control-input { font-size: 14px; }
+.platform-shell .ant-input, .platform-shell .ant-input-number, .platform-shell .ant-select-selector { border-color: #2a4259!important; background: #091827!important; }
+.platform-shell .ant-input-number-input { height: 38px; }
+.platform-shell .ant-input:hover, .platform-shell .ant-input-number:hover, .platform-shell .ant-select-selector:hover { border-color: #4695b7!important; }
+.platform-shell .ant-btn-primary { background: linear-gradient(125deg, #35bae4, #259ac6); color: #031829; font-weight: 600; border-color: #50c3e8; box-shadow: 0 4px 15px #1a93bc25; }
+.platform-shell .ant-btn-primary:disabled { background: #173346; color: #7893a5; border-color: #29495b; box-shadow: none; }
+.platform-panel, .platform-cache-grid .ant-card { border: 1px solid #28415a; background: linear-gradient(145deg,#102337f5,#0b1a2bf5); border-radius: 10px; box-shadow: 0 7px 26px #0000001a; overflow: hidden; }
+.platform-panel .panel-head, .platform-panel .ant-card-head { min-height: 60px; padding: 16px 21px; border-bottom: 1px solid #2e4c603f; }
+.platform-panel .panel-head h3 { font-size: 16px; color: #e3f2fd; font-weight: 600; letter-spacing: .02em; }
+.platform-panel .panel-body, .platform-panel .ant-card-body { padding: 21px; }
+.platform-panel .ant-empty { padding: 25px 0; }
+.platform-panel .panel-head::before { content: ''; width: 3px; height: 17px; margin-left: -21px; background: #44d8ff; box-shadow: 0 0 12px #44d8ff55; flex: none; }
+.platform-panel .panel-head > div:first-of-type { margin-right: auto; margin-left: -6px; }
+.platform-stats { gap: 16px; }
+.platform-shell .metric-card, .platform-stat { border: 1px solid #263f55; border-radius: 10px; background: linear-gradient(130deg,#122c41,#0d1c2e); padding: 18px 22px 17px; border-top: 2px solid #345a73; }
+.platform-shell .metric-top, .platform-stat span { font-size: 14px; color: #94adc0; }
+.platform-shell .metric-value, .platform-stat strong { color: #eafbff; font: 600 32px/1.5 Inter,Consolas,sans-serif; font-variant-numeric: tabular-nums; margin-top: 8px; }
+.platform-shell .metric-delta, .platform-stat small { color: #7595ad; font-size: 12px; line-height: 1.7; }
+.platform-stats > :nth-child(2) { border-top-color: #2fa691; }
+.platform-stats > :nth-child(3) { border-top-color: #9684d7; }
+.platform-stats > :nth-child(4) { border-top-color: #b99143; }
+.platform-grid { gap: 22px; }
+.platform-overview-grid { grid-template-columns: minmax(0,1.65fr) minmax(300px,1fr); }
+.platform-topology-meta { display: flex; align-items: center; justify-content: center; gap: 24px; color: #8aafc5; font-size: 13px; }
+.platform-topology-meta strong { color: #4fdcff; font: 600 26px/1.6 Consolas,monospace; }
+.platform-topology-meta small { font: 13px Inter,sans-serif; color: #b3ccd9; }
+.platform-overview-grid > .platform-panel:first-child .panel-body { background: radial-gradient(ellipse at 50% 50%,#16618420,transparent 60%),linear-gradient(#37779508 1px,transparent 1px),linear-gradient(90deg,#37779508 1px,transparent 1px); background-size: auto,22px 22px,22px 22px; }
+.platform-flow-board { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 9px; border-top: 1px solid #3150665c; padding-top: 20px; }
+.platform-flow-board button { display: flex; align-items: center; gap: 10px; padding: 10px; text-align: left; background: #0a1b2ac7; border: 1px solid #29455a; border-radius: 7px; cursor: pointer; color: #b7cbd9; }
+.platform-flow-board button:hover { border-color: #44d8ff; background: #123349; }
+.platform-flow-board i { color: #547c97; font: normal 19px Consolas,monospace; }
+.platform-flow-board span { font-size: 14px; white-space: nowrap; }
+.platform-flow-board small { display: block; color: #718fa5; font-size: 12px; margin-top: 3px; }
+.platform-flow-board .done { border-color: #29716080; }
+.platform-flow-board .done i, .platform-flow-board .done small { color: #35cbae; }
+.platform-resource-cards > div { padding: 15px 0; border-bottom: 1px solid #29435777; }
+.platform-resource-cards > div > div { color: #bdd5e7; }
+.platform-resource-cards strong { color: #e1f3ff; }
+.platform-resource-cards small, .platform-resource-cards p { color: #87a7bd; font-size: 13px; }
+.platform-resource-cards p { padding-top: 15px; line-height: 1.8; }
+.platform-shell .ant-progress-bg { background: linear-gradient(90deg,#318db9,#42d9da)!important; }
+.platform-shell .ant-progress-text { font-size: 13px!important; }
+.platform-training-grid { grid-template-columns: minmax(0,1.25fr) minmax(350px,1fr); }
+.platform-form-actions { border-top-color: #29465b; }
+.platform-note { color: #8aaac1; font-size: 14px; line-height: 1.8; }
+.platform-note strong { color: #c5e3f4; }
+.platform-code { color: #b3d4e8; padding: 10px; }
+.platform-log { background: #050f1c; border: 1px solid #233b51; color: #adc9dc; }
+.platform-job-heading p { color: #8ba6bc; }
+.platform-job-link small { color: #789ab3; margin-top: 3px; }
+.platform-panel .ant-table-thead>tr>th { font-size: 13px!important; color: #8eadc6!important; background: #0b1b2c!important; padding: 13px 12px!important; }
+.platform-panel .ant-table-tbody>tr>td { font-size: 14px!important; padding: 13px 12px!important; border-bottom-color: #31516640!important; }
+.platform-shell .ant-table { background: transparent!important; }
+.platform-shell .ant-table-tbody>tr:hover>td { background: #1a456a30!important; }
+.platform-shell .ant-tabs-tab { font-size: 14px; padding: 13px 4px; }
+.platform-backbone { color: #6bdcff; }
+.platform-cache-grid .ant-card-head { border-bottom-color: #2d4f6470; }
+.platform-main footer { color: #6d90a9; border-color: #2a425880; }
+@media(max-width:1400px) { .platform-overview-grid { grid-template-columns: 1fr; } .platform-training-grid { grid-template-columns: 1fr; } }
+@media(max-width:1000px) { .platform-shell .app-sider { width: 76px!important; min-width: 76px!important; max-width: 76px!important; flex-basis: 76px!important; } .platform-shell .app-sider+.ant-layout { margin-left: 76px; } .platform-shell .brand { padding: 0; justify-content: center; } .platform-shell .brand > div:last-child,.platform-shell .sidebar-status,.platform-shell .system-label,.platform-shell .side-menu .ant-menu-title-content { display:none; } .platform-shell .side-menu { padding: 0 5px; } .platform-shell .side-menu .ant-menu-item { padding:0 19px!important; } .platform-main { padding:20px; margin-left:0; } .platform-shell .header-context .ant-tag { display:none; } .platform-header { margin-top:0; } }
+@media(max-width:600px) { .platform-shell .app-header { padding:0 15px!important; } .platform-shell .context-name { font-size:12px; } .platform-main { padding:15px; } .platform-header h1{font-size:24px;} .platform-flow-board { grid-template-columns:1fr 1fr; } .platform-topology-meta { gap:10px; font-size:12px; } .platform-topology-meta>span:first-child{display:none;} .platform-intro h2{font-size:20px;} .platform-shell .metric-card{padding:12px;} .platform-shell .metric-value{font-size:25px;} .platform-panel .panel-head{padding:15px;flex-wrap:wrap;} .platform-panel .panel-head::before{display:none;} .platform-panel .panel-head>div:first-of-type{margin-left:0;} .platform-panel .panel-body{padding:15px;} .platform-training-grid { grid-template-columns:minmax(0,1fr); } }

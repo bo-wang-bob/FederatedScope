@@ -1,0 +1,21 @@
+[Unit]
+Description=FederatedScope single-host training and evaluation platform
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/autodl-tmp/FederatedScope-worktrees/single-host-platform
+ExecStart=/root/.local/share/mamba/envs/GGEUR/bin/python -m federatedscope.standalone_api.platform_app --host 127.0.0.1 --port 8001 --state-dir /root/autodl-tmp/FederatedScope-worktrees/single-host-platform/exp/platform
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=2
+Environment=FS_PLATFORM_RESOURCES=/root/autodl-tmp/FederatedScope
+Environment=FS_PLATFORM_DATASETS=/root/autodl-tmp/datasets
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

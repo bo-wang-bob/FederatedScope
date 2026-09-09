@@ -22,8 +22,8 @@ export function Panel({ title, subtitle, extra, children, className = '' }: {
   );
 }
 
-export function Chart({ option, height = 260 }: { option: object; height?: number }) {
-  return <ReactECharts option={option as EChartsOption} style={{ height }} opts={{ renderer: 'canvas' }} />;
+export function Chart({ option, height = 260, appearance }: { option: object; height?: number; appearance?: 'dark' }) {
+  return <ReactECharts theme={appearance} option={option as EChartsOption} style={{ height }} opts={{ renderer: 'canvas' }} />;
 }
 
 export const chartText = '#9fb2c8';
