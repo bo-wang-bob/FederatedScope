@@ -13,9 +13,20 @@
 
 配置 -> 异步逐样本预检 -> 单机联邦训练 -> 实时指标/客户端监控 -> final/best 模型 -> 冻结测试包独立评测 -> 对比与 JSON/CSV/完整复现包导出。
 
-前端沿用原 AppShell、品牌、面板、指标卡与图表组件，保留深蓝指挥舱视觉，增加更清晰的布局、真实逻辑拓扑、可读字号和响应式布局。不使用旧模拟地图、虚构进度或恶意节点真值。
+前端沿用原 AppShell、品牌、面板、指标卡与图表组件，保留深蓝指挥舱视觉，增加更清晰的布局、真实逻辑拓扑、可读字号和响应式布局。真实训练页面不使用旧模拟地图、虚构进度或恶意节点真值。
+
+原地图大屏单独保留在 `/demo`（侧栏“地图模拟演示”），复用原底图、三级链路、流程切换和节点详情。该页明确标为纯前端模拟，仅运行本地动画；不加载真实平台控制器、不请求训练接口，也不修改真实实验会话。默认首页仍是真实训练平台，二者通过完整页面跳转隔离样式与运行状态。
 
 专家可选择平台已完成训练的模型和兼容测试集，进一步选域/类别。评测输出总体、分域、每类 Precision/Recall/F1、Macro-F1 和混淆矩阵。测试集与模型必须匹配特征空间，跨实验测试还会检查训练样本交叉。现有任意外部模型尚不自动导入，避免无元数据模型被错误评测。
+
+## 模型体验台
+
+- 入口 `/?view=experience`，模型与测试集选择 -> 按域/类别浏览真实图片 -> 点选样本 -> 调用已保存分类器 -> 展示类别、Top-5、Softmax 分数、真实标签和耗时。错误预测正常显示，不伪造指标或热力图。
+- 当前接入平台已保存的 Office-Home、Digits、DomainNet 图像模型；文本模型仍使用独立评测。短轮训练会明确提示不能代表精度达标，正式外部模型需要先核验测试索引与元数据。
+- 图片只从完成任务的测试清单定位到登记数据根目录；拒绝任意路径、越界链接、样本清单和图片版本变化。预测输出模型、特征包、样本清单、当前原图哈希。
+- 原图用于预览，实际输入为已有冻结特征，不进行原图端到端推理。旧缓存缺少内嵌 ID 时仍有历史逐图关联证据限制；当前图片哈希不证明历史特征重新计算来源。页面明确展示该限制。
+- 单图使用原完整评测中的同一 256 样本 CPU 批次，保证近似相等 logits 的舍入口径一致。Softmax 未经校准，不视作正确概率。
+- 每次预测使用自己的可停止进程和持久化任务记录，复用现有幂等、并发限制和清理逻辑；切换样本即清除旧结果。
 
 ## 参数与评测语义
 
@@ -47,10 +58,11 @@
 ## 验证
 
 ```sh
-python -m unittest discover -s tests -p test_single_host_platform.py -v
+python -m unittest discover -s tests -p 'test_single_host*.py' -v
 python scripts/platform_acceptance.py --group officehome_vit --rounds 2
 python scripts/platform_acceptance.py --group digit3_vit --rounds 2
 python scripts/platform_acceptance.py --group mdsent_lstm --rounds 2
+python -m scripts.platform_prediction_acceptance --group digit3_vit
 cd frontend && npm test && npm run build
 ```
 
@@ -61,3 +73,5 @@ cd frontend && npm test && npm run build
 2026-09-09：前端 23 项、后端 13 项测试通过；Office-Home ViT/FedProx、Digits ViT/FedAvg、MDSent LSTM/FedAvg 的真实短训练与模型重载评测指标一致。DomainNet ViT 原目录缺少匹配测试缓存，另存的 20260907 label_correction 测试缓存也未通过当前划分校验，未设为默认或跳过校验。
 
 实际 HTTP 验收还通过了 MDSent/books/类别 0 子集评测（48 样本）、JSON/CSV/模型/复现包下载、任务停止和新服务主进程异常退出后的自动恢复。恢复测试任务被标为 `interrupted`，清理成功；原 8000 健康接口始终返回 200。短训练和中断验收记录均保留在新平台任务列表。
+
+地图保留与单图体验增量：前端 28 项、后端 19 项测试通过。Digits 和 Office-Home 各取前两张真实测试图片，原图哈希、样本标签、预测类别及分数均通过 HTTP 与独立模型计算核对，重复请求复用同一任务。短训模型出现的错误预测没有过滤或掩盖。

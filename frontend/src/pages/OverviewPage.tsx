@@ -25,7 +25,7 @@ const statusColor: Record<string, string> = {
   接收中: 'geekblue', 已过滤: 'error', 异常: 'warning', 已完成: 'success',
 };
 
-export function OverviewPage() {
+export function OverviewPage({ simulationOnly = false }: { simulationOnly?: boolean }) {
   const {
     phaseIndex,
     setPhaseIndex,
@@ -53,8 +53,8 @@ export function OverviewPage() {
       </div>
 
       <div className="map-runtime-toolbar">
-        <Tag color={connectionState === 'connected' ? 'processing' : 'warning'}>{dataSource === 'backend' ? '训练数据' : '演示数据'} · {connectionState === 'connected' ? '已连接' : '恢复中'}</Tag>
-        <div><small>全局轮次</small><b>{round} / 30</b></div>
+        {simulationOnly ? <Tag color="gold">本地动画 · {running ? '播放中' : '已暂停'}</Tag> : <Tag color={connectionState === 'connected' ? 'processing' : 'warning'}>{dataSource === 'backend' ? '训练数据' : '演示数据'} · {connectionState === 'connected' ? '已连接' : '恢复中'}</Tag>}
+        <div><small>{simulationOnly ? '模拟轮次' : '全局轮次'}</small><b>{round} / 30</b></div>
         <div><small>当前阶段</small><b>{currentPhase[0]}</b></div>
         <Space size={8}>
           <span className="toolbar-switch-label">恶意真值</span>
@@ -92,16 +92,17 @@ export function OverviewPage() {
         <Segmented size="small" options={phases} value={phases[phaseIndex]} onChange={(value) => setPhaseIndex(phases.indexOf(value as typeof phases[number]))} />
       </div>
 
-      <NodeDrawer node={selectedNode} open={Boolean(selectedNode)} onClose={() => selectNode(undefined)} revealTruth={revealTruth} />
+      <NodeDrawer node={selectedNode} open={Boolean(selectedNode)} onClose={() => selectNode(undefined)} revealTruth={revealTruth} simulationOnly={simulationOnly} />
     </div>
   );
 }
 
-function NodeDrawer({ node, open, onClose, revealTruth }: {
+function NodeDrawer({ node, open, onClose, revealTruth, simulationOnly }: {
   node?: MilitaryNode;
   open: boolean;
   onClose: () => void;
   revealTruth: boolean;
+  simulationOnly?: boolean;
 }) {
   const domain = domains.find((item) => item.id === node?.domainId);
   const topClasses = node?.classHistogram
@@ -117,7 +118,7 @@ function NodeDrawer({ node, open, onClose, revealTruth }: {
         <div className="detail-grid"><div><span>本地样本</span><b>{node.sampleCount.toLocaleString()}</b></div><div><span>类别覆盖</span><b>{node.coveredClassCount} / 65</b></div><div><span>风险分数</span><b className={node.risk > .7 ? 'text-danger' : ''}>{node.risk.toFixed(2)}</b></div><div><span>防御判断</span><b>{node.assessment}</b></div></div>
         {revealTruth && <div className={`truth-panel ${node.malicious ? 'is-malicious' : ''}`}><span>模拟角色真值</span><b>{node.malicious ? '恶意客户端' : '正常客户端'}</b><small>真值仅用于后门实验复盘，不参与系统判断</small></div>}
         <div className="label-bars"><h4>主要类别分布</h4>{topClasses.map(({ count, index, ratio }) => <div key={index}><span>{officeHomeClassNames[index]}</span><Progress percent={ratio * 100} showInfo={false} strokeColor={domain?.color} /><em>{count}</em></div>)}</div>
-        <div className="drawer-security-note"><SafetyCertificateOutlined /><span>完整 65 类数量和比例请在“场景与异构分析”页面查看。</span></div>
+        <div className="drawer-security-note"><SafetyCertificateOutlined /><span>{simulationOnly ? '节点、风险、标签分布和角色真值均为原前端模拟数据，不代表真实训练结果。' : '完整 65 类数量和比例请在“场景与异构分析”页面查看。'}</span></div>
       </div>}
     </Drawer>
   );

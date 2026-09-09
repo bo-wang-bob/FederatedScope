@@ -20,6 +20,7 @@ import yaml
 
 from .platform_config import ConfigFactory, PlatformError, sha256
 from .repository import JsonRepository
+from .platform_samples import SampleCatalog
 
 TERMINAL = {'completed', 'failed', 'stopped', 'interrupted'}
 
@@ -40,6 +41,7 @@ class PlatformService:
         self.repo, self.state = Path(repo).resolve(), Path(state).resolve()
         self.state.mkdir(parents=True, exist_ok=True)
         self.configs = ConfigFactory(self.repo)
+        self.samples = SampleCatalog(self)
         self.lock = threading.RLock()
         self.processes = {}
         self.closed = False
@@ -141,8 +143,10 @@ class PlatformService:
                 raise PlatformError(f'请先等待或清理任务 {job["id"][:8]}；平台一次运行一个任务', 409)
 
     def create(self, action, payload):
-        if action not in {'inspect', 'train', 'evaluate'}:
+        if action not in {'inspect', 'train', 'evaluate', 'predict'}:
             raise PlatformError('不支持的任务类型')
+        if not isinstance(payload, dict):
+            raise PlatformError('请求必须是 JSON 对象')
         with self.lock:
             key = payload.get('idempotencyKey')
             if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,100}', key):
@@ -153,7 +157,8 @@ class PlatformService:
                         raise PlatformError('幂等键已用于另一请求', 409)
                     return job
             self._assert_available()
-            req = self._evaluation_request(payload) if action == 'evaluate' else self.configs.normalize(payload)
+            req = (self._prediction_request(payload) if action == 'predict' else
+                   self._evaluation_request(payload) if action == 'evaluate' else self.configs.normalize(payload))
             preflight = None
             if action == 'train':
                 preflight = self.get(str(payload.get('preflightId', '')))
@@ -166,7 +171,7 @@ class PlatformService:
             output.mkdir(parents=True)
             spec = {'action': action, 'request': req, 'output': str(output)}
             config, provenance = {}, {}
-            if action != 'evaluate':
+            if action not in {'evaluate', 'predict'}:
                 config, provenance = self.configs.build(req, output)
                 config_path = output / 'effective.yaml'
                 config_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding='utf-8')
@@ -182,6 +187,16 @@ class PlatformService:
                             bundlePath=str(self.directory(test_job['id']) / 'checkpoints/pretrained_test_features.pt'),
                             checkpointHash=model_job['result']['artifactHashes'][f'mlp_{kind}.pt'],
                             bundleHash=test_job['result']['artifactHashes']['pretrained_test_features.pt'])
+                if action == 'predict':
+                    _, data, sample = self.samples.resolve(req['testsetId'], req['sampleId'])
+                    image_path = self.samples.image_path(test_job, sample)
+                    if sha256(image_path) != req['imageSha256']:
+                        raise PlatformError('原图在浏览后发生改变，请刷新样本列表', 409)
+                    spec.update(sample={**sample, 'imagePath': str(image_path)},
+                                classNames=data['classes'],
+                                testProvenance=data.get('testProvenance', {}).get(sample['domain'], 'unknown'),
+                                manifestPath=str(self.directory(test_job['id']) / 'data_manifest.json'),
+                                manifestHash=sha256(self.directory(test_job['id']) / 'data_manifest.json'))
             provenance.update(codeCommit=self.commit, python=sys.version, protocol='cache-only-v1')
             # Capture the actual Python sources too: a branch may legitimately
             # have local edits after deployment, so a Git SHA alone is not enough.
@@ -316,7 +331,7 @@ class PlatformService:
                         method=job['request']['method'], createdAt=job['createdAt'],
                         classes=result['classes'], domains=result['domains'],
                         testFingerprint=result['testFingerprint'],
-                        featureSpace=result['featureSpace'])
+                        featureSpace=result['featureSpace'], trainingRounds=job['request']['rounds'])
             for kind in ('final', 'best'):
                 if (self.directory(job['id']) / f'checkpoints/mlp_{kind}.pt').is_file():
                     models.append(dict(base, id=job['id'] + ':' + kind, kind=kind,
@@ -371,6 +386,23 @@ class PlatformService:
             raise PlatformError('选中测试集包含此模型的训练样本，拒绝泄漏评测')
         return dict(modelId=model['id'], testsetId=test['id'], domains=domains,
                     classes=classes, name=name, group=model['group'], method=model['method'])
+
+    def _prediction_request(self, payload):
+        if set(payload) - {'modelId', 'testsetId', 'sampleId', 'imageSha256', 'name', 'idempotencyKey'}:
+            raise PlatformError('单图预测含未知参数')
+        identifier = payload.get('sampleId')
+        if not isinstance(identifier, str) or not re.fullmatch(r'[a-f0-9]{24}', identifier):
+            raise PlatformError('样本 ID 非法')
+        image_hash = payload.get('imageSha256')
+        if not isinstance(image_hash, str) or not re.fullmatch(r'[a-f0-9]{64}', image_hash):
+            raise PlatformError('需要浏览时的原图版本')
+        test_job, _, sample = self.samples.resolve(str(payload.get('testsetId', '')), identifier)
+        image_path = self.samples.image_path(test_job, sample)
+        if sha256(image_path) != image_hash:
+            raise PlatformError('原图在浏览后发生改变，请刷新样本列表', 409)
+        req = self._evaluation_request({k: v for k, v in payload.items() if k not in {'sampleId', 'imageSha256'}}
+                                       | {'domains': [sample['domain']], 'classes': [sample['label']]})
+        return dict(req, sampleId=identifier, imageSha256=image_hash)
 
     def logs(self, job_id):
         self.get(job_id)

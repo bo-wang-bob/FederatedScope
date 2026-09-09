@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { App as AntApp, Alert, Badge, Button, Card, Collapse, ConfigProvider, Descriptions, Empty,
   Form, Input, InputNumber, Popconfirm, Progress, Select, Space, Spin, Table, Tabs, Tag, theme } from 'antd';
-import { ApartmentOutlined, BarChartOutlined, DatabaseOutlined, DownloadOutlined, ExperimentOutlined,
+import { ApartmentOutlined, BarChartOutlined, DatabaseOutlined, DownloadOutlined, ExperimentOutlined, GlobalOutlined,
   PlayCircleOutlined, ReloadOutlined, StopOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { api, bytes, key, percent, statusText, terminal, type Catalog, type Client, type DataInfo,
   type Job, type Library, type RequestConfig, type Resource } from './api';
 import { Curves, Distribution, LossChart, ResourcesChart, Topology } from './charts';
 import { ComparisonPanel, EvaluationPanel, EvaluationResults } from './evaluation';
+import { ModelExperience, PredictionPanel } from './inference';
 import { AppShell } from '../components/AppShell';
 import { MetricCard } from '../components/MetricCard';
 import { Panel as ExistingPanel } from '../components/ChartPanel';
@@ -15,11 +16,13 @@ import './platform.css';
 import './refinements.css';
 
 const nav = [{ key: 'overview', icon: <ApartmentOutlined />, label: '综合态势' },
+  { key: 'experience', icon: <ExperimentOutlined />, label: '模型体验台' },
   { key: 'cache', icon: <DatabaseOutlined />, label: '场景与特征缓存' },
   { key: 'train', icon: <ExperimentOutlined />, label: '实验配置' },
   { key: 'jobs', icon: <ThunderboltOutlined />, label: '运行监控' },
   { key: 'evaluate', icon: <ExperimentOutlined />, label: '模型与评测' },
-  { key: 'compare', icon: <BarChartOutlined />, label: '结果对比' }];
+  { key: 'compare', icon: <BarChartOutlined />, label: '结果对比' },
+  { key: 'demo', icon: <GlobalOutlined />, label: '地图模拟演示' }];
 export const State = ({ value }: { value: string }) => <Tag color={value === 'completed' ? 'success' : value === 'failed' ? 'error' : value === 'running' ? 'processing' : 'default'}>{statusText[value] || value}</Tag>;
 export const Panel = ({ title, extra, children }: { title: string; extra?: ReactNode; children: ReactNode }) => <ExistingPanel title={title} extra={extra} className="platform-panel">{children}</ExistingPanel>;
 export const Stat = ({ label, value, sub }: { label: string; value: string | number; sub?: string }) => <MetricCard label={label} value={value} delta={sub} />;
@@ -89,7 +92,7 @@ function Workspace() {
   const showJob = selected || undefined;
   const title = nav.find(n => n.key === view)?.label || '工作台';
   return <div className="platform-shell"><AppShell platform={{ menuItems: nav, selectedKey: view,
-    navigate: key => setQuery({ view: key }), connected: !error && !!latest,
+    navigate: key => { if (key === 'demo') window.location.assign('/demo'); else setQuery({ view: key }); }, connected: !error && !!latest,
     clientCount: (selected || overview)?.data?.clientCount, domainCount: (selected || overview)?.data?.domains.length,
     openCurrent: running ? () => open(running.id) : undefined }}>
     <main className="platform-main"><header className="platform-header"><div><span className="platform-eyebrow">FEDERATED LEARNING / ACCURACY</span><h1>{title}</h1></div>
@@ -97,7 +100,7 @@ function Workspace() {
       {error && <Alert type="error" showIcon title="无法获取服务器数据，已暂停刷新展示" description={error} />}
       {!catalog ? <div className="platform-loading"><Spin /><p>正在读取服务器配置与缓存目录</p></div> : <>
       {view === 'overview' && <>
-        <div className="platform-intro"><div><h2>多域协同，一处掌握实验全程</h2><p>复用已缓存特征，保留联邦聚合与数据异构；训练、模型和评测形成完整记录。</p></div><Button type="primary" icon={<PlayCircleOutlined />} onClick={() => setQuery({ view: 'train' })}>新建准确率实验</Button></div>
+        <div className="platform-intro"><div><h2>多域协同，一处掌握实验全程</h2><p>复用已缓存特征，保留联邦聚合与数据异构；训练、模型和评测形成完整记录。</p></div><Space wrap><Button type="primary" onClick={() => setQuery({ view: 'experience' })}>体验现有模型</Button><Button icon={<PlayCircleOutlined />} onClick={() => setQuery({ view: 'train' })}>新建准确率实验</Button></Space></div>
         <div className="platform-stats"><Stat label="已发现缓存配置" value={catalog.groups.filter(g => g.cacheFound).length} sub="逐样本完整性以预检为准" /><Stat label="正在执行" value={running ? 1 : 0} sub={running?.stage || '服务器可接收任务'} /><Stat label="已保存模型" value={library.models.length} sub="含 final / best 两种检查点" /><Stat label="成功训练" value={jobs.filter(j => j.action === 'train' && j.status === 'completed').length} sub="独立进程 · 完整产物" /></div>
         <div className="platform-grid platform-overview-grid"><Panel title="全域联邦拓扑" extra={<Space><Tag color="cyan">逻辑拓扑 · 非物理多机</Tag>{overview && <State value={overview.status} />}</Space>}>
           <div className="platform-topology-meta"><span>{overview?.request.group || '等待实验配置'}</span><strong>{overview?.data?.clientCount ?? '—'}<small> 逻辑客户端</small></strong><span>{overview?.data?.domains.length ?? '—'} 个数据域</span></div>
@@ -117,6 +120,7 @@ function Workspace() {
       {view === 'train' && <TrainingForm catalog={catalog} initialGroup={query.get('group') || undefined} sourceId={query.get('source') || undefined} resources={latest} running={running} disconnected={!!error} create={create} open={open} />}
       {view === 'jobs' && <>{selectedId ? <><Button type="link" onClick={() => setQuery({ view: 'jobs' })}>← 返回任务列表</Button>{detailError && <Alert type="error" title={detailError} />}{showJob ? <JobDetail job={showJob} resources={latest} library={library} stop={stop} rerun={() => setQuery({ view: 'train', source: showJob.id, group: showJob.request.group })} /> : !detailError && <Spin />}</> : <Panel title="所有任务"><JobTable jobs={jobs} open={open} /></Panel>}</>}
       {view === 'evaluate' && <EvaluationPanel library={library} disabled={!!error || !!running} create={create} open={open} />}
+      {view === 'experience' && <ModelExperience library={library} disabled={!!error || !!running} create={create} open={open} />}
       {view === 'compare' && <ComparisonPanel jobs={jobs} open={open} />}
       </>}
       <footer>FederatedScope · cache-only-v1<span>未接入隐私与后门扩展</span></footer>
@@ -133,7 +137,7 @@ function ResourceCards({ resource }: { resource: Resource }) {
 function JobTable({ jobs, open }: { jobs: Job[]; open: (id: string) => void }) {
   return <Table size="middle" rowKey="id" dataSource={jobs} scroll={{ x: 650 }} pagination={{ pageSize: 8, hideOnSinglePage: true }} columns={[
     { title: '任务', key: 'name', render: (_, j) => <Button className="platform-job-link" type="link" onClick={() => open(j.id)}>{j.request.name || j.id.slice(0, 8)}<small>{j.request.group} · {j.request.method}</small></Button> },
-    { title: '类型', dataIndex: 'action', render: a => ({ train: '联邦训练', inspect: '缓存预检', evaluate: '独立评测' })[a as string] },
+    { title: '类型', dataIndex: 'action', render: a => ({ train: '联邦训练', inspect: '缓存预检', evaluate: '独立评测', predict: '单图预测' })[a as string] },
     { title: '状态', dataIndex: 'status', render: value => <State value={value} /> },
     { title: '创建时间', dataIndex: 'createdAt', render: value => new Date(value).toLocaleString() },
   ]} />;
@@ -208,16 +212,16 @@ function JobDetail({ job, resources, library, stop, rerun }: { job: Job; resourc
   const final = points.at(-1);
   return <><div className="platform-job-heading"><div><h2>{job.request.name || job.id.slice(0, 8)} <State value={job.status} /></h2><p>{job.stage} · {job.request.group} / {job.request.method}</p></div><Space wrap>
     {!terminal(job.status) && <Popconfirm title="停止当前任务？" description="仅回收此任务进程，保留配置、日志及已生成文件。" onConfirm={() => stop(job.id)}><Button danger icon={<StopOutlined />}>停止任务</Button></Popconfirm>}
-    {terminal(job.status) && job.action !== 'evaluate' && <Button onClick={rerun} icon={<ReloadOutlined />}>复用配置重跑</Button>}
+    {terminal(job.status) && ['train', 'inspect'].includes(job.action) && <Button onClick={rerun} icon={<ReloadOutlined />}>复用配置重跑</Button>}
     <Button href={`/api/platform/jobs/${job.id}/export`} icon={<DownloadOutlined />}>结果 JSON</Button>
     {terminal(job.status) && <Button href={`/api/platform/jobs/${job.id}/bundle`}>完整复现包</Button>}</Space></div>
     {job.error && <Alert type="error" title={job.error} showIcon />}
     {terminal(job.status) && <Alert type={job.cleanup.ok ? 'success' : 'error'} title={job.cleanup.message} action={!job.cleanup.ok && <Button onClick={() => stop(job.id)}>重试本任务清理</Button>} />}
-    {job.action === 'evaluate' ? <EvaluationResults job={job} library={library} /> : <div className="platform-stats"><Stat label="已评测轮次" value={final ? `${final.round} / ${job.request.rounds}` : '—'} /><Stat label="总体准确率" value={percent(final?.accuracy)} sub="测试样本加权" /><Stat label="分域平均" value={percent(final?.domainMean)} sub="各域等权" /><Stat label="最差域准确率" value={percent(final?.worstDomain)} /></div>}
+    {job.action === 'predict' ? <PredictionPanel job={job} /> : job.action === 'evaluate' ? <EvaluationResults job={job} library={library} /> : <div className="platform-stats"><Stat label="已评测轮次" value={final ? `${final.round} / ${job.request.rounds}` : '—'} /><Stat label="总体准确率" value={percent(final?.accuracy)} sub="测试样本加权" /><Stat label="分域平均" value={percent(final?.domainMean)} sub="各域等权" /><Stat label="最差域准确率" value={percent(final?.worstDomain)} /></div>}
     <Tabs items={[{ key: 'monitor', label: '训练监控', children: <><div className="platform-grid"><Panel title="全局模型准确率"><Curves points={points} /></Panel><Panel title="单机联邦拓扑"><Topology clients={clients} /></Panel></div><div className="platform-grid"><Panel title="本地训练损失"><LossChart points={points} /></Panel><Panel title="资源占用">{resources ? <ResourceCards resource={resources} /> : <Empty />}</Panel></div>
       <Panel title="客户端状态"><Table<Client> size="small" rowKey="id" dataSource={clients} pagination={{ pageSize: 12 }} columns={[{ title: '客户端', dataIndex: 'id' }, { title: '域', dataIndex: 'domain' }, { title: '原始样本', dataIndex: 'samples' }, { title: '状态', dataIndex: 'stage' }, { title: '轮次', dataIndex: 'round', render: n => n == null ? '—' : n + 1 }, { title: '训练损失', dataIndex: 'loss', render: n => n?.toFixed(4) ?? '—' }, { title: '本地训练准确率', dataIndex: 'accuracy', render: percent }]} /></Panel></> },
       { key: 'data', label: '数据异构', children: <Panel title="客户端 × 类别：实际训练样本分布"><Distribution clients={clients} classes={job.data?.classes || []} /><p className="platform-muted">此图为原始划分；若配置每客户端抽样，实际训练样本数另保存在客户端日志。</p></Panel> },
       { key: 'config', label: '参数与溯源', children: <><Descriptions bordered column={2} items={Object.entries(job.request).map(([k, v]) => ({ key: k, label: k, children: JSON.stringify(v) }))} /><Panel title="实际配置与版本"><pre className="platform-code">{JSON.stringify({ config: job.config, provenance: job.provenance, data: job.data }, null, 2)}</pre></Panel></> },
-      { key: 'logs', label: '完整运行日志', children: <Panel title="最近 128 KiB；全量日志请下载复现包"><pre className="platform-log">{logs || '尚无日志'}</pre></Panel> }]} />
+      { key: 'logs', label: '完整运行日志', children: <Panel title="最近 128 KiB；全量日志请下载复现包"><pre className="platform-log">{logs || '尚无日志'}</pre></Panel> }].filter(tab => !['evaluate', 'predict'].includes(job.action) || ['config', 'logs'].includes(tab.key))} />
   </>;
 }

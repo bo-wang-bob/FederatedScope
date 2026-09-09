@@ -1,0 +1,9 @@
+.map-demo-surface { position: relative; z-index: 1; }
+.map-demo-modebar { position: fixed; inset: 0 0 auto; z-index: 90; height: 56px; padding: 0 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #bfd0dc; background: #091624; border-bottom: 1px solid #39506a; }
+.map-demo-modebar > div { display: flex; align-items: center; gap: 6px; }
+.map-demo-modebar span, .map-demo-modebar .ant-tag { font-size: 14px; }
+.map-demo-surface .immersive-overview-page { top: 56px; }
+.map-demo-surface .map-title-overlay { left: 18px; }
+.map-demo-paused .map-topology *, .map-demo-paused .map-topology *::before, .map-demo-paused .map-topology *::after { animation-play-state: paused !important; }
+@media (max-width: 1100px) { .map-demo-surface .map-runtime-toolbar { top: 105px; } }
+@media (max-width: 600px) { .map-demo-modebar { height: 80px; padding: 8px 12px; } .map-demo-modebar > div { display: block; max-width: 58%; } .map-demo-modebar > div > span:last-child { display: block; font-size: 12px; line-height: 1.5; } .map-demo-surface .immersive-overview-page { top: 80px; } }

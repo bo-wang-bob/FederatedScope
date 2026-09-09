@@ -6,12 +6,13 @@ import csv
 from http.server import ThreadingHTTPServer
 import io
 import json
+import mimetypes
 import os
 from pathlib import Path
 import re
 import signal
 import threading
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 import zipfile
 
 from .app import ApiHandler
@@ -59,11 +60,12 @@ class PlatformHandler(ApiHandler):
     def do_POST(self):
         self._dispatch(True)
 
-    def _download(self, payload, name, content_type):
+    def _download(self, payload, name, content_type, inline=False):
         self.send_response(200)
         self._cors_headers()
         self.send_header('Content-Type', content_type)
-        self.send_header('Content-Disposition', f'attachment; filename="{name}"')
+        disposition = 'inline' if inline else 'attachment'
+        self.send_header('Content-Disposition', f'{disposition}; filename="{name}"')
         size = payload.stat().st_size if isinstance(payload, Path) else len(payload)
         self.send_header('Content-Length', str(size))
         self.end_headers()
@@ -86,8 +88,18 @@ class PlatformHandler(ApiHandler):
             if path in endpoints:
                 self._data(endpoints[path]())
                 return
-        if write and path in {'/api/platform/preflight', '/api/platform/train', '/api/platform/evaluate'}:
-            action = {'preflight': 'inspect', 'train': 'train', 'evaluate': 'evaluate'}[path.split('/')[-1]]
+        samples = re.fullmatch(r'/api/platform/testsets/([a-f0-9]{32})/samples(?:/([a-f0-9]{24})/image)?', path)
+        if not write and samples:
+            testset_id, identifier = samples.groups()
+            if identifier:
+                job, _, sample = service.samples.resolve(testset_id, identifier)
+                file = service.samples.image_path(job, sample)
+                self._download(file, identifier + file.suffix.lower(), mimetypes.guess_type(file.name)[0] or 'application/octet-stream', inline=True)
+            else:
+                self._data(service.samples.page(testset_id, parse_qs(urlparse(self.path).query, keep_blank_values=True)))
+            return
+        if write and path in {'/api/platform/preflight', '/api/platform/train', '/api/platform/evaluate', '/api/platform/predict'}:
+            action = {'preflight': 'inspect', 'train': 'train', 'evaluate': 'evaluate', 'predict': 'predict'}[path.split('/')[-1]]
             self._data(service.create(action, self._body()), 202)
             return
         match = re.fullmatch(r'/api/platform/jobs/([a-f0-9]{32})(?:/(stop|logs|export|csv|bundle|model-final|model-best))?', path)

@@ -26,16 +26,25 @@ export interface DataInfo {
 }
 export interface EvaluationResult extends Metric { domains: Record<string, Metric>; domainMean: number; worstDomain: number; domainGap: number; elapsedSeconds: number }
 export interface Job {
-  id: string; action: 'train' | 'inspect' | 'evaluate'; status: string; stage: string;
-  request: RequestConfig & { modelId?: string; testsetId?: string; domains?: string[]; classes?: number[] };
+  id: string; action: 'train' | 'inspect' | 'evaluate' | 'predict'; status: string; stage: string;
+  request: RequestConfig & { modelId?: string; testsetId?: string; domains?: string[]; classes?: number[]; sampleId?: string; imageSha256?: string };
   createdAt: string; updatedAt: string; endedAt?: string; error: string | null;
   cleanup: { ok: boolean; message: string }; clients: Record<string, Client>; metrics: Point[];
   data?: DataInfo; config: Record<string, unknown>; provenance: Record<string, unknown>;
-  result?: DataInfo | EvaluationResult;
+  result?: DataInfo | EvaluationResult | Prediction;
 }
 export interface LibraryItem {
   id: string; jobId: string; name: string; group: string; method: string; kind?: string; samples?: number;
-  domains: { name: string; testSamples: number }[]; classes: string[]; featureSpace: string; sha256: string;
+  domains: { name: string; testSamples: number }[]; classes: string[]; featureSpace: string; sha256: string; trainingRounds?: number;
+}
+export interface TestSample { id: string; index: number; domain: string; label: number; className: string; filename: string; imageUrl: string; imageAvailable: boolean; imageSha256?: string; imageError?: string }
+export interface SamplePage { items: TestSample[]; total: number; offset: number; limit: number; testFingerprint: string; provenance: Record<string, string> }
+export interface Prediction {
+  sampleId: string; domain: string; filename: string; label: number; labelName: string;
+  predictedClass: number; predictedName: string; correct: boolean; confidence: number;
+  topK: { classIndex: number; className: string; score: number }[];
+  inferenceMs: number; elapsedSeconds: number; checkpointSha256: string; testBundleSha256: string;
+  imageSha256: string; manifestSha256: string; testProvenance: string; inferenceContract: string;
 }
 export interface Library { models: LibraryItem[]; testsets: LibraryItem[] }
 export const terminal = (status: string) => ['completed', 'failed', 'stopped', 'interrupted'].includes(status);

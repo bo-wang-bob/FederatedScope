@@ -451,6 +451,70 @@ def evaluate(spec):
     save(Path(spec['output']) / 'result.json', result)
 
 
+def predict(spec):
+    """Load the actual frozen classifier and infer, never infer from the label."""
+    import torch
+    from scripts.test_outline_validation.evaluate_saved_mlp import build_model
+    started = time.monotonic()
+    torch.set_num_threads(2)
+    for path, expected in [('checkpointPath', 'checkpointHash'), ('bundlePath', 'bundleHash'),
+                           ('manifestPath', 'manifestHash')]:
+        if digest(spec[path]) != spec[expected]:
+            raise ValueError('模型、测试包或样本清单已改变，拒绝错位预测')
+    sample = spec['sample']
+    if digest(sample['imagePath']) != spec['request']['imageSha256']:
+        raise ValueError('原图已改变，请刷新样本')
+    emit('stage', stage='加载已保存模型与冻结测试特征')
+    checkpoint = torch.load(spec['checkpointPath'], map_location='cpu', weights_only=True)
+    bundle = torch.load(spec['bundlePath'], map_location='cpu', weights_only=True)
+    if checkpoint['backbone'] != bundle['backbone'] or checkpoint['dataset'] != bundle['dataset']:
+        raise ValueError('模型与测试特征空间不匹配')
+    model = build_model(checkpoint['architecture'])
+    model.load_state_dict(checkpoint['state_dict'], strict=True)
+    model.eval()
+    domain, index = sample['domain'], sample['index']
+    features, labels = bundle['features'][domain], bundle['labels'][domain]
+    manifest = json.loads(Path(spec['manifestPath']).read_text(encoding='utf-8'))
+    refs = list(manifest['test'][domain].items())
+    if (len(features) != len(refs) or len(labels) != len(refs)
+            or refs[index] != (sample['key'], sample['label'])
+            or int(labels[index]) != sample['label']):
+        raise ValueError('样本、标签与冻结测试特征索引不一致')
+    # Use the same original 256-row batch as full evaluation. Single-row GEMM
+    # may round near-tied logits differently from the recorded evaluation.
+    offset = index // 256 * 256
+    block = features[offset:offset + 256].float()
+    if not torch.isfinite(block).all():
+        raise ValueError('测试特征包含非有限数值')
+    emit('stage', stage='运行真实分类器推理')
+    compute_started = time.monotonic()
+    with torch.inference_mode():
+        logits = model(block)[index - offset]
+        if not torch.isfinite(logits).all():
+            raise ValueError('分类器输出非有限数值')
+        probabilities = torch.softmax(logits, dim=-1)
+    inference_ms = (time.monotonic() - compute_started) * 1000
+    names = spec['classNames']
+    if len(logits) != len(names):
+        raise ValueError('模型类别与测试集类别名称不一致')
+    # Match torch.argmax's lowest-index tie break, without using ground truth.
+    order = sorted(range(len(names)), key=lambda i: (-float(logits[i]), i))[:5]
+    predicted = order[0]
+    result = dict(sampleId=sample['id'], domain=domain, filename=sample['filename'],
+                  label=sample['label'], labelName=names[sample['label']],
+                  predictedClass=predicted, predictedName=names[predicted],
+                  correct=predicted == sample['label'], confidence=float(probabilities[predicted]),
+                  topK=[dict(classIndex=i, className=names[i], score=float(probabilities[i])) for i in order],
+                  inferenceMs=inference_ms, elapsedSeconds=time.monotonic() - started,
+                  checkpointSha256=spec['checkpointHash'], testBundleSha256=spec['bundleHash'],
+                  manifestSha256=spec['manifestHash'], imageSha256=spec['request']['imageSha256'],
+                  testProvenance=spec['testProvenance'], mode='frozen-feature-classifier',
+                  architecture=checkpoint['architecture'],
+                  inferenceContract='CPU float32 / original 256-row evaluation batch / threads 2',
+                  scoreDefinition='Softmax scores; not calibrated correctness probabilities')
+    save(Path(spec['output']) / 'result.json', result)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('spec')
@@ -462,7 +526,9 @@ def main():
         'spec': str(Path(args.spec).resolve()),
     })
     try:
-        if spec['action'] == 'evaluate':
+        if spec['action'] == 'predict':
+            predict(spec)
+        elif spec['action'] == 'evaluate':
             evaluate(spec)
         else:
             train(spec)
