@@ -1,6 +1,7 @@
 import { ApartmentOutlined, BarChartOutlined, DatabaseOutlined, ExperimentOutlined,
   FileSearchOutlined, GlobalOutlined, HomeOutlined, HistoryOutlined, ScanOutlined } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
+import { isPlannedView, plannedModules } from './extensions';
 
 export const pages = {
   home: { label: '系统首页', section: '工作台', description: '从模型体验出发，连接训练、评测与实验记录。', icon: <HomeOutlined /> },
@@ -11,14 +12,16 @@ export const pages = {
   train: { label: '新建训练', section: '训练实验', description: '配置算法与超参数，完成缓存预检后启动训练。', icon: <ExperimentOutlined /> },
   jobs: { label: '任务与记录', section: '训练实验', description: '跟进正在执行的任务，查看历史日志、模型与评测产物。', icon: <HistoryOutlined /> },
   cache: { label: '数据与缓存', section: '训练实验', description: '查看已有特征缓存与预检记录，选择实验配置。', icon: <DatabaseOutlined /> },
+  ...plannedModules,
 } as const;
 
 export type PlatformView = keyof typeof pages;
 export const navigationItems: MenuProps['items'] = [
-  ...['工作台', '模型验证', '训练实验'].map(section => ({
+  ...['工作台', '模型验证', '训练实验', '隐私与安全'].map(section => ({
     type: 'group' as const, key: section, label: section,
     children: Object.entries(pages).filter(([, page]) => page.section === section)
-      .map(([key, page]) => ({ key, label: page.label, icon: page.icon })),
+      .map(([key, page]) => ({ key, icon: page.icon, label: isPlannedView(key)
+        ? <span className="platform-demo-menu-label platform-planned-menu-label">{page.label}<small>规划中</small></span> : page.label })),
   })),
   { type: 'group', key: '模拟演示', label: '模拟演示', children: [
     { key: 'demo', icon: <GlobalOutlined />, label: <span className="platform-demo-menu-label">地图模拟演示<small>演示</small></span> },

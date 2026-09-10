@@ -79,7 +79,7 @@ describe('workspace navigation', () => {
     const navigate = vi.fn(), openCurrent = vi.fn();
     render(<MemoryRouter><AppShell platform={{ menuItems: navigationItems, selectedKey: 'home', navigate,
       connected: true, openCurrent, pageLabel: '系统首页', sectionLabel: '工作台' }}><div>页面内容</div></AppShell></MemoryRouter>);
-    for (const group of ['工作台', '模型验证', '训练实验', '模拟演示']) expect(screen.getByText(group)).toBeInTheDocument();
+    for (const group of ['工作台', '模型验证', '训练实验', '隐私与安全', '模拟演示']) expect(screen.getByText(group)).toBeInTheDocument();
     expect(screen.queryByText('准确率实验 · 缓存只读')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /查看当前任务/ }));
     expect(openCurrent).toHaveBeenCalledOnce();
@@ -132,6 +132,22 @@ describe('workspace navigation', () => {
     expect(screen.getByRole('link', { name: /进入模型体验台/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /地图模拟演示/ })).toHaveAttribute('href', '/demo');
     expect(screen.queryByText('当前没有进行中的任务')).not.toBeInTheDocument();
+  });
+
+  it.each([['privacy', '隐私保护'], ['backdoor', '后门攻防']])('reserves %s without enabling task controls, even offline', async (view, label) => {
+    const fetch = vi.fn().mockRejectedValue(new Error('server offline'));
+    vi.stubGlobal('fetch', fetch);
+    render(<MemoryRouter initialEntries={[`/?view=${view}&id=must-not-fetch`]}><PlatformApp /></MemoryRouter>);
+    expect(screen.getByRole('heading', { level: 1, name: label })).toBeInTheDocument();
+    const module = screen.getByRole('region', { name: `${label}规划说明` });
+    expect(within(module).getByText('规划中 · 尚未接入真实任务')).toBeInTheDocument();
+    expect(within(module).getAllByText('待接入')).toHaveLength(3);
+    expect(within(module).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(module).getByRole('link', { name: /返回系统首页/ })).toHaveAttribute('href', '/');
+    await screen.findByText('server offline');
+    expect(fetch.mock.calls.every(([url, init]) => init.method === 'GET' && !url.includes('must-not-fetch'))).toBe(true);
+    fireEvent.click(within(module).getByRole('link', { name: /返回系统首页/ }));
+    expect(screen.getByRole('heading', { level: 1, name: '系统首页' })).toBeInTheDocument();
   });
 });
 

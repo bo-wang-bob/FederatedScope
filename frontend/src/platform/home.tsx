@@ -4,6 +4,7 @@ import { Badge, Tag } from 'antd';
 import { Link } from 'react-router-dom';
 import { methodLabel, statusText, terminal, type Catalog, type Job, type Library, type Resource } from './api';
 import { pages, viewHref, type PlatformView } from './navigation';
+import { FutureModuleEntries } from './extensions';
 
 const actionLabels: Record<Job['action'], string> = { train: '联邦训练', evaluate: '独立评测', inspect: '缓存预检', predict: '单图预测' };
 const jobHref = (id: string) => `/?${new URLSearchParams({ view: 'jobs', id })}`;
@@ -49,6 +50,8 @@ export function SystemHome({ catalog, jobs, library, resource, stale }: {
         <article className="home-feature home-evaluation-entry"><span className="home-feature-icon"><FileSearchOutlined /></span><div><h2>独立验证模型表现</h2><p>选择模型、测试集与范围，查看分域和分类指标。</p><Link to={viewHref('evaluate')}>进入独立评测 <ArrowRightOutlined /></Link></div></article>
       </div>
     </section>
+
+    <FutureModuleEntries />
 
     <div className="home-workspace-grid">
       <section className="home-section" aria-labelledby="home-navigation-title">
