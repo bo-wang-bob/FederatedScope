@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { App as AntApp, Alert, Badge, Button, Card, Collapse, ConfigProvider, Descriptions, Empty,
-  Form, Input, InputNumber, Popconfirm, Progress, Select, Space, Spin, Table, Tabs, Tag, theme } from 'antd';
+  Checkbox, Form, Input, InputNumber, Popconfirm, Progress, Select, Space, Spin, Table, Tabs, Tag, theme } from 'antd';
 import { ApartmentOutlined, BarChartOutlined, DatabaseOutlined, DownloadOutlined, ExperimentOutlined, GlobalOutlined,
   PlayCircleOutlined, ReloadOutlined, StopOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { api, bytes, key, percent, statusText, terminal, type Catalog, type Client, type DataInfo,
+import { api, bytes, key, methodLabel, percent, statusText, terminal, type Catalog, type Client, type DataInfo,
   type Job, type Library, type RequestConfig, type Resource } from './api';
 import { Curves, Distribution, LossChart, ResourcesChart, Topology } from './charts';
 import { ComparisonPanel, EvaluationPanel, EvaluationResults } from './evaluation';
@@ -112,7 +112,7 @@ function Workspace() {
         </Panel>
           <Panel title="服务器资源" extra={<Tag>本页实时采样</Tag>}>{latest ? <><ResourcesChart history={resources} /><ResourceCards resource={latest} /></> : <Empty description="等待实际资源数据" />}</Panel></div>
         <div className="platform-grid"><Panel title="最近实验的训练曲线" extra={overview && <Button type="link" onClick={() => open(overview.id)}>查看实验 →</Button>}><Curves points={overview?.metrics || []} /></Panel><Panel title="实验记录" extra={<Button type="link" onClick={() => setQuery({ view: 'jobs' })}>全部任务 →</Button>}><JobTable jobs={jobs.filter(j => j.action !== 'inspect').slice(0, 5)} open={open} /></Panel></div>
-        <Alert type="info" showIcon title="默认仅使用已有特征缓存；GGEUR 增强缓存尚未通过来源核验时不可启动。" />
+        <Alert type="info" showIcon title="本架构可按配置重新生成增强数据，或复用已有增强缓存；原始主干特征不重复提取。" />
       </>}
       {view === 'cache' && <><p className="platform-muted">已通过预检的配置优先显示。历史预检不代替本次校验；缓存版本或参数变化会明确报错。</p><div className="platform-cache-grid">{[...catalog.groups].sort((a, b) => Number(b.lastPreflight?.status === 'completed') - Number(a.lastPreflight?.status === 'completed')).map(g => <Card key={g.id} title={g.dataset} extra={<Tag color={g.lastPreflight?.status === 'completed' ? 'success' : g.cacheFound ? 'blue' : 'error'}>{g.lastPreflight?.status === 'completed' ? '上次预检通过' : g.cacheFound ? '缓存已发现' : '缓存缺失'}</Tag>}><span className="platform-backbone">{g.backbone.toUpperCase()}</span><p>{g.domains} 个域 · {g.cacheFiles} 个文件 · {bytes(g.cacheBytes)}</p><p className="platform-muted">{g.methods.filter(m => m.enabled).map(m => m.label).join(' / ')}</p>
         {g.lastPreflight && <p className="platform-muted">最近预检：{new Date(g.lastPreflight.at).toLocaleString()}<br />{g.lastPreflight.error && <span style={{ color: '#f392a0' }}>{g.lastPreflight.error}</span>}</p>}
@@ -123,7 +123,7 @@ function Workspace() {
       {view === 'experience' && <ModelExperience library={library} disabled={!!error || !!running} create={create} open={open} />}
       {view === 'compare' && <ComparisonPanel jobs={jobs} open={open} />}
       </>}
-      <footer>FederatedScope · cache-only-v1<span>未接入隐私与后门扩展</span></footer>
+      <footer>FederatedScope · frozen-features-v2<span>未接入隐私与后门扩展</span></footer>
     </main>
   </AppShell></div>;
 }
@@ -136,7 +136,7 @@ function ResourceCards({ resource }: { resource: Resource }) {
 
 function JobTable({ jobs, open }: { jobs: Job[]; open: (id: string) => void }) {
   return <Table size="middle" rowKey="id" dataSource={jobs} scroll={{ x: 650 }} pagination={{ pageSize: 8, hideOnSinglePage: true }} columns={[
-    { title: '任务', key: 'name', render: (_, j) => <Button className="platform-job-link" type="link" onClick={() => open(j.id)}>{j.request.name || j.id.slice(0, 8)}<small>{j.request.group} · {j.request.method}</small></Button> },
+    { title: '任务', key: 'name', render: (_, j) => <Button className="platform-job-link" type="link" onClick={() => open(j.id)}>{j.request.name || j.id.slice(0, 8)}<small>{j.request.group} · {methodLabel(j.request.method)}</small></Button> },
     { title: '类型', dataIndex: 'action', render: a => ({ train: '联邦训练', inspect: '缓存预检', evaluate: '独立评测', predict: '单图预测' })[a as string] },
     { title: '状态', dataIndex: 'status', render: value => <State value={value} /> },
     { title: '创建时间', dataIndex: 'createdAt', render: value => new Date(value).toLocaleString() },
@@ -153,6 +153,9 @@ export function TrainingForm({ catalog, initialGroup, sourceId, resources, runni
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const group = catalog.groups.find(g => g.id === groupId) || catalog.groups[0];
+  const method = Form.useWatch('method', form);
+  const augmentationMode = Form.useWatch('augmentationMode', form);
+  const ours = method === 'heterogeneous_solution';
   useEffect(() => { const defaults = group.methods.find(m => m.enabled)?.defaults; if (defaults) form.setFieldsValue(defaults); setPreflight(undefined); }, [groupId, form]);
   useEffect(() => {
     if (!sourceId) return;
@@ -182,7 +185,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, resources, runni
     <Form form={form} layout="vertical" onValuesChange={() => setPreflight(undefined)} initialValues={group.methods.find(m => m.enabled)?.defaults}>
       <Form.Item name="name" label="实验名称"><Input maxLength={120} placeholder="例如：Office-Home · FedAvg 基线" /></Form.Item>
       <div className="platform-form-grid"><Form.Item name="group" label="数据集与特征主干"><Select onChange={setGroupId} options={catalog.groups.map(g => ({ value: g.id, label: `${g.dataset} / ${g.backbone.toUpperCase()}`, disabled: !g.cacheFound }))} /></Form.Item>
-        <Form.Item name="method" label="算法"><Select onChange={id => { const defaults = group.methods.find(m => m.id === id)?.defaults; if (defaults) form.setFieldsValue(defaults); }} options={group.methods.map(m => ({ value: m.id, label: m.enabled ? m.label : `${m.label}（增强缓存未核验）`, disabled: !m.enabled }))} /></Form.Item>
+        <Form.Item name="method" label="算法"><Select onChange={id => { const defaults = group.methods.find(m => m.id === id)?.defaults; if (defaults) { const values = form.getFieldsValue(true); form.setFieldsValue({ ...defaults, ...Object.fromEntries(['rounds', 'localEpochs', 'learningRate', 'batchSize', 'sampleClients', 'clientCount', 'seed', 'splitSeed', 'alpha', 'gpu', 'samplesPerClient', 'evaluationFrequency', 'name'].filter(k => values[k as keyof RequestConfig] !== undefined).map(k => [k, values[k as keyof RequestConfig]])) }); } setPreflight(undefined); }} options={group.methods.map(m => ({ value: m.id, label: methodLabel(m.id), disabled: !m.enabled }))} /></Form.Item>
         {number('rounds', '通信轮数', 1, 1000, '实际模型更新次数，不含第 0 轮初始化')}{number('localEpochs', '本地训练轮数', 1, 100)}
         {number('learningRate', '学习率', 1e-8, 1, undefined, false, .0001)}{number('batchSize', 'Batch size', 1, 1024)}
         {number('clientCount', '客户端总数', group.domains, 240, `必须为 ${group.domains} 的倍数`, group.partitionLocked, group.domains)}{number('sampleClients', '每轮参与客户端数', 0, 240, '0 表示全部参与')}
@@ -194,13 +197,22 @@ export function TrainingForm({ catalog, initialGroup, sourceId, resources, runni
         {number('splitSeed', '数据划分种子', 0, 2147483647, '改变后必须匹配已有测试缓存', group.partitionLocked)}
         {number('seed', '训练随机种子', 0, 2147483647)}{number('evaluationFrequency', '每多少轮评测一次', 1, 1000)}
       </div> }]} />
+      {ours && <><Form.Item name="augmentationMode" label="增强方式"><Select onChange={() => form.setFieldsValue({ augmentationSourceId: '', allowLegacyAugmentation: false })} options={[{ value: 'generate', label: '重新生成增强数据（按当前训练划分）' }, { value: 'reuse', label: '复用已有增强缓存', disabled: !group.methods.find(m => m.id === 'heterogeneous_solution')?.augmentedCacheFound && !group.augmentationSources?.length }]} /></Form.Item>
+        {augmentationMode === 'reuse' && <Form.Item name="augmentationSourceId" label="增强缓存来源"><Select onChange={id => { const source = group.augmentationSources?.find(s => s.id === id); if (source) form.setFieldsValue({ ...source.request, name: '', augmentationSourceId: id, augmentationMode: 'reuse', allowLegacyAugmentation: false }); }} options={[{ value: '', label: '服务器历史缓存（来源有限制）', disabled: !group.methods.find(m => m.id === 'heterogeneous_solution')?.augmentedCacheFound }, ...(group.augmentationSources || []).map(s => ({ value: s.id, label: `${s.name} · ${s.id.slice(0, 8)}` }))]} /></Form.Item>}
+        <div className="platform-form-grid">{number('generatedPerSample', '每个原始样本生成数', 0, 1000)}{number('generatedPerPrototype', '每个原型生成数', 0, 1000)}{number('targetPerClass', '每客户端每类目标样本数', 0, 5000, '0 不限制；正数由原算法选择或补齐')}{number('covarianceScale', '生成协方差缩放', 0, 10, '按源算法缩放生成协方差', false, .1)}</div>
+        <Alert type={augmentationMode === 'reuse' ? 'warning' : 'info'} showIcon title={augmentationMode === 'reuse' ? '缓存必须匹配当前增强参数和种子；不匹配即失败，不会自动生成。' : '预检不生成数据；点击启动训练后执行统计交换与增强。新缓存只写入本实验目录。'} />
+        {augmentationMode === 'reuse' && <Form.Item name="allowLegacyAugmentation" valuePropName="checked"><Checkbox>允许历史缓存试跑：来源记录不完整，结果不能直接作为严格提升证明</Checkbox></Form.Item>}
+        <p className="platform-muted">切换算法保留训练预算，便于配对比较；增强参数只对本架构生效。</p>
+      </>}
       <div className="platform-form-actions"><Button icon={<DatabaseOutlined />} loading={busy} disabled={blocked} onClick={() => void run('preflight')}>检查完整缓存</Button><Button type="primary" icon={<PlayCircleOutlined />} disabled={blocked || preflight?.status !== 'completed'} onClick={() => void run('train')}>启动训练</Button></div>
     </Form>
   </Panel><div><Panel title="预检结果" extra={preflight && <State value={preflight.status} />}>
     {!preflight ? <Empty description="先检查缓存，预检通过后才能启动" /> : <><p>{preflight.stage}</p>{preflight.error && <Alert type="error" title={preflight.error} />}
       {info && <><div className="platform-stats compact"><Stat label="客户端" value={info.clientCount} /><Stat label="训练样本" value={info.trainSamples} /><Stat label="测试样本" value={info.testSamples} /></div><Topology clients={Object.values(preflight.clients || {})} /><p className="platform-muted">版本 {info.testFingerprint.slice(0, 16)}</p><Alert type="info" title="旧测试缓存按划分种子、样本数和完整标签顺序核验；未内嵌样本 ID 的来源限制保存在复现包中。" /></>}
+      {info?.augmentation?.warning && <Alert type="warning" title={info.augmentation.warning} />}
+      {info?.augmentation?.mode === 'generate' && <Alert type="info" title="原始训练/测试特征已核验，启动后重新生成增强数据。" />}
       <Button type="link" onClick={() => open(preflight.id)}>查看预检日志与配置</Button></>}
-  </Panel><div className="platform-note"><strong>缓存策略</strong><p>不下载模型、不提取特征、不临时生成增强数据。失败只回收本任务进程，保留日志与配置。</p></div></div></div>;
+  </Panel><div className="platform-note"><strong>缓存策略</strong><p>不下载主干、不重复提取原始特征。增强方式由配置决定；失败只回收本任务进程，保留日志和产物。</p></div></div></div>;
 }
 
 function JobDetail({ job, resources, library, stop, rerun }: { job: Job; resources?: Resource; library: Library; stop: (id: string) => void; rerun: () => void }) {
@@ -210,12 +222,14 @@ function JobDetail({ job, resources, library, stop, rerun }: { job: Job; resourc
     return () => { active = false; clearInterval(timer); }; }, [job.id]);
   const clients = Object.values(job.clients || {}), points = job.metrics || [];
   const final = points.at(-1);
-  return <><div className="platform-job-heading"><div><h2>{job.request.name || job.id.slice(0, 8)} <State value={job.status} /></h2><p>{job.stage} · {job.request.group} / {job.request.method}</p></div><Space wrap>
+  return <><div className="platform-job-heading"><div><h2>{job.request.name || job.id.slice(0, 8)} <State value={job.status} /></h2><p>{job.stage} · {job.request.group} / {methodLabel(job.request.method)}</p></div><Space wrap>
     {!terminal(job.status) && <Popconfirm title="停止当前任务？" description="仅回收此任务进程，保留配置、日志及已生成文件。" onConfirm={() => stop(job.id)}><Button danger icon={<StopOutlined />}>停止任务</Button></Popconfirm>}
     {terminal(job.status) && ['train', 'inspect'].includes(job.action) && <Button onClick={rerun} icon={<ReloadOutlined />}>复用配置重跑</Button>}
     <Button href={`/api/platform/jobs/${job.id}/export`} icon={<DownloadOutlined />}>结果 JSON</Button>
     {terminal(job.status) && <Button href={`/api/platform/jobs/${job.id}/bundle`}>完整复现包</Button>}</Space></div>
     {job.error && <Alert type="error" title={job.error} showIcon />}
+    {job.data?.augmentation?.warning && <Alert type="warning" title={job.data.augmentation.warning} showIcon />}
+    {job.request.method === 'heterogeneous_solution' && <Alert type="info" title={`${job.request.augmentationMode === 'generate' ? '按配置重新生成' : '复用已有增强缓存'} · 已保存增强样本 ${job.data?.augmentation?.cachedSamples ?? '—'}；同轮数不代表相同训练样本量。`} />}
     {terminal(job.status) && <Alert type={job.cleanup.ok ? 'success' : 'error'} title={job.cleanup.message} action={!job.cleanup.ok && <Button onClick={() => stop(job.id)}>重试本任务清理</Button>} />}
     {job.action === 'predict' ? <PredictionPanel job={job} /> : job.action === 'evaluate' ? <EvaluationResults job={job} library={library} /> : <div className="platform-stats"><Stat label="已评测轮次" value={final ? `${final.round} / ${job.request.rounds}` : '—'} /><Stat label="总体准确率" value={percent(final?.accuracy)} sub="测试样本加权" /><Stat label="分域平均" value={percent(final?.domainMean)} sub="各域等权" /><Stat label="最差域准确率" value={percent(final?.worstDomain)} /></div>}
     <Tabs items={[{ key: 'monitor', label: '训练监控', children: <><div className="platform-grid"><Panel title="全局模型准确率"><Curves points={points} /></Panel><Panel title="单机联邦拓扑"><Topology clients={clients} /></Panel></div><div className="platform-grid"><Panel title="本地训练损失"><LossChart points={points} /></Panel><Panel title="资源占用">{resources ? <ResourceCards resource={resources} /> : <Empty />}</Panel></div>

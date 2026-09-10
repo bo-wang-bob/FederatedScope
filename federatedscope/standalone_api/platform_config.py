@@ -5,13 +5,14 @@ import copy
 import hashlib
 import math
 import os
+import re
 from pathlib import Path
 
 import yaml
 
 
 METHODS = {'fedavg': 'FedAvg', 'fedprox': 'FedProx', 'fedproto': 'FedProto',
-           'fedopt': 'FedOpt', 'moon': 'MOON', 'heterogeneous_solution': 'GGEUR'}
+           'fedopt': 'FedOpt', 'moon': 'MOON', 'heterogeneous_solution': '本架构'}
 FAMILIES = {'officehome': ('Office-Home', 'OfficeHomeDataset_10072016', 4),
             'domainnet': ('DomainNet', 'DomainNet', 4),
             'digit3': ('Digits-3Domain', 'digit_three_domain', 3),
@@ -70,7 +71,28 @@ class ConfigFactory:
                     learningRate=float(raw['train']['optimizer']['lr']),
                     seed=int(raw.get('seed', 42)), splitSeed=42,
                     alpha=float(g.get('lds_alpha', raw['data'].get('dirichlet_alpha', .1))),
-                    gpu=1, evaluationFrequency=1, samplesPerClient=0)
+                    gpu=1, evaluationFrequency=1,
+                    samplesPerClient=int(g.get('platform_target_samples_per_client', 0)) if method == 'heterogeneous_solution' else 0,
+                    allowLegacyAugmentation=False,
+                    augmentationSourceId='',
+                    augmentationMode='generate' if method == 'heterogeneous_solution' else 'none',
+                    generatedPerSample=int(g.get('num_generated_per_sample', 0)) if method == 'heterogeneous_solution' else 0,
+                    generatedPerPrototype=int(g.get('num_generated_per_prototype', 0)) if method == 'heterogeneous_solution' else 0,
+                    targetPerClass=int(g.get('target_size_per_class', 0)) if method == 'heterogeneous_solution' else 0,
+                    covarianceScale=float(g.get('generation_covariance_scale', 1.0)))
+
+    def augmentation_dir(self, group):
+        raw = yaml.safe_load(self.source(group, 'heterogeneous_solution').read_text(encoding='utf-8'))
+        configured = os.environ.get('FS_PLATFORM_AUGMENTED_' + group.upper(),
+                                    raw['ggeur'].get('augmented_feature_cache_dir', ''))
+        if not configured:
+            return None
+        path = Path(configured)
+        return path if path.is_absolute() else self.resources / path
+
+    def augmentation_available(self, group):
+        root = self.augmentation_dir(group)
+        return bool(root and root.is_dir() and next(root.rglob('*.pt'), None))
 
     def catalog(self):
         entries = []
@@ -84,12 +106,11 @@ class ConfigFactory:
                     defaults = self.defaults(group, method)
                 except PlatformError:
                     continue
-                # Old augmented caches do not prove their sample membership.
-                # Never silently fall back to generation or relabel a baseline.
-                reason = ('增强缓存尚未登记可核验的样本划分；禁止临时生成'
-                          if method == 'heterogeneous_solution' else None)
+                reason = None
                 methods.append(dict(id=method, label=label, defaults=defaults,
-                                    enabled=reason is None, reason=reason))
+                                    enabled=True, reason=reason,
+                                    augmentedCacheFound=self.augmentation_available(group)
+                                    if method == 'heterogeneous_solution' else False))
             entries.append(dict(id=group, dataset=FAMILIES[family][0], backbone=backbone,
                                 domains=FAMILIES[family][2], methods=methods,
                                 cacheFound=bool(files), cacheFiles=len(files),
@@ -97,7 +118,7 @@ class ConfigFactory:
                                 partitionLocked=family == 'digit3'))
         return dict(groups=entries, host='4090lziy', address='10.112.81.135',
                     mode='single-host', cacheOnly=True,
-                    protocol='cache-only-v1 / 原始特征基线；不生成增强数据',
+                    protocol='frozen-features-v2 / 原始特征基线 + 本架构按配置增强',
                     evaluationPolicy='final 模型默认；best 使用训练期测试集择优，不能视为无偏验证')
 
     def normalize(self, payload):
@@ -109,22 +130,43 @@ class ConfigFactory:
         if unknown:
             raise PlatformError('未知参数：' + ', '.join(sorted(unknown)))
         req.update({k: v for k, v in payload.items() if k in req})
+        if not isinstance(req['allowLegacyAugmentation'], bool):
+            raise PlatformError('历史增强缓存确认必须为布尔值')
+        if not isinstance(req['augmentationSourceId'], str) or (req['augmentationSourceId'] and
+                not re.fullmatch(r'[a-f0-9]{32}', req['augmentationSourceId'])):
+            raise PlatformError('增强缓存来源实验 ID 非法')
+        if req['augmentationSourceId'] and req['augmentationMode'] != 'reuse':
+            raise PlatformError('只有复用模式可选择已有实验缓存')
+        if req['augmentationMode'] not in ('none', 'reuse', 'generate'):
+            raise PlatformError('不支持的增强模式')
         if method == 'heterogeneous_solution':
-            raise PlatformError('GGEUR 需要可核验的完整增强缓存，当前未登记；不会临时生成')
+            if req['augmentationMode'] == 'none':
+                raise PlatformError('本架构必须选择重新生成或复用增强缓存')
+            if req['augmentationMode'] == 'reuse' and not req['augmentationSourceId'] and not self.augmentation_available(group):
+                raise PlatformError('未找到增强缓存，请选择重新生成模式')
+        elif req['augmentationMode'] != 'none' or any(req[k] != 0 for k in
+                ('generatedPerSample', 'generatedPerPrototype', 'targetPerClass')):
+            raise PlatformError('基线算法不使用增强参数，请选择本架构')
         limits = {'rounds': (1, 1000), 'clientCount': (3, 240),
                   'sampleClients': (0, 240), 'batchSize': (1, 1024),
                   'localEpochs': (1, 100), 'seed': (0, 2147483647),
                   'splitSeed': (0, 2147483647), 'gpu': (-1, 7),
-                  'evaluationFrequency': (1, 1000), 'samplesPerClient': (0, 100000)}
+                  'evaluationFrequency': (1, 1000), 'samplesPerClient': (0, 100000),
+                  'generatedPerSample': (0, 1000), 'generatedPerPrototype': (0, 1000),
+                  'targetPerClass': (0, 5000)}
         for name, (lo, hi) in limits.items():
             value = req[name]
             if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
                 raise PlatformError(f'{name} 必须是 {lo}–{hi} 之间的整数')
-        for name, lo, hi in [('learningRate', 1e-8, 1.0), ('alpha', 1e-4, 100.0)]:
+        for name, lo, hi in [('learningRate', 1e-8, 1.0), ('alpha', 1e-4, 100.0),
+                            ('covarianceScale', 0.0, 10.0)]:
             value = req[name]
             if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or not lo <= value <= hi:
                 raise PlatformError(f'{name} 必须在 {lo}–{hi} 之间')
             req[name] = float(value)
+        if method == 'heterogeneous_solution' and not any(req[k] for k in
+                ('generatedPerSample', 'generatedPerPrototype')):
+            raise PlatformError('原样本和原型的生成数不能同时为 0')
         if not isinstance(req['name'], str) or len(req['name']) > 120:
             raise PlatformError('实验名称最多 120 字符')
         family = group.split('_')[0]
@@ -156,13 +198,12 @@ class ConfigFactory:
         raw.setdefault('eval', {})['freq'] = req['evaluationFrequency']
         raw['data']['root'] = str(self.datasets / FAMILIES[family][1])
         g = raw['ggeur']
+        augmented = req['method'] == 'heterogeneous_solution'
         g.update(hierarchical_training=False, use_feature_cache=True,
                  require_complete_feature_cache=True,
                  feature_cache_dir=str(self.cache_dir(req['group'])),
-                 reuse_augmented_feature_cache=False, save_augmented_feature_cache=False,
-                 num_generated_per_sample=0, num_generated_per_prototype=0,
-                 target_size_per_class=0, baseline_target_samples_per_client=req['samplesPerClient'],
-                 platform_target_samples_per_client=0, platform_auto_target_samples_per_client=0,
+                 reuse_augmented_feature_cache=augmented and req['augmentationMode'] == 'reuse',
+                 save_augmented_feature_cache=False,
                  save_mlp_checkpoint=True, mlp_checkpoint_dir=str(output / 'checkpoints'),
                  data_split_seed=req['splitSeed'], officehome_data_seed=req['splitSeed'],
                  lds_seed=req['splitSeed'], lds_alpha=req['alpha'],
@@ -170,6 +211,20 @@ class ConfigFactory:
                  runtime_seed=req['seed'], min_statistics_clients=req['clientCount'],
                  min_augmentation_clients=req['clientCount'], min_train_updates=0,
                  task_adaptation_file='', training_distribution_dir=str(output / 'distributions'))
+        if augmented:
+            g['augmented_feature_cache_dir'] = str(self.augmentation_dir(req['group'])
+                if req['augmentationMode'] == 'reuse' else output / 'augmented_cache')
+            g.update(num_generated_per_sample=req['generatedPerSample'],
+                     num_generated_per_prototype=req['generatedPerPrototype'],
+                     target_size_per_class=req['targetPerClass'],
+                     generation_covariance_scale=req['covarianceScale'],
+                     platform_target_samples_per_client=req['samplesPerClient'],
+                     platform_auto_target_samples_per_client=0)
+            g['baseline_target_samples_per_client'] = 0
+        else:
+            g.update(num_generated_per_sample=0, num_generated_per_prototype=0,
+                     target_size_per_class=0, baseline_target_samples_per_client=req['samplesPerClient'],
+                     platform_target_samples_per_client=0, platform_auto_target_samples_per_client=0)
         # Keep each original method's optimizer, prototype, proximal and MOON flags.
         # Normalize only the shared data protocol, explicitly recorded above.
         if family == 'digit3':
@@ -184,7 +239,7 @@ class ConfigFactory:
             g['bert_model_path'] = str(self.resources / 'pretrained_models/nlptown_bert_base_multilingual_uncased_senti')
         return raw, {'source': str(path.relative_to(self.repo)), 'sourceSha256': sha256(path),
                      'testCacheDir': os.environ.get('FS_PLATFORM_TEST_CACHE_' + req['group'].upper()),
-                     'protocol': 'cache-only-v1', 'parameterBindings': {
+                     'protocol': 'frozen-features-v2', 'parameterBindings': {
                          'rounds': 'federate.total_round_num = rounds + 1 (round 0 is initialization)', 'clientCount': 'federate.client_num',
                          'sampleClients': 'federate.sample_client_num (0=all)',
                          'batchSize': 'dataloader.batch_size', 'localEpochs': 'train.local_update_steps',
@@ -192,5 +247,12 @@ class ConfigFactory:
                          'seed': 'seed/classifier_init_seed/training_data_seed/runtime_seed',
                          'splitSeed': 'data_split_seed/officehome_data_seed/lds_seed/data.args.seed',
                          'alpha': 'lds_alpha/data.dirichlet_alpha',
-                         'samplesPerClient': 'baseline_target_samples_per_client (0=all)',
+                         'samplesPerClient': 'baseline_target_samples_per_client / platform_target_samples_per_client (0=all)',
+                         'augmentationMode': 'none / explicit generation / strict cache reuse (no silent fallback)',
+                         'augmentationSourceId': 'completed platform generation run; exact file hashes and sample provenance',
+                         'generatedPerSample': 'ggeur.num_generated_per_sample',
+                         'generatedPerPrototype': 'ggeur.num_generated_per_prototype',
+                         'targetPerClass': 'ggeur.target_size_per_class',
+                         'covarianceScale': 'ggeur.generation_covariance_scale',
+                         'allowLegacyAugmentation': 'explicit legacy provenance acknowledgement',
                          'evaluationFrequency': 'eval.freq'}}

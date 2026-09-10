@@ -173,15 +173,32 @@ class PlatformService:
             config, provenance = {}, {}
             if action not in {'evaluate', 'predict'}:
                 config, provenance = self.configs.build(req, output)
+                if req.get('augmentationSourceId'):
+                    source = self.get(req['augmentationSourceId'])
+                    aug = source.get('result', {}).get('augmentation', {})
+                    if (source['status'] != 'completed' or source['action'] != 'train'
+                            or source['request']['group'] != req['group'] or aug.get('mode') != 'generate'
+                            or aug.get('provenance') != 'generated-from-recorded-training-samples'):
+                        raise PlatformError('只允许复用同配置组已完成实验的完整新生成缓存')
+                    root = (self.directory(source['id']) / 'augmented_cache').resolve()
+                    for row in aug.get('clients', {}).values():
+                        if Path(row['path']).resolve().parent != root:
+                            raise PlatformError('缓存来源路径越界')
+                    config['ggeur']['augmented_feature_cache_dir'] = str(root)
+                    spec['registeredAugmentation'] = aug
+                    provenance['augmentationSourceId'] = source['id']
                 config_path = output / 'effective.yaml'
                 config_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding='utf-8')
                 spec['configPath'] = str(config_path)
                 if preflight:
                     spec['expectedData'] = preflight['result']['testFingerprint']
                     spec['expectedPartition'] = preflight['result']['partitionFingerprint']
+                    spec['expectedAugmentation'] = preflight['result'].get('augmentation', {}).get('fingerprint')
                 provenance['configSha256'] = sha256(config_path)
             else:
                 model_job, test_job = self.get(req['modelId'].split(':')[0]), self.get(req['testsetId'])
+                provenance['augmentation'] = {k: v for k, v in model_job['result'].get('augmentation', {}).items()
+                                              if k != 'clients'}
                 kind = req['modelId'].split(':')[1]
                 spec.update(checkpointPath=str(self.directory(model_job['id']) / f'checkpoints/mlp_{kind}.pt'),
                             bundlePath=str(self.directory(test_job['id']) / 'checkpoints/pretrained_test_features.pt'),
@@ -197,7 +214,7 @@ class PlatformService:
                                 testProvenance=data.get('testProvenance', {}).get(sample['domain'], 'unknown'),
                                 manifestPath=str(self.directory(test_job['id']) / 'data_manifest.json'),
                                 manifestHash=sha256(self.directory(test_job['id']) / 'data_manifest.json'))
-            provenance.update(codeCommit=self.commit, python=sys.version, protocol='cache-only-v1')
+            provenance.update(codeCommit=self.commit, python=sys.version, protocol='frozen-features-v2')
             # Capture the actual Python sources too: a branch may legitimately
             # have local edits after deployment, so a Git SHA alone is not enough.
             source_zip = output / 'source.zip'
@@ -243,6 +260,8 @@ class PlatformService:
                 client.update(event)
             elif event['type'] == 'metrics':
                 job['metrics'].append(event)
+            elif event['type'] == 'augmentation':
+                job.setdefault('data', {})['augmentation'] = {k: v for k, v in event.items() if k not in {'type', 'at'}}
             self._save(job)
 
     def _run(self, job_id):
@@ -331,7 +350,8 @@ class PlatformService:
                         method=job['request']['method'], createdAt=job['createdAt'],
                         classes=result['classes'], domains=result['domains'],
                         testFingerprint=result['testFingerprint'],
-                        featureSpace=result['featureSpace'], trainingRounds=job['request']['rounds'])
+                        featureSpace=result['featureSpace'], trainingRounds=job['request']['rounds'],
+                        augmentationWarning=result.get('augmentation', {}).get('warning'))
             for kind in ('final', 'best'):
                 if (self.directory(job['id']) / f'checkpoints/mlp_{kind}.pt').is_file():
                     models.append(dict(base, id=job['id'] + ':' + kind, kind=kind,
@@ -343,6 +363,7 @@ class PlatformService:
 
     def catalog(self):
         catalog = self.configs.catalog()
+        all_jobs = self.list(detail=True)
         latest = {}
         for job in self.list():
             if job['action'] == 'inspect' and job['status'] in TERMINAL:
@@ -351,6 +372,10 @@ class PlatformService:
                     'error': job['error']})
         for group in catalog['groups']:
             group['lastPreflight'] = latest.get(group['id'])
+            group['augmentationSources'] = [dict(id=j['id'], name=j['request']['name'] or j['id'][:8],
+                request=j['request']) for j in all_jobs if j['action'] == 'train'
+                and j['status'] == 'completed' and j['request']['group'] == group['id']
+                and j.get('result', {}).get('augmentation', {}).get('mode') == 'generate']
         return catalog
 
     def _evaluation_request(self, payload):

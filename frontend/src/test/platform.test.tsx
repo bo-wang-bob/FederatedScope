@@ -26,6 +26,23 @@ const preflight = { id: 'a'.repeat(32), action: 'inspect', status: 'completed', 
     testSamples: 40, testFingerprint: 'test-version', classes: ['0'], domains: [], testProvenance: {} } } as unknown as Job;
 
 describe('platform parameter workflow', () => {
+  it('exposes generation without an augmented cache and submits its parameters', async () => {
+    const own = { ...defaults, method: 'heterogeneous_solution', augmentationMode: 'generate' as const,
+      generatedPerSample: 50, generatedPerPrototype: 50, targetPerClass: 50, covarianceScale: 1,
+      augmentationSourceId: '', allowLegacyAugmentation: false };
+    const ownCatalog = { ...catalog, groups: [{ ...catalog.groups[0], methods: [
+      { id: own.method, label: '本架构', enabled: true, reason: null, augmentedCacheFound: false, defaults: own }] }] };
+    const create = vi.fn().mockResolvedValue(preflight);
+    render(<TrainingForm catalog={ownCatalog} disconnected={false} create={create} open={vi.fn()} />);
+    await screen.findByLabelText('每个原始样本生成数');
+    fireEvent.change(screen.getByLabelText('每个原始样本生成数'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('每客户端每类目标样本数'), { target: { value: '20' } });
+    fireEvent.click(screen.getByRole('button', { name: /检查完整缓存/ }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create.mock.calls[0][1]).toMatchObject({ method: 'heterogeneous_solution',
+      augmentationMode: 'generate', generatedPerSample: 2, targetPerClass: 20, allowLegacyAugmentation: false });
+  }, 30000);
+
   it('submits the visible parameters and binds training to the successful preflight', async () => {
     const create = vi.fn().mockResolvedValueOnce(preflight).mockResolvedValueOnce({ ...preflight, id: 'b'.repeat(32), action: 'train' });
     const open = vi.fn();

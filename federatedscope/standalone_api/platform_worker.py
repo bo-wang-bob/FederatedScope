@@ -209,6 +209,31 @@ def prepare(spec):
                     for i, refs in clients.items()],
         'domains': [{'name': d, 'testSamples': len(rows)} for d, rows in tests.items()],
     }
+    mode = spec['request'].get('augmentationMode', 'none')
+    if mode == 'reuse':
+        from federatedscope.standalone_api.platform_augmentation import inspect_existing
+        emit('stage', stage='逐客户端核验已有增强缓存')
+        info['augmentation'] = inspect_existing(probe, clients, caches, info,
+            spec['request'].get('allowLegacyAugmentation', False), spec.get('registeredAugmentation'))
+    elif mode == 'generate':
+        # Preflight is read-only: statistics / generation happen only after start.
+        import shutil
+        target = int(cfg.ggeur.target_size_per_class)
+        prototype_limit = int(cfg.ggeur.max_cross_client_prototypes_per_class) or (
+            len(clients) * int(cfg.ggeur.local_prototypes_per_class))
+        estimates = [(target * cfg.model.num_classes if target else
+            len(refs) * (1 + cfg.ggeur.num_generated_per_sample)
+            + cfg.model.num_classes * prototype_limit * cfg.ggeur.num_generated_per_prototype)
+            * cfg.ggeur.embedding_dim * 4 for refs in clients.values()]
+        if max(estimates) > 240 * 1024 ** 2:
+            raise ValueError('预计单客户端增强缓存超过 240 MiB，请降低生成数或每类目标数')
+        if sum(estimates) * 1.2 > shutil.disk_usage(spec['output']).free:
+            raise ValueError('本实验目录剩余空间不足以保存预计增强缓存')
+        info['augmentation'] = dict(mode='generate', provenance='pending-generation',
+            warning=None, clients={}, generatedClients=0, cachedSamples=0,
+            estimatedCacheBytes=sum(estimates))
+    else:
+        info['augmentation'] = dict(mode='none', provenance='original-features', warning=None)
     cfg.freeze(inform=False, save=False)
     resolved = cfg.clone()
     resolved.defrost()
@@ -232,6 +257,8 @@ def train(spec):
     if (spec.get('expectedData', info['testFingerprint']) != info['testFingerprint']
             or spec.get('expectedPartition', info['partitionFingerprint']) != info['partitionFingerprint']):
         raise ValueError('缓存或划分在预检后发生变化，请重新预检')
+    if spec.get('expectedAugmentation') != info['augmentation'].get('fingerprint') and spec.get('expectedAugmentation'):
+        raise ValueError('增强缓存在预检后变化，请重新预检')
     save(output / 'data_manifest.json', {**info, 'partition': partition, 'test': tests})
     emit('prepared', **info)
     if spec['action'] == 'inspect':
@@ -240,8 +267,8 @@ def train(spec):
     use_gpu = bool(cfg.use_gpu)
     if use_gpu and (not torch.cuda.is_available() or cfg.device >= torch.cuda.device_count()):
         raise ValueError(f'GPU {cfg.device} 不可用')
-    training_stats, participants = {}, {}
-    # No temporary raw-feature extraction or Gaussian generation is permitted.
+    training_stats, participants, training_exposure = {}, {}, {}
+    # Frozen backbone features only. Augmentation is explicitly selected by the user.
     class CachedClient(GGEURClient):
         def _load_feature_extractor(self):
             raise RuntimeError('仅缓存模式禁止加载特征提取器')
@@ -260,18 +287,78 @@ def train(spec):
         def _extract_text_features(self):
             self._extract_features()
 
+        def _try_load_augmented_feature_cache(self, restore_statistics=False):
+            if info['augmentation']['mode'] != 'reuse':
+                return False
+            from federatedscope.standalone_api.platform_augmentation import safe_load, validate_arrays
+            row = info['augmentation']['clients'][str(self.ID)]
+            if digest(row['path']) != row['sha256']:
+                raise ValueError(f'客户端 {self.ID} 增强缓存已变化')
+            payload = safe_load(row['path'])
+            self.augmented_features, self.augmented_labels = validate_arrays(payload,
+                cfg.ggeur.embedding_dim, cfg.model.num_classes)
+            self._capture_generated_distribution_snapshot()
+            self.global_prototypes = self._copy_numpy_mapping(payload.get('global_prototypes', {}))
+            if restore_statistics:
+                self._restore_cached_local_statistics(payload.get('local_statistics', {}))
+            self._apply_platform_training_sampling()
+            from federatedscope.contrib.worker.ggeur_client import AugmentedFeatureDataset
+            self.augmented_loader = torch.utils.data.DataLoader(
+                AugmentedFeatureDataset(self.augmented_features, self.augmented_labels),
+                batch_size=cfg.dataloader.batch_size, shuffle=True,
+                generator=self._training_loader_generator())
+            self._emit_training_distribution(cache_hit=True)
+            emit('client', clientId=self.ID, stage='增强缓存已加载',
+                 augmentedSamples=len(self.augmented_labels), cacheSha256=row['sha256'])
+            return True
+
+        def _compute_local_statistics(self):
+            emit('client', clientId=self.ID, stage='计算本地统计', round=0)
+            return super()._compute_local_statistics()
+
+        def _save_augmented_feature_cache(self):
+            if info['augmentation']['mode'] != 'generate':
+                return
+            from federatedscope.standalone_api.platform_augmentation import validate_arrays
+            # Save before post-generation training sampling, just as the original
+            # algorithm does. Persist only this experiment's artifacts atomically.
+            payload = dict(features=torch.as_tensor(self.augmented_features).float(),
+                labels=torch.as_tensor(self.augmented_labels).long(),
+                metadata=self._augmented_cache_metadata(),
+                global_prototypes={int(k): torch.as_tensor(v) for k, v in (self.global_prototypes or {}).items()},
+                source_samples=[list(r) for r in clients[self.ID]],
+                source_feature_space=info['featureSpace'], source_partition=info['partitionFingerprint'],
+                source_files=info['cacheFiles'])
+            validate_arrays(payload, cfg.ggeur.embedding_dim, cfg.model.num_classes)
+            target = output / 'augmented_cache' / f'client_{self.ID:06d}.pt'
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_suffix('.pt.tmp')
+            torch.save(payload, temporary)
+            os.replace(temporary, target)
+            row = dict(path=str(target), sha256=digest(target), samples=len(self.augmented_labels),
+                histogram=np.bincount(self.augmented_labels, minlength=cfg.model.num_classes).tolist())
+            info['augmentation']['clients'][str(self.ID)] = row
+            info['augmentation']['generatedClients'] = len(info['augmentation']['clients'])
+            info['augmentation']['cachedSamples'] = sum(r['samples'] for r in info['augmentation']['clients'].values())
+            emit('client', clientId=self.ID, stage='增强数据已生成',
+                 augmentedSamples=row['samples'], cacheSha256=row['sha256'])
+
         def _perform_augmentation(self):
-            if spec['request']['method'] == 'heterogeneous_solution':
+            if info['augmentation']['mode'] == 'reuse':
                 if not self._try_load_augmented_feature_cache():
                     raise RuntimeError(f'客户端 {self.ID} 缺少匹配的增强缓存；禁止临时生成')
                 self.augmentation_done = True
             else:
+                if info['augmentation']['mode'] == 'generate':
+                    emit('stage', stage=f'按配置生成增强数据：客户端 {self.ID}/{len(clients)}')
                 super()._perform_augmentation()
 
         def _train_on_augmented_data(self):
             emit('client', clientId=self.ID, domain=clients[self.ID][0][0],
                  stage='本地训练', round=int(self.state))
             result = super()._train_on_augmented_data()
+            training_exposure.setdefault(str(self.state), {})[str(self.ID)] = dict(
+                samples=int(result[0]), optimizerSteps=len(self.augmented_loader) * cfg.train.local_update_steps)
             training_stats.setdefault(int(self.state), []).append((int(result[0]), float(result[2]['train_loss'])))
             emit('client', clientId=self.ID, domain=clients[self.ID][0][0],
                  stage='已上传', round=int(self.state), loss=float(result[2]['train_loss']),
@@ -357,10 +444,19 @@ def train(spec):
         raise RuntimeError('训练未完整结束或缺少模型产物')
     if set(training_stats) != set(range(1, spec['request']['rounds'] + 1)):
         raise RuntimeError('实际训练更新轮数与页面参数不一致')
+    if info['augmentation']['mode'] == 'generate':
+        if info['augmentation']['generatedClients'] != len(clients):
+            raise ValueError('并非全部客户端完成增强生成，拒绝标记成功')
+        info['augmentation']['provenance'] = 'generated-from-recorded-training-samples'
+        info['augmentation']['fingerprint'] = hashlib.sha256(json.dumps(
+            info['augmentation']['clients'], sort_keys=True).encode()).hexdigest()
+    save(output / 'data_manifest.json', {**info, 'partition': partition, 'test': tests})
+    emit('augmentation', **info['augmentation'])
     artifacts = {p.name: digest(p) for p in checkpoint.parent.iterdir() if p.is_file()}
     save(output / 'result.json', {**info, 'artifactHashes': artifacts,
          'checkpoint': 'checkpoints/mlp_final.pt', 'history': runner.server.test_accuracies_history,
          'completedRounds': len(training_stats), 'participants': participants,
+         'trainingExposure': training_exposure,
          'elapsedSeconds': time.monotonic() - started})
     emit('stage', stage='模型与结果已保存')
 

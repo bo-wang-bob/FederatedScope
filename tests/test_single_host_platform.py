@@ -44,7 +44,7 @@ class PlatformTests(unittest.TestCase):
         count = 0
         for group in self.configs.catalog()['groups']:
             for method in group['methods']:
-                if not method['enabled']:
+                if not method['enabled'] or method['id'] == 'heterogeneous_solution':
                     continue
                 req = self.configs.normalize(dict(group=group['id'], method=method['id'],
                     rounds=7, learningRate=.002, localEpochs=2, batchSize=17, gpu=-1,
@@ -71,9 +71,79 @@ class PlatformTests(unittest.TestCase):
         for extra in ({'rounds': True}, {'learningRate': float('nan')}, {'gpu': '1'},
                       {'clientCount': 59}, {'sampleClients': 61}, {'unexpected': 2},
                       {'group': '../officehome_vit'}, {'method': []}, {'group': {}},
-                      {'method': 'heterogeneous_solution'}):
+                      {'method': 'heterogeneous_solution', 'augmentationMode': 'none'},
+                      {'method': 'heterogeneous_solution', 'augmentationMode': 'reuse'},
+                      {'augmentationMode': 'generate'}, {'allowLegacyAugmentation': 'yes'}):
             with self.subTest(extra=extra), self.assertRaises(PlatformError):
                 self.configs.normalize(dict(self.payload, **extra))
+
+    def test_generation_does_not_require_augmented_cache_and_binds_parameters(self):
+        req = self.configs.normalize(dict(group='officehome_vit', method='heterogeneous_solution',
+            generatedPerSample=2, generatedPerPrototype=3, targetPerClass=20,
+            covarianceScale=.25, samplesPerClient=40))
+        cfg, _ = self.configs.build(req, self.temp.name)
+        g = cfg['ggeur']
+        self.assertEqual(req['augmentationMode'], 'generate')
+        self.assertEqual(g['num_generated_per_sample'], 2)
+        self.assertEqual(g['num_generated_per_prototype'], 3)
+        self.assertEqual(g['target_size_per_class'], 20)
+        self.assertEqual(g['generation_covariance_scale'], .25)
+        self.assertEqual(g['platform_target_samples_per_client'], 40)
+        self.assertFalse(g['reuse_augmented_feature_cache'])
+        self.assertEqual(Path(g['augmented_feature_cache_dir']), Path(self.temp.name) / 'augmented_cache')
+        self.assertEqual(next(m for m in self.configs.catalog()['groups'][0]['methods']
+            if m['id'] == 'heterogeneous_solution')['label'], '本架构')
+
+    def test_augmentation_tensor_validation_and_safe_loading(self):
+        import torch
+        from federatedscope.standalone_api.platform_augmentation import safe_load, validate_arrays
+        path = Path(self.temp.name) / 'cache.pt'
+        good = dict(features=torch.ones(3, 2), labels=torch.tensor([0, 1, 0]))
+        torch.save(good, path)
+        self.assertEqual(validate_arrays(safe_load(path), 2, 2)[0].shape, (3, 2))
+        for bad in (dict(good, labels=torch.tensor([0., 1., 0.])),
+                    dict(good, features=torch.full((3, 2), float('nan'))),
+                    dict(good, labels=torch.tensor([0, 2, 0]))):
+            with self.assertRaises(ValueError):
+                validate_arrays(bad, 2, 2)
+
+    def test_registered_augmentation_requires_matching_source_and_file_hash(self):
+        import torch
+        from types import SimpleNamespace
+        from federatedscope.standalone_api.platform_augmentation import inspect_existing, file_hash
+        root = Path(self.temp.name)
+        metadata = dict(client_id=1, client_num=1, dataset='test', seed=42,
+            splits=[1., 0., 0.], feature_extractor='clip', feature_extractor_model='test',
+            embedding_dim=2, num_classes=2, num_generated_per_sample=1,
+            num_generated_per_prototype=1, target_size_per_class=2,
+            use_cross_client_prototypes=True, max_cross_client_prototypes_per_class=0,
+            use_fedproto=False, use_lds=False, lds_alpha=.1, lds_seed=42,
+            augmented_feature_cache_version='test')
+        probe = SimpleNamespace(ggeur_cfg=SimpleNamespace(augmented_feature_cache_dir=str(root)),
+                                _augmented_cache_metadata=lambda: metadata)
+        clients = {1: [('A', 'x', 0)]}
+        info = dict(featureSpace='space', partitionFingerprint='partition')
+        path = root / 'client.pt'
+        payload = dict(features=torch.ones(2, 2), labels=torch.tensor([0, 1]), metadata=metadata,
+            source_samples=[['A', 'x', 0]], source_feature_space='space', source_partition='partition')
+        torch.save(payload, path)
+        def registered():
+            return {'clients': {'1': {'path': str(path), 'sha256': file_hash(path)}}}
+        result = inspect_existing(probe, clients, {}, info, False, registered())
+        self.assertIsNone(result['warning'])
+        payload['source_partition'] = 'wrong'
+        torch.save(payload, path)
+        with self.assertRaises(ValueError):
+            inspect_existing(probe, clients, {}, info, True, registered())
+        del payload['source_samples']
+        torch.save(payload, path)
+        with self.assertRaises(ValueError):
+            inspect_existing(probe, clients, {}, info, False, registered())
+        self.assertIn('历史', inspect_existing(probe, clients, {}, info, True, registered())['warning'])
+        stale = registered()
+        torch.save(dict(payload, labels=torch.tensor([1, 0])), path)
+        with self.assertRaisesRegex(ValueError, '修改'):
+            inspect_existing(probe, clients, {}, info, True, stale)
 
     def test_fixed_digit_manifest_cannot_accept_ineffective_partition_params(self):
         for extra in ({'alpha': .5}, {'splitSeed': 5}, {'clientCount': 30}):

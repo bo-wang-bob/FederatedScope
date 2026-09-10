@@ -2,12 +2,16 @@ export interface RequestConfig {
   group: string; method: string; name: string; rounds: number; clientCount: number;
   sampleClients: number; batchSize: number; localEpochs: number; learningRate: number;
   seed: number; splitSeed: number; alpha: number; gpu: number; evaluationFrequency: number; samplesPerClient: number;
+  augmentationMode?: 'none' | 'generate' | 'reuse'; allowLegacyAugmentation?: boolean;
+  augmentationSourceId?: string;
+  generatedPerSample?: number; generatedPerPrototype?: number; targetPerClass?: number; covarianceScale?: number;
 }
 export interface Group {
   id: string; dataset: string; backbone: string; domains: number; cacheFound: boolean;
   cacheFiles: number; cacheBytes: number; partitionLocked: boolean;
+  augmentationSources?: { id: string; name: string; request: RequestConfig }[];
   lastPreflight?: { id: string; status: string; at: string; error: string | null } | null;
-  methods: { id: string; label: string; enabled: boolean; reason: string | null; defaults: RequestConfig }[];
+  methods: { id: string; label: string; enabled: boolean; reason: string | null; augmentedCacheFound?: boolean; defaults: RequestConfig }[];
 }
 export interface Catalog { groups: Group[]; host: string; address: string; protocol: string; evaluationPolicy: string }
 export interface Resource {
@@ -23,6 +27,8 @@ export interface DataInfo {
   clientCount: number; trainSamples: number; testSamples: number; classes: string[];
   domains: { name: string; testSamples: number }[]; fingerprint: string; testFingerprint: string;
   testProvenance: Record<string, string>; clients?: Client[];
+  partitionFingerprint?: string;
+  augmentation?: { mode: string; provenance: string; warning?: string | null; cachedSamples?: number; generatedClients?: number };
 }
 export interface EvaluationResult extends Metric { domains: Record<string, Metric>; domainMean: number; worstDomain: number; domainGap: number; elapsedSeconds: number }
 export interface Job {
@@ -36,6 +42,7 @@ export interface Job {
 export interface LibraryItem {
   id: string; jobId: string; name: string; group: string; method: string; kind?: string; samples?: number;
   domains: { name: string; testSamples: number }[]; classes: string[]; featureSpace: string; sha256: string; trainingRounds?: number;
+  augmentationWarning?: string | null;
 }
 export interface TestSample { id: string; index: number; domain: string; label: number; className: string; filename: string; imageUrl: string; imageAvailable: boolean; imageSha256?: string; imageError?: string }
 export interface SamplePage { items: TestSample[]; total: number; offset: number; limit: number; testFingerprint: string; provenance: Record<string, string> }
@@ -59,4 +66,5 @@ export async function api<T>(path: string, body?: unknown): Promise<T> {
 }
 export const key = () => globalThis.crypto?.randomUUID?.() ?? `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 export const percent = (x?: number) => x == null ? '—' : `${(x * 100).toFixed(2)}%`;
+export const methodLabel = (id?: string) => ({ heterogeneous_solution: '本架构', ggeur: '本架构', GGEUR: '本架构', fedavg: 'FedAvg', fedprox: 'FedProx', fedproto: 'FedProto', fedopt: 'FedOpt', moon: 'MOON' }[id || ''] || id || '—');
 export const bytes = (x: number) => `${(x / 1024 ** 3).toFixed(1)} GB`;

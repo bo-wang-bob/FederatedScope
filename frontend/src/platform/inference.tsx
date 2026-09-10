@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Collapse, Empty, Pagination, Select, Space, Spin, Tag } from 'antd';
 import { ArrowRightOutlined, CheckCircleOutlined, DownloadOutlined, PictureOutlined, ScanOutlined } from '@ant-design/icons';
-import { api, percent, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
+import { api, methodLabel, percent, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
 import './inference.css';
 
 function SampleImage({ sample, large = false }: { sample: TestSample; large?: boolean }) {
@@ -83,7 +83,7 @@ export function ModelExperience({ library, disabled, create, open }: {
     setSubmitting(true); setError(''); setJob(undefined);
     try {
       const created = await create('predict', { modelId, testsetId, sampleId: selected.id, imageSha256: selected.imageSha256,
-        name: `单图体验 · ${model.method} · ${selected.filename}` });
+        name: `单图体验 · ${methodLabel(model.method)} · ${selected.filename}` });
       if (alive.current) setJob(created);
     } catch (e) { if (alive.current) setError((e as Error).message); }
     finally { if (alive.current) setSubmitting(false); }
@@ -91,7 +91,8 @@ export function ModelExperience({ library, disabled, create, open }: {
   if (!models.length) return <Empty description="暂无可体验的已完成图像模型。完成缓存训练后，模型和测试集会自动出现在这里；文本模型请使用独立评测。" />;
   return <div className="model-experience">
     <div className="experience-intro"><div><span className="platform-eyebrow">MODEL EXPERIENCE</span><h2>一个样本，看见模型的判断</h2><p>浏览真实测试图片，调用已保存模型，核对每一次预测。</p></div><Tag icon={<CheckCircleOutlined />} color="cyan">冻结特征分类器 · 真实推理</Tag></div>
-    <div className="experience-selectors"><div><label htmlFor="experience-model">01 / 选择模型</label><Select id="experience-model" aria-label="体验模型" showSearch optionFilterProp="label" value={modelId} disabled={frozen} onChange={value => { setModelId(value); setSelected(undefined); setJob(undefined); }} options={models.map(m => ({ value: m.id, label: `${m.name} · ${m.method.toUpperCase()} · ${m.kind}` }))} /></div><div><label htmlFor="experience-testset">02 / 选择测试集</label><Select id="experience-testset" aria-label="体验测试集" value={testsetId} disabled={frozen} onChange={value => { setTestsetId(value); setDomain(undefined); setLabel(undefined); setPage(1); }} options={testsets.map(t => ({ value: t.id, label: `${t.group} · ${t.samples?.toLocaleString()} 个样本 · ${t.name}` }))} /></div><div className="experience-model-meta"><Tag>{model?.method.toUpperCase()}</Tag><span>{model?.classes.length} 类 · 训练 {model?.trainingRounds ?? '—'} 轮</span>{model && <a href={`/api/platform/jobs/${model.jobId}/model-${model.kind}`}>下载模型 <DownloadOutlined /></a>}</div></div>
+    {model?.augmentationWarning && <Alert type="warning" title={model.augmentationWarning} />}
+    <div className="experience-selectors"><div><label htmlFor="experience-model">01 / 选择模型</label><Select id="experience-model" aria-label="体验模型" showSearch optionFilterProp="label" value={modelId} disabled={frozen} onChange={value => { setModelId(value); setSelected(undefined); setJob(undefined); }} options={models.map(m => ({ value: m.id, label: `${m.name} · ${methodLabel(m.method)} · ${m.kind}` }))} /></div><div><label htmlFor="experience-testset">02 / 选择测试集</label><Select id="experience-testset" aria-label="体验测试集" value={testsetId} disabled={frozen} onChange={value => { setTestsetId(value); setDomain(undefined); setLabel(undefined); setPage(1); }} options={testsets.map(t => ({ value: t.id, label: `${t.group} · ${t.samples?.toLocaleString()} 个样本 · ${t.name}` }))} /></div><div className="experience-model-meta"><Tag>{methodLabel(model?.method)}</Tag><span>{model?.classes.length} 类 · 训练 {model?.trainingRounds ?? '—'} 轮</span>{model && <a href={`/api/platform/jobs/${model.jobId}/model-${model.kind}`}>下载模型 <DownloadOutlined /></a>}</div></div>
     {model && model.trainingRounds != null && model.trainingRounds < 5 && <Alert type="warning" showIcon title={`当前模型只训练了 ${model.trainingRounds} 轮，适合核验流程，不代表已达到目标准确率。`} />}
     {model?.kind === 'best' && <Alert type="info" showIcon title="best 检查点按训练期测试集择优，不能视为无偏的泛化表现。" />}
     {error && <Alert type="error" showIcon title={error} action={<Button onClick={() => setRefresh(x => x + 1)} disabled={busy}>重新读取</Button>} />}
