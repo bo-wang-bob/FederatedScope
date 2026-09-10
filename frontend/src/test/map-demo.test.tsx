@@ -25,7 +25,7 @@ describe('preserved map demo', () => {
     render(<MemoryRouter initialEntries={['/demo']}><RootApp /></MemoryRouter>);
     expect(await screen.findByText('纯前端模拟数据，不会启动真实训练')).toBeInTheDocument();
     expect(screen.getByAltText('中国行政区域演示底图')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /返回训练平台/ })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: /返回系统首页/ })).toHaveAttribute('href', '/');
     expect(screen.queryByText(/训练数据 · 已连接/)).not.toBeInTheDocument();
     expect(platformRendered).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();

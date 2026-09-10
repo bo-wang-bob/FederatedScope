@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { App as AntApp, Alert, Badge, Button, Card, Collapse, ConfigProvider, Descriptions, Empty,
   Checkbox, Form, Input, InputNumber, Popconfirm, Progress, Select, Space, Spin, Table, Tabs, Tag, theme } from 'antd';
-import { ApartmentOutlined, BarChartOutlined, DatabaseOutlined, DownloadOutlined, ExperimentOutlined, GlobalOutlined,
+import { DatabaseOutlined, DownloadOutlined,
   PlayCircleOutlined, ReloadOutlined, StopOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { api, bytes, key, methodLabel, percent, statusText, terminal, type Catalog, type Client, type DataInfo,
   type Job, type Library, type RequestConfig, type Resource } from './api';
@@ -12,17 +12,12 @@ import { ModelExperience, PredictionPanel } from './inference';
 import { AppShell } from '../components/AppShell';
 import { MetricCard } from '../components/MetricCard';
 import { Panel as ExistingPanel } from '../components/ChartPanel';
+import { SystemHome } from './home';
+import { navigationItems, pages, resolveView } from './navigation';
 import './platform.css';
 import './refinements.css';
+import './workspace.css';
 
-const nav = [{ key: 'overview', icon: <ApartmentOutlined />, label: '综合态势' },
-  { key: 'experience', icon: <ExperimentOutlined />, label: '模型体验台' },
-  { key: 'cache', icon: <DatabaseOutlined />, label: '场景与特征缓存' },
-  { key: 'train', icon: <ExperimentOutlined />, label: '实验配置' },
-  { key: 'jobs', icon: <ThunderboltOutlined />, label: '运行监控' },
-  { key: 'evaluate', icon: <ExperimentOutlined />, label: '模型与评测' },
-  { key: 'compare', icon: <BarChartOutlined />, label: '结果对比' },
-  { key: 'demo', icon: <GlobalOutlined />, label: '地图模拟演示' }];
 export const State = ({ value }: { value: string }) => <Tag color={value === 'completed' ? 'success' : value === 'failed' ? 'error' : value === 'running' ? 'processing' : 'default'}>{statusText[value] || value}</Tag>;
 export const Panel = ({ title, extra, children }: { title: string; extra?: ReactNode; children: ReactNode }) => <ExistingPanel title={title} extra={extra} className="platform-panel">{children}</ExistingPanel>;
 export const Stat = ({ label, value, sub }: { label: string; value: string | number; sub?: string }) => <MetricCard label={label} value={value} delta={sub} />;
@@ -38,8 +33,9 @@ export default function PlatformApp() {
 function Workspace() {
   const [query, setQuery] = useSearchParams();
   const location = useLocation();
-  const legacyViews: Record<string, string> = { '/overview': 'overview', '/scenario-analysis': 'cache', '/experiments/new': 'train', '/reports': 'jobs' };
-  const view = query.get('view') || legacyViews[location.pathname] || 'overview', selectedId = query.get('id');
+  const view = resolveView(query.get('view'), location.pathname), selectedId = view === 'jobs' ? query.get('id') : null;
+  const page = pages[view];
+  useEffect(() => { document.title = `${page.label} · 全域智汇`; }, [page.label]);
   const [catalog, setCatalog] = useState<Catalog>();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [library, setLibrary] = useState<Library>({ models: [], testsets: [] });
@@ -90,15 +86,15 @@ function Workspace() {
     catch (e) { message.error((e as Error).message); } };
   const latest = resources.at(-1), running = jobs.find(j => !terminal(j.status));
   const showJob = selected || undefined;
-  const title = nav.find(n => n.key === view)?.label || '工作台';
-  return <div className="platform-shell"><AppShell platform={{ menuItems: nav, selectedKey: view,
+  return <div className="platform-shell"><AppShell platform={{ menuItems: navigationItems, selectedKey: view,
+    pageLabel: page.label, sectionLabel: page.section,
     navigate: key => { if (key === 'demo') window.location.assign('/demo'); else setQuery({ view: key }); }, connected: !error && !!latest,
     clientCount: (selected || overview)?.data?.clientCount, domainCount: (selected || overview)?.data?.domains.length,
     openCurrent: running ? () => open(running.id) : undefined }}>
-    <main className="platform-main"><header className="platform-header"><div><span className="platform-eyebrow">FEDERATED LEARNING / ACCURACY</span><h1>{title}</h1></div>
+    <main className="platform-main"><header className="platform-header"><div><span className="platform-eyebrow">{view === 'home' ? 'FEDERATED INTELLIGENCE / WORKSPACE' : 'FEDERATED LEARNING / ACCURACY'}</span><h1>{page.label}</h1><p className="platform-page-description">{page.description}</p></div>
       <Space><span className="platform-muted">{latest ? `更新于 ${new Date(latest.at).toLocaleTimeString()}` : '正在连接服务器'}</span><Badge status={error ? 'error' : latest ? 'success' : 'default'} text={error ? '数据已过期' : latest ? '实时连接' : '连接中'} /></Space></header>
-      {error && <Alert type="error" showIcon title="无法获取服务器数据，已暂停刷新展示" description={error} />}
-      {!catalog ? <div className="platform-loading"><Spin /><p>正在读取服务器配置与缓存目录</p></div> : <>
+      {error && <Alert type="error" showIcon title="服务器连接异常，正在自动重试；已有数据为上次读取的快照" description={error} />}
+      {view === 'home' ? <SystemHome catalog={catalog} jobs={jobs} library={library} resource={latest} stale={!!error} /> : !catalog ? <div className="platform-loading"><Spin /><p>正在读取服务器配置与缓存目录</p></div> : <>
       {view === 'overview' && <>
         <div className="platform-intro"><div><h2>多域协同，一处掌握实验全程</h2><p>复用已缓存特征，保留联邦聚合与数据异构；训练、模型和评测形成完整记录。</p></div><Space wrap><Button type="primary" onClick={() => setQuery({ view: 'experience' })}>体验现有模型</Button><Button icon={<PlayCircleOutlined />} onClick={() => setQuery({ view: 'train' })}>新建准确率实验</Button></Space></div>
         <div className="platform-stats"><Stat label="已发现缓存配置" value={catalog.groups.filter(g => g.cacheFound).length} sub="逐样本完整性以预检为准" /><Stat label="正在执行" value={running ? 1 : 0} sub={running?.stage || '服务器可接收任务'} /><Stat label="已保存模型" value={library.models.length} sub="含 final / best 两种检查点" /><Stat label="成功训练" value={jobs.filter(j => j.action === 'train' && j.status === 'completed').length} sub="独立进程 · 完整产物" /></div>
@@ -120,7 +116,7 @@ function Workspace() {
       {view === 'train' && <TrainingForm catalog={catalog} initialGroup={query.get('group') || undefined} sourceId={query.get('source') || undefined} resources={latest} running={running} disconnected={!!error} create={create} open={open} />}
       {view === 'jobs' && <>{selectedId ? <><Button type="link" onClick={() => setQuery({ view: 'jobs' })}>← 返回任务列表</Button>{detailError && <Alert type="error" title={detailError} />}{showJob ? <JobDetail job={showJob} resources={latest} library={library} stop={stop} rerun={() => setQuery({ view: 'train', source: showJob.id, group: showJob.request.group })} /> : !detailError && <Spin />}</> : <Panel title="所有任务"><JobTable jobs={jobs} open={open} /></Panel>}</>}
       {view === 'evaluate' && <EvaluationPanel library={library} disabled={!!error || !!running} create={create} open={open} />}
-      {view === 'experience' && <ModelExperience library={library} disabled={!!error || !!running} create={create} open={open} />}
+      {view === 'experience' && <>{running && <Alert type="info" showIcon title="平台正在执行其他任务，单图预测需等待当前任务结束。" action={<Button onClick={() => open(running.id)}>查看占用任务</Button>} />}<ModelExperience library={library} disabled={!!error || !!running} create={create} open={open} /></>}
       {view === 'compare' && <ComparisonPanel jobs={jobs} open={open} />}
       </>}
       <footer>FederatedScope · frozen-features-v2<span>未接入隐私与后门扩展</span></footer>
@@ -180,7 +176,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, resources, runni
   const blocked = !!running || disconnected || busy || (!!preflight && !terminal(preflight.status));
   const number = (name: keyof RequestConfig, label: string, min: number, max: number, extra?: string, disabled = false, step = 1) => <Form.Item name={name} label={label} extra={extra} rules={[{ required: true }]}><InputNumber min={min} max={max} step={step} disabled={disabled} style={{ width: '100%' }} /></Form.Item>;
   return <div className="platform-training-grid"><Panel title="训练配置" extra={<Tag>单机模拟多客户端</Tag>}>
-    {running && <Alert type="info" title="已有任务占用平台，请等待完成或在监控页停止。" action={<Button onClick={() => open(running.id)}>查看任务</Button>} />}
+    {running && <Alert type="info" title="已有任务占用平台，请等待完成或在“任务与记录”中停止。" action={<Button onClick={() => open(running.id)}>查看任务</Button>} />}
     {error && <Alert type="error" showIcon title={error} />}
     <Form form={form} layout="vertical" onValuesChange={() => setPreflight(undefined)} initialValues={group.methods.find(m => m.enabled)?.defaults}>
       <Form.Item name="name" label="实验名称"><Input maxLength={120} placeholder="例如：Office-Home · FedAvg 基线" /></Form.Item>

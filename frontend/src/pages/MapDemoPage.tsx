@@ -29,7 +29,7 @@ export default function MapDemoPage() {
     <div className={`map-demo-surface ${running ? '' : 'map-demo-paused'}`}>
       <header className="map-demo-modebar">
         <div><Tag color="gold">模拟演示</Tag><span>纯前端模拟数据，不会启动真实训练</span></div>
-        <Button href="/" icon={<ArrowLeftOutlined />}>返回训练平台</Button>
+        <Button href="/" icon={<ArrowLeftOutlined />}>返回系统首页</Button>
       </header>
       <OverviewPage simulationOnly />
     </div>
