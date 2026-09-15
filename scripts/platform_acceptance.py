@@ -12,6 +12,7 @@ def main():
     parser.add_argument('--group', default='officehome_vit')
     parser.add_argument('--method', default='fedavg')
     parser.add_argument('--rounds', type=int, default=2)
+    parser.add_argument('--gpu', type=int, default=1)
     parser.add_argument('--preflight-only', action='store_true')
     args = parser.parse_args()
 
@@ -40,7 +41,7 @@ def main():
         raise TimeoutError('Acceptance task timed out and was stopped')
 
     request = dict(group=args.group, method=args.method, rounds=args.rounds,
-                   name='真实闭环验收-' + args.group, gpu=1)
+                   name='真实闭环验收-' + args.group, gpu=args.gpu)
     preflight = wait(call('/api/platform/preflight', dict(request, idempotencyKey=uuid.uuid4().hex)))
     if args.preflight_only:
         print(json.dumps({'group': args.group, 'preflightId': preflight['id'],

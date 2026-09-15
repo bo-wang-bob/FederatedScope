@@ -34,6 +34,8 @@ class AircraftRegistrationTests(unittest.TestCase):
                 self.assertEqual(raw['ggeur']['domainnet_domains'], ['aerial', 'natural', 'recon'])
                 self.assertEqual(raw['ggeur']['domainnet_manifest_path'], '')
                 self.assertEqual(raw['model']['num_classes'], 5)
+                self.assertEqual(req['gpu'], 0)
+                self.assertEqual(raw['device'], 0)
                 self.assertEqual(raw['federate']['client_num'], 15)
                 self.assertEqual(raw['federate']['total_round_num'], 3)
                 self.assertEqual(raw['train']['optimizer']['lr'], .003)
