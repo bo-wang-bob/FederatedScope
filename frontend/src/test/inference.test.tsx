@@ -51,3 +51,24 @@ describe('single-image model experience', () => {
     expect(create).not.toHaveBeenCalled();
   }, 30000);
 });
+it('uses an explicitly linked model and compatible testset instead of silently choosing the first', async () => {
+  const secondModel={...model,id:'c'.repeat(32)+':final',jobId:'c'.repeat(32),name:'指定模型'};
+  const explicitTest={...library.testsets[0],id:'d'.repeat(32),name:'指定测试集'};
+  const fetch=vi.fn().mockResolvedValue({ok:true,json:async()=>({data:page})});vi.stubGlobal('fetch',fetch);
+  const create=vi.fn().mockResolvedValue(prediction);
+  render(<ModelExperience library={{models:[model,secondModel],testsets:[...library.testsets,explicitTest]}} initialModel={secondModel.id} initialTestset={explicitTest.id} disabled={false} create={create} open={vi.fn()}/>);
+  await screen.findByRole('button',{name:'选择样本 0.jpg'});
+  expect(fetch.mock.calls.every(([url])=>String(url).includes('/testsets/'+explicitTest.id+'/samples?'))).toBe(true);
+  expect(screen.getByRole('link',{name:/整集评测/})).toHaveAttribute('href','/?view=evaluate&model='+encodeURIComponent(secondModel.id)+'&testset='+explicitTest.id);
+  fireEvent.click(screen.getByRole('button',{name:/运行单图预测/}));
+  await waitFor(()=>expect(create).toHaveBeenCalledWith('predict',expect.objectContaining({modelId:secondModel.id,testsetId:explicitTest.id})));
+},30000);
+
+it('disables prediction when the original image fails to load in the browser',async()=>{
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({data:page})}));
+  const create=vi.fn();render(<ModelExperience library={library} disabled={false} create={create} open={vi.fn()}/>);
+  const image=await screen.findByAltText('测试原图 0.jpg');
+  fireEvent.error(image);
+  expect(screen.getByRole('button',{name:/运行单图预测/})).toBeDisabled();
+  expect(create).not.toHaveBeenCalled();
+},30000);

@@ -1,49 +1,50 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Collapse, Empty, Form, Input, Select, Space, Table, Tag } from 'antd';
-import { DownloadOutlined, PlayCircleOutlined } from '@ant-design/icons';
-import { api, methodLabel, percent, type EvaluationResult, type Job, type Library, type LibraryItem } from './api';
-import { Confusion, Curves, DomainBars } from './charts';
+import { ArrowRightOutlined, CheckOutlined, DownloadOutlined, LineChartOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { api, methodLabel, percent, type EvaluationResult, type Job, type Library } from './api';
+import { CompareCurves, Confusion, DomainBars } from './charts';
 
-export function EvaluationPanel({ library, disabled, create, open }: {
-  library: Library; disabled: boolean; create: (action: string, payload: object) => Promise<Job>; open: (id: string) => void;
+export function EvaluationPanel({library,initialModel,initialTestset,onSelectionChange,disabled,create,open}:{
+  library:Library;initialModel?:string;initialTestset?:string;onSelectionChange?:(model:string,testset?:string)=>void;disabled:boolean;create:(action:string,payload:object)=>Promise<Job>;open:(id:string)=>void;
 }) {
-  const [modelId, setModelId] = useState<string>();
-  const [testsetId, setTestsetId] = useState<string>();
-  const [domains, setDomains] = useState<string[]>([]);
-  const [classes, setClasses] = useState<number[]>([]);
-  const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const model = library.models.find(m => m.id === modelId);
-  const testsets = library.testsets.filter(t => t.featureSpace === model?.featureSpace);
-  const test = testsets.find(t => t.id === testsetId);
-  const submit = async () => {
-    if (busy || disabled || !model || !test) return;
-    setBusy(true); setError('');
-    try { const job = await create('evaluate', { modelId, testsetId, domains, classes, name }); open(job.id); }
-    catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  const [modelId,setModelId]=useState(initialModel || ''),[testsetId,setTestsetId]=useState<string>();
+  const [domains,setDomains]=useState<string[]>([]),[classes,setClasses]=useState<number[]>([]);
+  const [name,setName]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const model=library.models.find(m=>m.id===modelId),testsets=library.testsets.filter(t=>t.featureSpace===model?.featureSpace);
+  const test=testsets.find(t=>t.id===testsetId);
+  useEffect(()=>{if(!modelId&&library.models.length)setModelId((library.models.find(m=>m.kind==='final')||library.models[0]).id);},[modelId,library.models]);
+  useEffect(()=>{
+    if(!model)return;
+    setTestsetId(library.testsets.find(t=>t.id===initialTestset&&t.featureSpace===model.featureSpace)?.id || library.testsets.find(t=>t.id===model.jobId&&t.featureSpace===model.featureSpace)?.id || library.testsets.find(t=>t.featureSpace===model.featureSpace)?.id);
+    setDomains([]);setClasses([]);
+  },[model?.id]);
+  const submit=async()=>{
+    if(busy||disabled||!model||!test)return;
+    setBusy(true);setError('');
+    try{const job=await create('evaluate',{modelId,testsetId,domains,classes,name:name.trim() || methodLabel(model.method)+' · 独立评测'});open(job.id);}
+    catch(e){setError((e as Error).message);}finally{setBusy(false);}
   };
-  return <><div className="platform-training-grid"><Card className="platform-panel" title="评测配置" extra={<Tag>CPU</Tag>}>
-    {error && <Alert type="error" showIcon title={error} />}
-    {!library.models.length ? <Empty description="暂无模型，请先完成训练。" /> : <Form layout="vertical" disabled={busy}>
-      <Form.Item label="评测名称"><Input aria-label="评测名称" value={name} onChange={e => setName(e.target.value)} maxLength={120} placeholder="例如：FedAvg · 全域独立评测" /></Form.Item>
-      <Form.Item label="选择已有模型" required><Select aria-label="选择已有模型" showSearch optionFilterProp="label" value={modelId} onChange={id => { setModelId(id); setTestsetId(undefined); setDomains([]); setClasses([]); }}
-        options={library.models.map(m => ({ value: m.id, label: `${m.name} · ${m.group} · ${methodLabel(m.method)} / ${m.kind}` }))} /></Form.Item>
-      <Form.Item label="选择兼容测试集" required><Select aria-label="选择兼容测试集" value={testsetId} disabled={busy || !model} onChange={id => { setTestsetId(id); setDomains([]); setClasses([]); }}
-        options={testsets.map(t => ({ value: t.id, label: `${t.name} · ${t.samples} 样本 · ${t.id.slice(0, 8)}` }))} /></Form.Item>
-      <Form.Item label="测试域" tooltip="留空表示全部"><Select aria-label="测试域" placeholder="全部域" mode="multiple" value={domains} disabled={busy || !test} onChange={setDomains} options={test?.domains.map(d => ({ value: d.name, label: `${d.name} (${d.testSamples})` }))} /></Form.Item>
-      <Form.Item label="测试类别" tooltip="留空表示全部"><Select aria-label="测试类别" placeholder="全部类别" mode="multiple" showSearch optionFilterProp="label" value={classes} disabled={busy || !test} onChange={setClasses} maxTagCount={5}
-        options={test?.classes.map((c, i) => ({ value: i, label: `${i}: ${c}` }))} /></Form.Item>
-      {model?.kind === 'best' && <Alert type="warning" title="best 按训练期测试集择优，不是无偏泛化验证；正式对比建议 final。" />}
-      {model?.augmentationWarning && <Alert type="warning" title={model.augmentationWarning} />}
-      <Button type="primary" icon={<PlayCircleOutlined />} loading={busy} disabled={disabled || busy || !model || !test} onClick={() => void submit()}>启动独立评测</Button>
-    </Form>}
-  </Card><div><section className="studio-run-summary"><span className="studio-kicker">EVALUATION</span><h3>{model?.name || '选择一个模型'}</h3><div className="studio-summary-method">{methodLabel(model?.method)}{model?.kind && <Tag>{model.kind}</Tag>}</div><dl><div><dt>测试样本</dt><dd>{test?.samples?.toLocaleString() ?? '—'}{test && (domains.length || classes.length) ? ' · 待筛选' : ''}</dd></div><div><dt>测试域</dt><dd>{test ? domains.length ? domains.join(' / ') : '全部' : '—'}</dd></div><div><dt>类别范围</dt><dd>{test ? classes.length ? `${classes.length} 类` : '全部' : '—'}</dd></div></dl></section><Collapse ghost items={[{ key: 'protocol', label: '评测口径', children: <div className="platform-muted">重新加载分类器与冻结测试特征，验证模型和测试包哈希。总体准确率按样本加权，Macro 指标按出现的真值或预测类别等权。配置、版本与结果一并保存。</div> }]} /></div></div>
-    <Collapse className="studio-model-library" items={[{ key: 'models', label: `模型库 · ${library.models.length}`, children: <Table<LibraryItem> rowKey="id" dataSource={library.models} pagination={{ pageSize: 8 }} scroll={{ x: 650 }} columns={[
-      { title: '模型', render: (_, m) => <span>{m.name}<small style={{ display: 'block' }}>{m.group} / {methodLabel(m.method)}</small></span> },
-      { title: '检查点', dataIndex: 'kind', render: k => <Tag color={k === 'final' ? 'blue' : 'default'}>{k}</Tag> },
-      { title: 'SHA-256', dataIndex: 'sha256', render: value => <code title={value}>{value.slice(0, 16)}</code> },
-      { title: '操作', render: (_, m) => <Space><Button type="link" onClick={() => open(m.jobId)}>训练记录</Button><Button type="link" href={`/api/platform/jobs/${m.jobId}/model-${m.kind}`} icon={<DownloadOutlined />}>下载</Button></Space> },
-    ]} /> }]} /></>;
+  if(!library.models.length) return <div className="studio-empty-state"><LineChartOutlined/><h2>还没有可评测的模型</h2><p>完成一次训练，模型会自动保存在这里。</p><a className="studio-button primary" href="/?view=train">新建训练 <ArrowRightOutlined/></a></div>;
+  return <div className="evaluation-layout"><section className="evaluation-form studio-surface"><div className="wizard-title"><span>EVALUATE A MODEL</span><h2>在测试集上检验表现</h2></div>
+    {error&&<Alert type="error" showIcon title={error}/>}
+    {initialModel&&!model&&<Alert type="warning" title="指定模型不可用，请重新选择。"/>}
+    <Form layout="vertical" disabled={busy||disabled}>
+      <Form.Item label="模型" htmlFor="evaluation-model"><Select id="evaluation-model" aria-label="选择已有模型" showSearch optionFilterProp="label" value={model?modelId:undefined} onChange={id=>{setModelId(id);setTestsetId(undefined);setDomains([]);setClasses([]);onSelectionChange?.(id);}} options={library.models.map(m=>({value:m.id,label:m.name+' · '+methodLabel(m.method)+' / '+m.kind}))}/></Form.Item>
+      <Form.Item label="测试集" htmlFor="evaluation-testset"><Select id="evaluation-testset" aria-label="选择兼容测试集" placeholder={model?'选择兼容测试集':'先选择模型'} value={testsetId} disabled={busy||disabled||!model} onChange={id=>{setTestsetId(id);setDomains([]);setClasses([]);onSelectionChange?.(modelId,id);}} options={testsets.map(t=>({value:t.id,label:t.name+' · '+t.samples?.toLocaleString()+' 个样本'}))}/></Form.Item>
+      <div className="evaluation-scope"><h3>评测范围</h3><div className="wizard-fields"><Form.Item label="测试域"><Select aria-label="测试域" placeholder="全部域" mode="multiple" value={domains} disabled={busy||disabled||!test} onChange={setDomains} maxTagCount={2} options={test?.domains.map(d=>({value:d.name,label:d.name}))}/></Form.Item>
+        <Form.Item label="测试类别"><Select aria-label="测试类别" placeholder="全部类别" mode="multiple" showSearch optionFilterProp="label" value={classes} disabled={busy||disabled||!test} onChange={setClasses} maxTagCount={2} options={test?.classes.map((c,i)=>({value:i,label:c.replaceAll('_',' ')}))}/></Form.Item></div></div>
+      <Collapse ghost items={[{key:'name',label:'设置评测名称',children:<Input aria-label="评测名称" value={name} maxLength={120} placeholder="自动命名" onChange={event=>setName(event.target.value)}/>}]} />
+      {model?.kind==='best'&&<Alert type="warning" title="best 按训练期测试集择优；正式对比建议使用 final。"/>}
+      {model?.augmentationWarning&&<Alert type="warning" title={model.augmentationWarning}/>}
+      <div className="evaluation-submit"><span>加载模型后独立计算指标</span><Button type="primary" size="large" icon={<PlayCircleOutlined/>} loading={busy} disabled={disabled||busy||!model||!test} onClick={()=>void submit()}>启动独立评测</Button></div>
+    </Form>
+  </section><aside className="evaluation-preview"><span className="studio-kicker">EVALUATION SCOPE</span><h2>{test ? domains.length ? domains.join(' / ') : '全域评测' : '待选择测试集'}</h2>
+    <dl>{[['模型',methodLabel(model?.method)],['检查点',model?.kind || '—'],['测试样本',test?.samples?.toLocaleString() || '—'],['类别',test ? classes.length || test.classes.length : '—']].map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    {(domains.length>0||classes.length>0)&&<small>样本数为完整测试集数量，实际筛选后记录。</small>}
+    <div className="evaluation-deliverables"><h3>输出结果</h3>{['总体指标','分域表现','分类指标与混淆矩阵'].map(text=><span key={text}><CheckOutlined/>{text}</span>)}</div>
+    <Collapse ghost size="small" items={[{key:'protocol',label:'指标与数据口径',children:<p>重新加载分类器与冻结测试特征，校验模型和测试包版本。总体准确率按样本加权，Macro 指标按出现的真值或预测类别等权。</p>}]} />
+    {model&&<Button type="text" onClick={()=>open(model.jobId)}>训练记录 <ArrowRightOutlined/></Button>}
+  </aside></div>;
 }
 
 export function EvaluationResults({ job, library }: { job: Job; library: Library }) {
@@ -68,30 +69,38 @@ export function EvaluationResults({ job, library }: { job: Job; library: Library
   </>;
 }
 
-export function ComparisonPanel({ jobs, open }: { jobs: Job[]; open: (id: string) => void }) {
-  const [ids, setIds] = useState<string[]>([]), [loaded, setSelected] = useState<Job[]>([]), [error, setError] = useState('');
-  const [kind, setKind] = useState('evaluate');
-  const selected = loaded.length === ids.length && loaded.every(job => ids.includes(job.id) && job.action === kind) ? loaded : [];
-  useEffect(() => { let active = true; setError(''); void Promise.all(ids.map(id => api<Job>(`jobs/${id}`))).then(j => { if (active) setSelected(j); }).catch(e => { if (active) setError(e.message); }); return () => { active = false; }; }, [ids]);
-  const signature = (j: Job) => j.action === 'evaluate' ? JSON.stringify([j.request.testsetId, [...(j.request.domains || [])].sort(), [...(j.request.classes || [])].sort()]) : JSON.stringify([j.request.group, j.data?.testFingerprint, j.data?.partitionFingerprint, ...['rounds', 'localEpochs', 'learningRate', 'batchSize', 'sampleClients', 'clientCount', 'seed', 'splitSeed', 'alpha', 'samplesPerClient'].map(k => j.request[k as keyof Job['request']])]);
-  const comparable = new Set(selected.map(signature)).size <= 1;
-  const download = () => { const blob = new Blob([JSON.stringify({ comparable, definition: 'same testset and selected subset; see each run config for training differences', jobs: selected }, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'federatedscope-comparison.json'; a.click(); URL.revokeObjectURL(url); };
-  return <><Card className="platform-panel" title="选择已完成实验" extra={<Select aria-label="对比内容" value={kind} onChange={v => { setKind(v); setIds([]); }} options={[{ value: 'evaluate', label: '独立评测' }, { value: 'train', label: '训练曲线' }]} />}>
-    <Table<Job> rowKey="id" dataSource={jobs.filter(j => j.action === kind && j.status === 'completed')} pagination={{ pageSize: 8 }} scroll={{ x: 580 }} rowSelection={{ selectedRowKeys: ids, onChange: keys => setIds(keys.map(String).slice(-4)) }} columns={[
-      { title: '实验', render: (_, j) => <Button type="link" onClick={() => open(j.id)}>{j.request.name || j.id.slice(0, 8)}</Button> },
-      { title: '配置', render: (_, j) => `${j.request.group} / ${methodLabel(j.request.method)}` }, { title: '时间', dataIndex: 'createdAt', render: v => new Date(v).toLocaleString() },
-    ]} /></Card>
-    {error && <Alert type="error" title={error} />}
-    {!!selected.length && <><Space style={{ marginBottom: 18 }}><Tag>{selected.length} 项实验（最多 4 项）</Tag><Button icon={<DownloadOutlined />} onClick={download}>导出对比 JSON</Button></Space>
-      {!comparable && <Alert type="warning" title="测试集、划分或筛选范围不一致，不应直接比较优劣。请统一协议后重跑。" />}
-      <Collapse ghost items={[{ key: 'protocol', label: '对比口径', children: '同轮数不等于同计算量。增强会改变样本数，请核对学习率、本地轮数、参与客户端和种子；短轮试跑不证明稳定提升。' }]} />
-      {selected.some(j => j.data?.augmentation?.warning) && <Alert type="warning" title="包含历史增强缓存实验，生成来源未完整核验；这里只展示观察结果。" />}
-      {kind === 'evaluate' ? <Card className="platform-panel" title="独立评测对比"><Table<Job> rowKey="id" dataSource={selected} pagination={false} scroll={{ x: 700 }} columns={[
-        { title: '实验', render: (_, j) => j.request.name || j.id.slice(0, 8) }, { title: '算法', render: (_, j) => methodLabel(j.request.method) },
-        ...(['accuracy', 'macroF1', 'domainMean', 'worstDomain'] as const).map((metric, i) => ({ title: ['总体准确率', 'Macro-F1', '分域平均', '最差域'][i], render: (_: unknown, j: Job) => percent((j.result as EvaluationResult)[metric]) })),
-        { title: '样本数', render: (_, j) => (j.result as EvaluationResult).samples },
-      ]} /></Card> : <div className="platform-grid">{selected.map(j => <Card className="platform-panel" title={`${j.request.name || j.id.slice(0, 8)} · ${methodLabel(j.request.method)}`} key={j.id}><Curves points={j.metrics} /><p className="platform-muted">lr={j.request.learningRate} · local={j.request.localEpochs} · seed={j.request.seed} · clients={j.request.clientCount}</p></Card>)}</div>}
+export function ComparisonPanel({jobs,open}:{jobs:Job[];open:(id:string)=>void}) {
+  const [ids,setIds]=useState<string[]>([]),[loaded,setLoaded]=useState<Job[]>([]),[error,setError]=useState('');
+  const [kind,setKind]=useState('train'),[retry,setRetry]=useState(0);
+  const selected=loaded.length===ids.length&&loaded.every(job=>ids.includes(job.id)&&job.action===kind)?loaded:[];
+  useEffect(()=>{
+    let alive=true;setError('');
+    void Promise.all(ids.map(id=>api<Job>('jobs/'+id))).then(data=>{if(alive)setLoaded(data);}).catch(e=>{if(alive)setError(e.message);});
+    return()=>{alive=false;};
+  },[ids,retry]);
+  const signature=(job:Job)=>job.action==='evaluate'?JSON.stringify([job.request.testsetId,[...(job.request.domains||[])].sort(),[...(job.request.classes||[])].sort()]):
+    JSON.stringify([job.request.group,job.data?.testFingerprint,job.data?.partitionFingerprint,...['rounds','localEpochs','learningRate','batchSize','sampleClients','clientCount','seed','splitSeed','alpha','samplesPerClient'].map(k=>job.request[k as keyof Job['request']])]);
+  const completeProtocol=selected.every(job=>job.action==='evaluate'?!!job.request.testsetId:!!job.data?.testFingerprint&&!!job.data?.partitionFingerprint);
+  const comparable=selected.length>=2&&completeProtocol&&new Set(selected.map(signature)).size===1;
+  const download=()=>{
+    const blob=new Blob([JSON.stringify({comparable,definition:kind==='train'?'same test/partition fingerprints and training controls; augmentation changes compute':'same testset and selected subset; verify training controls separately',jobs:selected},null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob),anchor=document.createElement('a');anchor.href=url;anchor.download='federatedscope-comparison.json';anchor.click();URL.revokeObjectURL(url);
+  };
+  const candidates=jobs.filter(job=>job.action===kind&&job.status==='completed');
+  return <div className="comparison-workspace">
+    <section className="comparison-picker studio-surface"><div><label htmlFor="compare-kind">对比内容</label><Select id="compare-kind" aria-label="对比内容" value={kind} onChange={value=>{setKind(value);setIds([]);setLoaded([]);}} options={[{value:'train',label:'训练实验'},{value:'evaluate',label:'独立评测'}]}/></div><div><label htmlFor="compare-jobs">选择实验 <small>最多 4 项</small></label><Select id="compare-jobs" aria-label="选择对比实验" mode="multiple" maxCount={4} showSearch optionFilterProp="label" placeholder="搜索并添加已完成的实验" value={ids} onChange={setIds} options={candidates.map(job=>({value:job.id,label:job.request.name+' · '+methodLabel(job.request.method)}))}/></div><Button icon={<DownloadOutlined/>} disabled={selected.length<2} onClick={download}>导出对比</Button></section>
+    {error&&<Alert type="error" title={error} action={<Button onClick={()=>setRetry(x=>x+1)}>重试</Button>}/>}
+    {!ids.length?<div className="studio-empty-state comparison-empty"><LineChartOutlined/><h2>让结果在同一视野相遇</h2><p>{candidates.length?'选择实验，开始对比。':'暂无已完成的'+(kind==='train'?'训练':'评测')+'实验。'}</p></div>:selected.length===0&&!error?<div className="comparison-loading">正在读取实验结果…</div>:selected.length>0&&<>
+      <div className="comparison-status"><span>{selected.length} 项实验</span>{selected.length<2?<small>再添加一项即可对比</small>:comparable?<span className="protocol-ok"><CheckOutlined/> 对比条件一致</span>:<span className="protocol-warning">对比条件不一致</span>}</div>
+      {selected.length>=2&&!comparable&&<Alert type="warning" showIcon title="测试集、划分或训练条件不一致，不能直接比较优劣。"/>}
+      {selected.some(job=>job.data?.augmentation?.warning)&&<Alert type="warning" title="包含来源未完整核验的历史增强结果，仅展示观察值。"/>}
+      {kind==='train'&&<Card className="platform-panel comparison-chart" title="准确率对比" extra={<span className="platform-muted">相同坐标 · 实际轮次</span>}><CompareCurves jobs={selected}/></Card>}
+      <Card className="platform-panel" title={kind==='train'?'最终训练表现':'独立评测表现'}><Table<Job> rowKey="id" dataSource={selected} pagination={false} columns={[
+        {title:'实验',render:(_,job)=><Button className="platform-job-link" type="link" onClick={()=>open(job.id)}>{job.request.name || job.id.slice(0,8)}<small>{methodLabel(job.request.method)}</small></Button>},
+        ...(['accuracy',...(kind==='evaluate'?['macroF1']:[]),'domainMean','worstDomain'] as const).map(metric=>({title:({accuracy:'总体准确率',macroF1:'Macro-F1',domainMean:'分域平均',worstDomain:'最差域'} as Record<string,string>)[metric],render:(_:unknown,job:Job)=>percent((kind==='evaluate'?job.result as EvaluationResult:job.metrics.at(-1))?.[metric as 'accuracy' | 'domainMean' | 'worstDomain'])})),
+        {title:kind==='train'?'实际轮次':'样本数',render:(_,job)=>kind==='train'?job.metrics.at(-1)?.round??'—':(job.result as EvaluationResult)?.samples??'—'},
+      ]}/></Card>
+      <Collapse ghost items={[{key:'protocol',label:'对比口径与限制',children:'同轮数不等于同计算量，增强会改变训练样本数。独立评测的一致性仅核对测试集与筛选范围，仍需核对训练配置；短轮试跑不能证明稳定提升。'}]}/>
     </>}
-  </>;
+  </div>;
 }

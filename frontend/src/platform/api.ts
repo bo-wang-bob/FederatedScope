@@ -56,12 +56,15 @@ export interface Prediction {
 export interface Library { models: LibraryItem[]; testsets: LibraryItem[] }
 export const terminal = (status: string) => ['completed', 'failed', 'stopped', 'interrupted'].includes(status);
 export const statusText: Record<string, string> = { queued: '排队中', running: '运行中', stopping: '正在停止', completed: '已完成', failed: '失败', stopped: '已停止', interrupted: '重启中断' };
+export class PlatformApiError extends Error {
+  constructor(message: string, public status: number, public code?: string) { super(message); this.name = 'PlatformApiError'; }
+}
 export async function api<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api/platform/${path}`, { method: body === undefined ? 'GET' : 'POST',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000) });
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
+  if (!response.ok) throw new PlatformApiError(payload.error?.message || `HTTP ${response.status}`, response.status, payload.error?.code);
   return payload.data;
 }
 export const key = () => globalThis.crypto?.randomUUID?.() ?? `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
