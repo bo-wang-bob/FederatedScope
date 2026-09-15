@@ -1,148 +1,51 @@
-# FederatedScope 统一安全单机版
+# 跨域联邦学习 · 后端原型
 
-本分支面向单机联邦学习模拟，将异构处理、隐私保护和后门攻击防御串联为一条可配置的训练流程。不创建真实分布式客户端，服务端和多个逻辑客户端在同一进程中完成通信与训练模拟。
+分支：`prototype/backend`。对应前端：[prototype/frontend](https://github.com/bo-wang-bob/FederatedScope/tree/prototype/frontend)。
 
-## 核心流程
+从已部署版本 `5ac3e453d69f33596c193e15daa808aaca52865b` 拆分。保留 `federatedscope/`、训练配置、脚本、后端测试及部署参考；不包含前端工程。算法、API 和配置文件与拆分源一致，不修改运行中的服务器。
 
-一次实验由两个阶段组成：
+## 启动现有环境
 
-1. 特征统计阶段：各客户端提取本地特征并交换必要的统计量，服务端聚合统计信息，客户端据此扩充本地特征分布。
-2. 正常训练阶段：客户端执行本地训练，上传模型更新，服务端完成聚合并进入下一轮。
-
-在此基础上提供三类能力：
-
-- 异构解决方案：通过统一特征空间、类别统计聚合和本地特征扩充缓解跨客户端数据分布差异。
-- 隐私保护方案：客户端上传参数前执行本地自适应裁剪和高斯加噪，裁剪状态不会在客户端之间共享。
-- 攻击防御方案：在特征统计阶段过滤异常统计量，在正常训练阶段过滤异常模型更新。
-
-隐私评估与后门攻击实验互斥。一次运行只能选择其中一种安全模式；执行后门攻击时不会同时执行隐私攻击。
-
-## 环境
-
-项目验证使用：
+优先复用 4090lziy 已验证的 GGEUR Python/PyTorch 环境；先激活环境，再在本分支根目录运行：
 
 ```bash
-/root/.local/share/mamba/envs/pfedba/bin/python
+python -m pip install --no-deps -e .
+export FS_PLATFORM_RESOURCES=/root/autodl-tmp/FederatedScope
+export FS_PLATFORM_DATASETS=/root/autodl-tmp/datasets
+python -m federatedscope.standalone_api.platform_app \
+  --host 127.0.0.1 --port 8001 --state-dir /path/to/prototype-state
 ```
 
-安装当前源码：
+以上资源路径是现有服务器示例，需要按实际环境设置；状态目录应独立且可写，不要同时让两个服务管理同一个状态目录。8001 已有服务时另选未占用端口。拆分与推送本身不启动、停止或覆盖任何已有服务。
+
+`setup.py` 保留原依赖声明，但包含历史版本约束；`--no-deps` 仅适用于已具备依赖的验证环境，不是全新环境安装承诺。不要为安装该原型而降级正在使用的训练环境。
+
+检查：`curl http://127.0.0.1:8001/api/health`。无前端文件时 API 仍可独立运行，根页面不会提供界面。当前 API 没有用户认证，只绑定本机并使用 SSH 隧道或受控网络，禁止直接暴露公网。
+
+## 对接独立前端
+
+开发：前端使用 `FS_API_PROXY` 指向该服务。生产：先在 `prototype/frontend` 执行 `npm ci && npm run build`，在启动后端前设置：
 
 ```bash
-/root/.local/share/mamba/envs/pfedba/bin/python -m pip install -e .
+export FEDERATEDSCOPE_FRONTEND_DIST=/absolute/path/to/prototype/frontend/dist
 ```
 
-## 单机配置
+后端即可从该目录提供页面。只指定已经审核的构建目录；不需要把两个分支相互合并。
 
-核心配置位于 `scripts/standalone_configs/`：
+## 功能与数据
 
-- `heterogeneity.yaml`：仅运行异构解决方案。
-- `privacy_protection.yaml`：启用本地自适应裁剪与加噪。
-- `privacy_membership_attack.yaml`：成员关系隐私评估。
-- `privacy_membership_attack_protected.yaml`：带本地隐私保护的成员关系评估。
-- `privacy_property_attack.yaml`：客户端属性隐私评估。
-- `privacy_property_attack_protected.yaml`：带本地隐私保护的属性评估。
-- `privacy_reconstruction_attack.yaml`：训练数据重建评估。
-- `privacy_reconstruction_attack_protected.yaml`：带本地隐私保护的数据重建评估。
-- `backdoor_attack.yaml`：后门攻击模拟。
-- `backdoor_attack_defended.yaml`：启用两个阶段攻击防御的后门实验。
+- 单机模拟多客户端，保留联邦聚合、异构划分和算法比较。
+- `/api/platform/catalog`、`library`、`jobs`：读取能力、模型/测试集和任务。
+- `/api/platform/preflight`、`train`、`predict`、`evaluate`：预检、训练、单图预测和独立评测。
+- 任务支持停止、恢复检查、仅清理自身进程及 JSON/CSV/模型/复现包导出。
+- 基础特征必须完整；本架构可按配置新生成增强特征。单图验证使用关联冻结特征与分类器，不是重新提取原图特征；历史来源限制不能省略。
 
-运行示例：
+数据集、主干权重、训练模型、特征缓存和任务日志不随 Git 分支上传。资源路径及缓存覆盖变量见 [单机平台说明](docs/SINGLE_HOST_PLATFORM.md)。旧入口和历史方案说明保留在 [历史 README](docs/LEGACY_STANDALONE_README.md)，不是本原型的默认启动方式。
+
+## 验证
 
 ```bash
-/root/.local/share/mamba/envs/pfedba/bin/python run.py \
-  --cfg scripts/standalone_configs/heterogeneity.yaml
+python -m unittest discover -s tests -p 'test_single_host*.py' -v
 ```
 
-运行前需要根据本机环境修改配置中的数据集目录、预训练模型目录和设备编号。
-
-## 启动前后端实验平台
-
-前端通过单机控制 API 启动或停止现有训练入口，使用快照和 SSE 接收真实训练事件。地图中的中央服务器、域子服务器和 60 个客户端是训练过程的可视化投影；后端仍由一个本机进程模拟，不会创建真实分布式客户端。
-
-### 1. 准备运行环境
-
-在仓库根目录安装 Python 源码依赖，并在前端目录安装 Node.js 依赖：
-
-```bash
-cd /root/project/FederatedScope
-/root/.local/share/mamba/envs/pfedba/bin/python -m pip install -e .
-
-cd frontend
-npm install
-```
-
-数据目录必须包含 `Art`、`Clipart`、`Product` 和 `Real_World` 四个子目录。异构协同与后门实验还需要本地特征模型文件；隐私实验按其模板加载相应的本地图像模型。
-
-### 2. 终端一：启动后端
-
-```bash
-cd /root/project/FederatedScope
-export FEDERATEDSCOPE_DATA_ROOT=/path/to/OfficeHomeDataset_10072016
-export FEDERATEDSCOPE_MODEL_PATH=/path/to/open_clip_vitb16.bin
-export FEDERATEDSCOPE_API_STATE_DIR=/path/to/writable/experiment-state
-
-/root/.local/share/mamba/envs/pfedba/bin/python -m \
-  federatedscope.standalone_api.app --host 127.0.0.1 --port 8000
-```
-
-`FEDERATEDSCOPE_API_STATE_DIR` 可省略，默认使用 `exp/standalone_api`。可在另一个终端确认服务状态：
-
-```bash
-curl http://127.0.0.1:8000/api/health
-```
-
-### 3. 终端二：启动前端
-
-```bash
-cd /root/project/FederatedScope/frontend
-npm run dev
-```
-
-浏览器访问 `http://127.0.0.1:5173/`。开发服务器默认把 `/api` 转发到 `http://127.0.0.1:8000`；若后端使用其他地址，启动前设置：
-
-```bash
-VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
-```
-
-### 4. 启动首个实验
-
-1. 在“场景与异构分析”中设置狄利克雷参数和随机种子，预览后应用场景。
-2. 系统扫描实际四域图像，生成包含 60 个客户端精确样本路径的数据划分清单和数据指纹。
-3. 在“实验配置”中选择单一实验类型，设置参数并执行“运行预检”。
-4. 预检通过后启动实验，页面自动进入运行监控。
-5. 可在监控页停止任务；任务状态、结构化指标、事件和完整训练日志均持久化到状态目录。
-
-如果数据集、数据划分清单、模型、设备或磁盘空间不满足要求，后端会拒绝启动并返回具体预检结果，不会生成伪训练轮次。后门实验配置会强制关闭隐私攻击及上传加噪流程。
-
-### 5. 生产构建
-
-```bash
-cd /root/project/FederatedScope/frontend
-npm run build
-npm run preview
-```
-
-构建产物位于 `frontend/dist/`。预览服务仍需要可访问的后端 API；跨地址部署时使用 `VITE_API_BASE_URL` 构建前端。
-
-## 测试
-
-```bash
-/root/.local/share/mamba/envs/pfedba/bin/python -m pytest -q \
-  tests/test_unified_security.py tests/test_standalone_api.py
-```
-
-该测试验证模式互斥、本地自适应加噪、隐私评估钩子、图像分支保护，以及两个训练阶段的异常客户端过滤。
-
-## 目录
-
-```text
-federatedscope/                 核心框架和统一训练实现
-federatedscope/standalone_api/  单机实验控制 API 与任务管理
-scripts/standalone_configs/     单机实验配置
-tests/                          核心回归测试
-docs/                           使用说明
-run.py                          运行入口
-setup.py                        安装配置
-```
-
-更完整的配置说明见 `docs/统一安全单机方案使用说明.md`。
+拆分源已完成真实预测、独立评测和资源清理验收。本次核对后端源码与配置未变，不运行新的训练，也不为打包修改环境依赖。
