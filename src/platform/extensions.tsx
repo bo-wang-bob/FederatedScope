@@ -1,13 +1,12 @@
-import { ArrowRightOutlined, LockOutlined, SecurityScanOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, LockOutlined } from '@ant-design/icons';
 import { Tag } from 'antd';
 import { Link } from 'react-router-dom';
 
 // UI reservations only. Real execution requires a separate backend capability.
+// 后门研究已接入（src/platform/backdoor.tsx），保留在此会把它当未接入模块处理。
 export const plannedModules = {
   privacy: { label: '隐私研究', section: '研究扩展', status: 'planned', icon: <LockOutlined />,
     areas: ['保护策略', '隐私评测', '效用对比'] },
-  backdoor: { label: '后门研究', section: '研究扩展', status: 'planned', icon: <SecurityScanOutlined />,
-    areas: ['攻防配置', '鲁棒性评测', '效果对比'] },
 } as const;
 export type PlannedModuleId = keyof typeof plannedModules;
 export function isPlannedView(view: string): view is PlannedModuleId { return Object.hasOwn(plannedModules, view); }

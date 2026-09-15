@@ -10,6 +10,7 @@ export const pages = {
   home: { label: '系统首页', section: '工作台' }, train: { label: '训练实验', section: '工作台' },
   jobs: { label: '实验记录', section: '工作台' }, experience: { label: '模型验证', section: '工作台' },
   evaluate: { label: '独立评测', section: '工作台' }, compare: { label: '算法对比', section: '工作台' },
+  backdoor: { label: '后门研究', section: '研究扩展' },
   ...plannedModules,
 } as const;
 export type PlatformView = keyof typeof pages;

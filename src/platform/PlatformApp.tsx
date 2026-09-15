@@ -4,6 +4,7 @@ import { App as AntApp, Alert, Button, ConfigProvider, Input, Select, Skeleton, 
 import { ArrowLeftOutlined, ArrowRightOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { api, key, methodLabel, terminal, type Catalog, type Job, type Library } from './api';
+import { BackdoorLab } from './backdoor';
 import { ComparisonPanel, EvaluationPanel } from './evaluation';
 import { ModelExperience } from './inference';
 import { SystemHome } from './home';
@@ -111,7 +112,7 @@ function Workspace() {
     {view !== 'home' && <div className="studio-page-heading"><div><h1>{selectedId ? '实验详情' : area === 'experience' ? '模型验证' : page.label}</h1></div>
       <div>{routeTabs.length > 0 && <nav className="studio-route-tabs" aria-label="模块功能">{routeTabs.map(tab => <Link aria-current={view === tab.view ? 'page' : undefined} className={view === tab.view ? 'active' : ''} key={tab.view} to={modelId && area === 'experience' ? modelHref(modelId,tab.view === 'evaluate',testsetId) : viewHref(tab.view as PlatformView)}>{tab.label}</Link>)}</nav>}
       </div></div>}
-    {view === 'home' ? <SystemHome jobs={scopedJobs} loading={!catalog} showDatasetImages={!restricted} /> : isPlannedView(view) ? <PlannedModule moduleId={view} /> : !catalog ? <div className="studio-loading"><Skeleton active paragraph={{rows:8}} /></div> : <>
+    {view === 'home' ? <SystemHome jobs={scopedJobs} loading={!catalog} showDatasetImages={!restricted} /> : isPlannedView(view) ? <PlannedModule moduleId={view} /> : view === 'backdoor' ? <div className="studio-page-enter"><BackdoorLab /></div> : !catalog ? <div className="studio-loading"><Skeleton active paragraph={{rows:8}} /></div> : <>
       {view === 'train' && (catalog.groups.length ? <TrainingForm key={(query.get('group') || '')+':'+(query.get('source') || '')} catalog={catalog} draftKey={restricted ? DEMO_DRAFT_KEY : undefined} initialGroup={query.get('group') || undefined} sourceId={query.get('source') || undefined} running={running} disconnected={!!error} launch={launch} open={open} /> : <div className="studio-empty-state"><h2>军机训练配置尚未接入</h2><p>等待 MilitaryAircraft-3D / ViT 配置</p></div>)}
       {view === 'jobs' && <div className="studio-page-enter">{selectedId ? <><Button className="studio-back" type="text" icon={<ArrowLeftOutlined />} onClick={() => setQuery({view:'jobs'})}>返回实验记录</Button>{detailError && <Alert type="error" title={detailError} action={<Button onClick={() => setRefreshKey(x => x+1)}>重试</Button>} />}{selected ? requestInPresentation(selected.request,allCatalog) || !terminal(selected.status) ? <JobDetail key={selected.id} job={selected} library={library} stop={stop} rerun={() => setQuery({view:'train',source:selected.id,group:selected.request.group})} /> : <Alert type="info" title="该记录不在当前演示范围" /> : !detailError && <Skeleton active />}</> :
         <section className="studio-surface jobs-collection"><div className="collection-toolbar"><Input aria-label="搜索实验" prefix={<SearchOutlined />} placeholder="搜索实验名称或算法" allowClear value={search} onChange={event => setSearch(event.target.value)} /><Space>
