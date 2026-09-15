@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { App as AntApp, Alert, Button, ConfigProvider, Input, Select, Skeleton, Space } from 'antd';
-import { ArrowLeftOutlined, ArrowRightOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, ArrowRightOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { api, key, methodLabel, terminal, type Catalog, type Job, type Library } from './api';
 import { ComparisonPanel, EvaluationPanel } from './evaluation';
 import { ModelExperience } from './inference';
@@ -12,15 +12,12 @@ import { StudioShell } from './StudioShell';
 import { TrainingForm } from './training';
 import { JobDetail, JobTable } from './jobs';
 import { useTrainingLaunch } from './launch';
+import { researchTheme } from './theme';
 import './studio.css';
 export { TrainingForm } from './training';
 
 export default function PlatformApp() {
-  return <ConfigProvider theme={{ token: { colorPrimary: '#b95330', colorSuccess: '#34816d', colorInfo: '#51758a', colorWarning: '#a16a22',
-    borderRadius: 9, fontSize: 14, fontFamily: 'Inter, "PingFang SC", "Microsoft YaHei", sans-serif',
-    colorBgBase: '#ffffff', colorBgLayout: '#f6f5f1', colorBgContainer: '#ffffff', colorText: '#252923', colorTextSecondary: '#787d76', colorBorder: '#dedfd8' },
-    components: { Button: { controlHeight: 42, primaryShadow: '0 4px 10px #68361b13' }, Input: { controlHeight: 44 }, InputNumber: { controlHeight: 44 }, Select: { controlHeight: 44 },
-      Card: { headerFontSize: 15, headerHeight: 64 }, Table: { headerBg: '#f7f8f4', headerColor: '#7b8178', rowHoverBg: '#f9f8f4', cellPaddingBlock: 18 } } }}>
+  return <ConfigProvider theme={researchTheme}>
     <AntApp><Workspace /></AntApp>
   </ConfigProvider>;
 }
@@ -39,7 +36,7 @@ function Workspace() {
   const {message}=AntApp.useApp(), pending=useRef(pendingRequests());
   const open=useCallback((id:string) => { setQuery({view:'jobs',id});setRefreshKey(value => value+1); },[setQuery]);
   const launch=useTrainingLaunch(open);
-  useEffect(() => { document.title=page.label+' · 全域智汇'; },[page.label]);
+  useEffect(() => { document.title=page.label+' · 跨域联邦学习'; },[page.label]);
   useEffect(() => { window.scrollTo(0,0); },[view,selectedId]);
   useEffect(() => {
     let alive=true,busy=false;
@@ -99,9 +96,9 @@ function Workspace() {
       {launch.intent.phase === 'blocked' && <Button onClick={() => {launch.edit();setQuery({view:'train'});}}>返回修改</Button>}
       {view !== 'train' && <Link to="/?view=train">查看配置 <ArrowRightOutlined /></Link>}
     </div>}
-    {view !== 'home' && <div className="studio-page-heading"><div><span className="studio-kicker">{isPlannedView(view) ? 'UP NEXT' : area === 'train' ? 'EXPERIMENT WORKSPACE' : area === 'experience' ? 'MODEL WORKSPACE' : 'RESULTS & INSIGHTS'}</span><h1>{selectedId ? '实验详情' : area === 'experience' ? '模型验证' : page.label}</h1></div>
+    {view !== 'home' && <div className="studio-page-heading"><div><h1>{selectedId ? '实验详情' : area === 'experience' ? '模型验证' : page.label}</h1></div>
       <div>{routeTabs.length > 0 && <nav className="studio-route-tabs" aria-label="模块功能">{routeTabs.map(tab => <Link aria-current={view === tab.view ? 'page' : undefined} className={view === tab.view ? 'active' : ''} key={tab.view} to={modelId && area === 'experience' ? modelHref(modelId,tab.view === 'evaluate',testsetId) : viewHref(tab.view as PlatformView)}>{tab.label}</Link>)}</nav>}
-      {view === 'jobs' && <Button type="primary" icon={<PlusOutlined />} onClick={() => setQuery({view:'train'})}>新建训练</Button>}</div></div>}
+      </div></div>}
     {view === 'home' ? <SystemHome jobs={jobs} loading={!catalog} /> : isPlannedView(view) ? <PlannedModule moduleId={view} /> : !catalog ? <div className="studio-loading"><Skeleton active paragraph={{rows:8}} /></div> : <>
       {view === 'train' && <TrainingForm key={(query.get('group') || '')+':'+(query.get('source') || '')} catalog={catalog} initialGroup={query.get('group') || undefined} sourceId={query.get('source') || undefined} running={running} disconnected={!!error} launch={launch} open={open} />}
       {view === 'jobs' && <div className="studio-page-enter">{selectedId ? <><Button className="studio-back" type="text" icon={<ArrowLeftOutlined />} onClick={() => setQuery({view:'jobs'})}>返回实验记录</Button>{detailError && <Alert type="error" title={detailError} action={<Button onClick={() => setRefreshKey(x => x+1)}>重试</Button>} />}{selected ? <JobDetail key={selected.id} job={selected} library={library} stop={stop} rerun={() => setQuery({view:'train',source:selected.id,group:selected.request.group})} /> : !detailError && <Skeleton active />}</> :

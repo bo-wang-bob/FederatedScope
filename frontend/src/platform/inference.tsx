@@ -14,15 +14,14 @@ function SampleImage({ sample, large = false, onUnavailable }: { sample: TestSam
 
 export function PredictionPanel({ job, open }: { job?: Job; open?: (id: string) => void }) {
   const result = job?.status === 'completed' ? job.result as Prediction : undefined;
-  return <Card className="platform-panel experience-prediction" title={<span><ScanOutlined /> 模型判断</span>} extra={<Tag color={result ? result.correct ? 'success' : 'warning' : 'default'}>{result ? '实际推理结果' : job && !terminal(job.status) ? '正在推理' : '等待预测'}</Tag>}>
-    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{job.stage}</h3></> : <><ScanOutlined /><h3>{job?.error ? '推理未完成' : '等待模型预测'}</h3><p>{job?.error || '选择样本后开始预测'}</p></>}</div> : <>
+  return <Card className="platform-panel experience-prediction" title={<span><ScanOutlined /> 预测结果</span>} extra={<Tag color={result ? result.correct ? 'success' : 'warning' : 'default'}>{result ? '实际推理结果' : job && !terminal(job.status) ? '正在推理' : '等待预测'}</Tag>}>
+    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{job.stage}</h3></> : <><ScanOutlined /><h3>{job?.error ? '推理未完成' : '尚未执行预测'}</h3><p>{job?.error || '选择样本后开始预测'}</p></>}</div> : <>
       <div className="experience-verdict"><span>预测类别</span><h2>{result.predictedName.replaceAll('_', ' ')}</h2><div><strong>{percent(result.confidence)}</strong><span>Softmax 分数</span></div></div>
       <div className={`experience-ground-truth ${result.correct ? 'matched' : 'mismatched'}`}><div><span>真实标签</span><b>{result.labelName.replaceAll('_', ' ')}</b></div><Tag color={result.correct ? 'success' : 'warning'}>{result.correct ? '预测一致' : '预测不一致'}</Tag></div>
       <div className="experience-ranks"><h3>TOP {result.topK.length}<span>分类分数</span></h3>{result.topK.map((item, index) => <div className="experience-rank" key={item.classIndex}><div><span><i>{String(index + 1).padStart(2, '0')}</i>{item.className.replaceAll('_', ' ')}</span><b>{percent(item.score)}</b></div><div className="experience-rank-track"><span style={{ width: `${item.score * 100}%` }} /></div></div>)}</div>
-      <div className="experience-runtime"><span>分类器批次计算 <b>{result.inferenceMs.toFixed(1)} ms</b></span><span>加载与推理 <b>{result.elapsedSeconds.toFixed(2)} s</b></span></div>
       <p className="experience-score-note">分数未经校准；单图结果不代表整体准确率。</p>
       <Space wrap>{open && <Button type="link" onClick={() => open(job!.id)}>完整记录 <ArrowRightOutlined /></Button>}<Button type="link" href={`/api/platform/jobs/${job!.id}/export`} icon={<DownloadOutlined />}>导出结果</Button></Space>
-      <Collapse ghost size="small" items={[{ key: 'version', label: '版本与来源', children: <div className="experience-version">{[['模型 SHA-256', result.checkpointSha256], ['测试特征包 SHA-256', result.testBundleSha256], ['当前原图 SHA-256', result.imageSha256], ['样本清单 SHA-256', result.manifestSha256], ['样本关联方式', result.testProvenance], ['推理口径', result.inferenceContract]].map(([label, value]) => <p key={label}><span>{label}</span><code>{value}</code></p>)}</div> }]} />
+      <Collapse ghost size="small" items={[{ key: 'version', label: '运行详情与来源', children: <div className="experience-version"><div className="experience-runtime"><span>分类器批次计算 <b>{result.inferenceMs.toFixed(1)} ms</b></span><span>加载与推理 <b>{result.elapsedSeconds.toFixed(2)} s</b></span></div>{[['模型 SHA-256', result.checkpointSha256], ['测试特征包 SHA-256', result.testBundleSha256], ['当前原图 SHA-256', result.imageSha256], ['样本清单 SHA-256', result.manifestSha256], ['样本关联方式', result.testProvenance], ['推理口径', result.inferenceContract]].map(([label, value]) => <p key={label}><span>{label}</span><code>{value}</code></p>)}</div> }]} />
     </>}
   </Card>;
 }
@@ -48,6 +47,7 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
   const model = models.find(m => m.id === modelId);
   const testsets = library.testsets.filter(t => t.featureSpace === model?.featureSpace);
   const test = testsets.find(t => t.id === testsetId);
+  const sourceLimited = Object.values(samples?.provenance || {}).some(value => /legacy|no embedded sample IDs/i.test(value));
   const busy = submitting || !!job && !terminal(job.status);
   const frozen = disabled || busy;
   useEffect(() => { if (!modelId && models.length) setModelId((models.find(m => m.kind === 'final') || models[0]).id); }, [modelId, models]);
@@ -86,19 +86,19 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
     setSubmitting(true); setError(''); setJob(undefined);
     try {
       const created = await create('predict', { modelId, testsetId, sampleId: selected.id, imageSha256: selected.imageSha256,
-        name: `单图体验 · ${methodLabel(model.method)} · ${selected.filename}` });
+        name: `单图验证 · ${methodLabel(model.method)} · ${selected.filename}` });
       if (alive.current) setJob(created);
     } catch (e) { if (alive.current) setError((e as Error).message); }
     finally { if (alive.current) setSubmitting(false); }
   };
-  if (!models.length) return <div className="studio-empty-state"><ScanOutlined /><h2>从第一个模型开始</h2><p>完成训练后，就能在这里验证图像模型。</p><a className="studio-button primary" href="/?view=train">新建训练 <ArrowRightOutlined /></a>{library.models.length > 0 && <a href="/?view=evaluate">文本模型 · 独立评测</a>}</div>;
+  if (!models.length) return <div className="studio-empty-state"><ScanOutlined /><h2>暂无可用图像模型</h2><p>训练完成后可选择模型与测试样本。</p><a className="studio-button primary" href="/?view=train">新建训练 <ArrowRightOutlined /></a>{library.models.length > 0 && <a href="/?view=evaluate">文本模型 · 独立评测</a>}</div>;
   return <div className="model-experience">
-    <div className="experience-selectors"><div><label htmlFor="experience-model">模型</label><Select id="experience-model" aria-label="体验模型" showSearch optionFilterProp="label" value={model ? modelId : undefined} placeholder="选择一个模型" disabled={frozen} onChange={value => { setModelId(value); setSelected(undefined); setJob(undefined); onSelectionChange?.(value); }} options={models.map(m => ({ value:m.id,label:m.name+' · '+methodLabel(m.method)+' / '+m.kind }))} /></div>
-      <div><label htmlFor="experience-testset">测试集</label><Select id="experience-testset" aria-label="体验测试集" placeholder={model ? '选择兼容测试集' : '先选择模型'} value={testsetId} disabled={frozen || !model} onChange={value => {setTestsetId(value);setDomain(undefined);setLabel(undefined);setPage(1);onSelectionChange?.(modelId,value);}} options={testsets.map(t => ({value:t.id,label:t.name+' · '+t.samples?.toLocaleString()+' 个样本'}))} /></div>
+    <div className="experience-selectors"><div><label htmlFor="experience-model">模型</label><Select id="experience-model" aria-label="验证模型" showSearch optionFilterProp="label" value={model ? modelId : undefined} placeholder="选择一个模型" disabled={frozen} onChange={value => { setModelId(value); setSelected(undefined); setJob(undefined); onSelectionChange?.(value); }} options={models.map(m => ({ value:m.id,label:m.name+' · '+methodLabel(m.method)+' / '+m.kind }))} /></div>
+      <div><label htmlFor="experience-testset">测试集</label><Select id="experience-testset" aria-label="验证测试集" placeholder={model ? '选择兼容测试集' : '先选择模型'} value={testsetId} disabled={frozen || !model} onChange={value => {setTestsetId(value);setDomain(undefined);setLabel(undefined);setPage(1);onSelectionChange?.(modelId,value);}} options={testsets.map(t => ({value:t.id,label:t.name+' · '+t.samples?.toLocaleString()+' 个样本'}))} /></div>
       <div className="experience-model-meta"><span>{methodLabel(model?.method)} <i>·</i> {model?.kind || '—'}</span>{model && <a href={modelHref(model.id,true,testsetId)}>整集评测 <ArrowRightOutlined /></a>}</div>
     </div>
     {initialModel && !model && <Alert type="warning" title="指定模型不可用，请重新选择。" />}
-    {model && <div className="experience-context"><span>{model.classes.length} 个类别<i>·</i>训练 {model.trainingRounds ?? '—'} 轮</span><span>{model.trainingRounds != null && model.trainingRounds < 5 ? '短轮试跑模型，不代表目标准确率' : '冻结特征推理'}{model.kind === 'best' ? ' · best 按训练期测试集择优' : ''}</span><a href={'/api/platform/jobs/'+model.jobId+'/model-'+model.kind}><DownloadOutlined /> 下载模型</a></div>}
+    {model && <div className="experience-context"><span>{model.classes.length} 个类别<i>·</i>训练 {model.trainingRounds ?? '—'} 轮</span><span>{model.trainingRounds != null && model.trainingRounds < 5 ? '短轮试跑模型，不代表目标准确率' : '冻结特征推理'}{model.kind === 'best' ? ' · best 按训练期测试集择优' : ''}</span>{sourceLimited && <Tag color="warning">样本关联受限</Tag>}<a href={'/api/platform/jobs/'+model.jobId+'/model-'+model.kind}><DownloadOutlined /> 下载模型</a></div>}
     {model?.augmentationWarning && <Alert type="warning" title={model.augmentationWarning} />}
     {error && <Alert type="error" showIcon title={error} action={<Button onClick={() => setRefresh(x => x+1)} disabled={busy}>重新读取</Button>} />}
     <div className="experience-workspace">

@@ -13,7 +13,7 @@ const model = { id: 'a'.repeat(32) + ':final', jobId: 'a'.repeat(32), name: '测
   method: 'fedavg', kind: 'final', classes: ['Class_A', 'Class_B'], domains: [{ name: 'Art', testSamples: 2 }],
   featureSpace: 'fixture', sha256: 'model-version', trainingRounds: 2 };
 const library: Library = { models: [model], testsets: [{ ...model, id: model.jobId, samples: 2 }] };
-const page: SamplePage = { total: 2, offset: 0, limit: 12, testFingerprint: 'test-version', provenance: {},
+const page: SamplePage = { total: 2, offset: 0, limit: 12, testFingerprint: 'test-version', provenance: { Art: 'legacy-split-seed-ordered-labels; no embedded sample IDs' },
   items: [0, 1].map(i => ({ id: String(i).repeat(24), index: i, filename: `${i}.jpg`, domain: 'Art',
     label: i, className: model.classes[i], imageAvailable: true, imageSha256: String(i).repeat(64), imageUrl: `/fixture/${i}.jpg` })) };
 const prediction = { id: 'b'.repeat(32), action: 'predict', status: 'completed', request: {}, result: {
@@ -30,12 +30,19 @@ describe('single-image model experience', () => {
     render(<ModelExperience library={library} disabled={false} create={create} open={vi.fn()} />);
     fireEvent.click(await screen.findByRole('button', { name: '选择样本 Class B · 1.jpg · Art' }));
     expect(screen.getByAltText('测试原图 1.jpg')).toHaveAttribute('src', '/fixture/1.jpg');
+    expect(screen.getByText('样本关联受限')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: /运行单图预测/ }));
     await waitFor(() => expect(create).toHaveBeenCalledWith('predict', expect.objectContaining({
       modelId: model.id, testsetId: model.jobId, sampleId: page.items[1].id, imageSha256: page.items[1].imageSha256,
     })));
     expect(await screen.findByText('预测不一致')).toBeInTheDocument();
     expect(screen.getByText('实际推理结果')).toBeInTheDocument();
+    expect(screen.getByText('分数未经校准；单图结果不代表整体准确率。')).toBeVisible();
+    expect(screen.queryByText('分类器批次计算')).not.toBeInTheDocument();
+    expect(screen.queryByText('模型 SHA-256')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('运行详情与来源'));
+    expect(await screen.findByText('分类器批次计算')).toBeVisible();
+    expect(screen.getByText('模型 SHA-256')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '选择样本 Class A · 0.jpg · Art' }));
     expect(screen.queryByText('预测不一致')).not.toBeInTheDocument();
     expect(create).toHaveBeenCalledTimes(1);

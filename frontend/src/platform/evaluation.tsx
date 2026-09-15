@@ -24,8 +24,8 @@ export function EvaluationPanel({library,initialModel,initialTestset,onSelection
     try{const job=await create('evaluate',{modelId,testsetId,domains,classes,name:name.trim() || methodLabel(model.method)+' · 独立评测'});open(job.id);}
     catch(e){setError((e as Error).message);}finally{setBusy(false);}
   };
-  if(!library.models.length) return <div className="studio-empty-state"><LineChartOutlined/><h2>还没有可评测的模型</h2><p>完成一次训练，模型会自动保存在这里。</p><a className="studio-button primary" href="/?view=train">新建训练 <ArrowRightOutlined/></a></div>;
-  return <div className="evaluation-layout"><section className="evaluation-form studio-surface"><div className="wizard-title"><span>EVALUATE A MODEL</span><h2>在测试集上检验表现</h2></div>
+  if(!library.models.length) return <div className="studio-empty-state"><LineChartOutlined/><h2>暂无可评测模型</h2><p>训练完成后可选择已保存模型。</p><a className="studio-button primary" href="/?view=train">新建训练 <ArrowRightOutlined/></a></div>;
+  return <div className="evaluation-layout"><section className="evaluation-form studio-surface"><div className="wizard-title"><h2>评测配置</h2></div>
     {error&&<Alert type="error" showIcon title={error}/>}
     {initialModel&&!model&&<Alert type="warning" title="指定模型不可用，请重新选择。"/>}
     <Form layout="vertical" disabled={busy||disabled}>
@@ -38,10 +38,9 @@ export function EvaluationPanel({library,initialModel,initialTestset,onSelection
       {model?.augmentationWarning&&<Alert type="warning" title={model.augmentationWarning}/>}
       <div className="evaluation-submit"><span>加载模型后独立计算指标</span><Button type="primary" size="large" icon={<PlayCircleOutlined/>} loading={busy} disabled={disabled||busy||!model||!test} onClick={()=>void submit()}>启动独立评测</Button></div>
     </Form>
-  </section><aside className="evaluation-preview"><span className="studio-kicker">EVALUATION SCOPE</span><h2>{test ? domains.length ? domains.join(' / ') : '全域评测' : '待选择测试集'}</h2>
+  </section><aside className="evaluation-preview"><span className="studio-kicker">评测范围</span><h2>{test ? domains.length ? domains.join(' / ') : '全域评测' : '待选择测试集'}</h2>
     <dl>{[['模型',methodLabel(model?.method)],['检查点',model?.kind || '—'],['测试样本',test?.samples?.toLocaleString() || '—'],['类别',test ? classes.length || test.classes.length : '—']].map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     {(domains.length>0||classes.length>0)&&<small>样本数为完整测试集数量，实际筛选后记录。</small>}
-    <div className="evaluation-deliverables"><h3>输出结果</h3>{['总体指标','分域表现','分类指标与混淆矩阵'].map(text=><span key={text}><CheckOutlined/>{text}</span>)}</div>
     <Collapse ghost size="small" items={[{key:'protocol',label:'指标与数据口径',children:<p>重新加载分类器与冻结测试特征，校验模型和测试包版本。总体准确率按样本加权，Macro 指标按出现的真值或预测类别等权。</p>}]} />
     {model&&<Button type="text" onClick={()=>open(model.jobId)}>训练记录 <ArrowRightOutlined/></Button>}
   </aside></div>;
@@ -90,7 +89,7 @@ export function ComparisonPanel({jobs,open}:{jobs:Job[];open:(id:string)=>void})
   return <div className="comparison-workspace">
     <section className="comparison-picker studio-surface"><div><label htmlFor="compare-kind">对比内容</label><Select id="compare-kind" aria-label="对比内容" value={kind} onChange={value=>{setKind(value);setIds([]);setLoaded([]);}} options={[{value:'train',label:'训练实验'},{value:'evaluate',label:'独立评测'}]}/></div><div><label htmlFor="compare-jobs">选择实验 <small>最多 4 项</small></label><Select id="compare-jobs" aria-label="选择对比实验" mode="multiple" maxCount={4} showSearch optionFilterProp="label" placeholder="搜索并添加已完成的实验" value={ids} onChange={setIds} options={candidates.map(job=>({value:job.id,label:(job.request.name || job.id.slice(0,8))+' · '+methodLabel(job.request.method)}))}/></div><Button icon={<DownloadOutlined/>} disabled={selected.length<2} onClick={download}>导出对比</Button></section>
     {error&&<Alert type="error" title={error} action={<Button onClick={()=>setRetry(x=>x+1)}>重试</Button>}/>}
-    {!ids.length?<div className="studio-empty-state comparison-empty"><LineChartOutlined/><h2>让结果在同一视野相遇</h2><p>{candidates.length?'选择实验，开始对比。':'暂无已完成的'+(kind==='train'?'训练':'评测')+'实验。'}</p></div>:selected.length===0&&!error?<div className="comparison-loading">正在读取实验结果…</div>:selected.length>0&&<>
+    {!ids.length?<div className="studio-empty-state comparison-empty"><LineChartOutlined/><h2>请选择对比实验</h2><p>{candidates.length?'选择至少两项已完成实验。':'暂无已完成的'+(kind==='train'?'训练':'评测')+'实验。'}</p></div>:selected.length===0&&!error?<div className="comparison-loading">正在读取实验结果…</div>:selected.length>0&&<>
       <div className="comparison-status"><span>{selected.length} 项实验</span>{selected.length<2?<small>再添加一项即可对比</small>:comparable?<span className="protocol-ok"><CheckOutlined/> 对比条件一致</span>:<span className="protocol-warning">对比条件不一致</span>}</div>
       {selected.length>=2&&!comparable&&<Alert type="warning" showIcon title="测试集、划分或训练条件不一致，不能直接比较优劣。"/>}
       {selected.some(job=>job.data?.augmentation?.warning)&&<Alert type="warning" title="包含来源未完整核验的历史增强结果，仅展示观察值。"/>}

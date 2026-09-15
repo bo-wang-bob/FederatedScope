@@ -1,15 +1,15 @@
 import { AppstoreOutlined, ExperimentOutlined, LineChartOutlined, ScanOutlined } from '@ant-design/icons';
 import { plannedModules } from './extensions';
 export const mainPages = {
-  home: { label: '首页', icon: <AppstoreOutlined /> },
+  home: { label: '系统首页', icon: <AppstoreOutlined /> },
   train: { label: '训练实验', icon: <ExperimentOutlined /> },
   experience: { label: '模型验证', icon: <ScanOutlined /> },
-  compare: { label: '结果对比', icon: <LineChartOutlined /> },
+  compare: { label: '算法对比', icon: <LineChartOutlined /> },
 } as const;
 export const pages = {
-  home: { label: '首页', section: '工作台' }, train: { label: '训练实验', section: '工作台' },
+  home: { label: '系统首页', section: '工作台' }, train: { label: '训练实验', section: '工作台' },
   jobs: { label: '实验记录', section: '工作台' }, experience: { label: '模型验证', section: '工作台' },
-  evaluate: { label: '独立评测', section: '工作台' }, compare: { label: '结果对比', section: '工作台' },
+  evaluate: { label: '独立评测', section: '工作台' }, compare: { label: '算法对比', section: '工作台' },
   ...plannedModules,
 } as const;
 export type PlatformView = keyof typeof pages;
