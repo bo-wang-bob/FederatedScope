@@ -7,26 +7,30 @@ import type { TrainingLaunch } from './launch';
 
 const coreFields = ['name','group','method'];
 const sharedFields: (keyof RequestConfig)[] = ['name','rounds','localEpochs','learningRate','batchSize','clientCount','sampleClients','samplesPerClient','seed','splitSeed','alpha','evaluationFrequency'];
-export function TrainingForm({ catalog, initialGroup, sourceId, running, disconnected, launch, open }: {
+export function TrainingForm({ catalog, initialGroup, sourceId, running, disconnected, launch, open, preview = false, previewDraft, onPreviewDraft }: {
   catalog: Catalog; initialGroup?: string; sourceId?: string; running?: Job; disconnected: boolean;
   launch: TrainingLaunch; open: (id: string) => void;
+  preview?: boolean; previewDraft?: Draft; onPreviewDraft?: (draft: Draft) => void;
 }) {
-  const [draft, setDraft] = useState<Draft>(() => launch.intent?.request || initialDraft(catalog, initialGroup));
+  const [draft, setDraft] = useState<Draft>(() => preview ? previewDraft || initialDraft(catalog, catalog.groups[0]?.id) : launch.intent?.request || initialDraft(catalog, initialGroup));
   const [step, setStep] = useState(launch.intent ? 2 : 0), [errors, setErrors] = useState<Record<string,string>>({});
-  const [sourceLoading, setSourceLoading] = useState(!!sourceId), [sourceError, setSourceError] = useState('');
+  const [sourceLoading, setSourceLoading] = useState(!preview && !!sourceId), [sourceError, setSourceError] = useState('');
   const [saved, setSaved] = useState(true), [reload, setReload] = useState(0);
   const group = catalog.groups.find(g => g.id === draft.group);
   const ours = draft.method === 'heterogeneous_solution', frozen = !!launch.intent || sourceLoading;
-  useEffect(() => { if (!sourceLoading) setSaved(saveDraft(draft)); }, [draft, sourceLoading]);
   useEffect(() => {
-    if (!sourceId) return;
+    if (preview) { onPreviewDraft?.(draft); return; }
+    if (!sourceLoading) setSaved(saveDraft(draft));
+  }, [draft, sourceLoading, preview, onPreviewDraft]);
+  useEffect(() => {
+    if (preview || !sourceId) return;
     let alive = true; setSourceLoading(true); setSourceError('');
     void api<Job>('jobs/' + sourceId).then(job => {
       if (!['train','inspect'].includes(job.action)) throw new Error('该记录不包含训练配置');
       if (alive) { setDraft({ ...requestFromDraft(job.request), name: (job.request.name ? job.request.name + ' · 副本' : '').slice(0,120) }); setStep(0); setErrors({}); }
     }).catch(e => { if (alive) setSourceError(e.message); }).finally(() => { if (alive) setSourceLoading(false); });
     return () => { alive = false; };
-  }, [sourceId, reload]);
+  }, [sourceId, reload, preview]);
   const change = (field: keyof Draft, value: unknown) => {
     setDraft(old => ({ ...old, [field]: value }));
     setErrors(old => { const next = { ...old }; delete next[field]; return next; });
@@ -63,7 +67,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
   return <div className="training-wizard studio-page-enter">
     <aside className="wizard-rail"><h2>实验配置</h2>
       <ol className="wizard-steps" aria-label="训练配置步骤">{['选择方案','训练设置','确认启动'].map((label,index) => <li key={label} className={step === index ? 'active' : step > index ? 'done' : ''}><button disabled={frozen || index > step} aria-current={step === index ? 'step' : undefined} onClick={() => { setStep(index); setErrors({}); }}><span>{step > index ? <CheckOutlined /> : '0' + (index + 1)}</span><strong>{label}</strong></button></li>)}</ol>
-      <div className="wizard-draft-status"><i />{saved ? '本地草稿已保存' : '浏览器未允许保存草稿'}</div>
+      {!preview && <div className="wizard-draft-status"><i />{saved ? '本地草稿已保存' : '浏览器未允许保存草稿'}</div>}
       <Button type="text" size="small" icon={<ReloadOutlined />} disabled={frozen} onClick={() => { setDraft(initialDraft(catalog, draft.group)); setStep(0); setErrors({}); }}>恢复默认</Button>
     </aside>
     <section className="wizard-panel" aria-label="训练配置">
