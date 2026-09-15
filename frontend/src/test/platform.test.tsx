@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { TrainingForm } from '../platform/PlatformApp';
 import type { Catalog, Job, RequestConfig } from '../platform/api';
 
@@ -26,6 +26,20 @@ const preflight = { id: 'a'.repeat(32), action: 'inspect', status: 'completed', 
     testSamples: 40, testFingerprint: 'test-version', classes: ['0'], domains: [], testProvenance: {} } } as unknown as Job;
 
 describe('platform parameter workflow', () => {
+  it('locks all parameters during submission, then unlocks them after preflight', async () => {
+    let resolve!: (job: Job) => void;
+    const create = vi.fn(() => new Promise<Job>(done => { resolve = done; }));
+    render(<TrainingForm catalog={catalog} disconnected={false} create={create} open={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /检查完整缓存/ }));
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(screen.getByLabelText('通信轮数')).toBeDisabled();
+    expect(screen.getByLabelText('实验名称')).toBeDisabled();
+    expect(screen.getByRole('button', { name: /启动训练/ })).toBeDisabled();
+    await act(async () => resolve(preflight));
+    expect(screen.getByLabelText('通信轮数')).toBeEnabled();
+    expect(screen.getByRole('button', { name: /启动训练/ })).toBeEnabled();
+  }, 30000);
+
   it('exposes generation without an augmented cache and submits its parameters', async () => {
     const own = { ...defaults, method: 'heterogeneous_solution', augmentationMode: 'generate' as const,
       generatedPerSample: 50, generatedPerPrototype: 50, targetPerClass: 50, covarianceScale: 1,

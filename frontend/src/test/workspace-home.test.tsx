@@ -1,11 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
-import { AppShell } from '../components/AppShell';
+import { StudioShell } from '../platform/StudioShell';
 import PlatformApp from '../platform/PlatformApp';
 import { SystemHome } from '../platform/home';
-import { navigationItems, pages, resolveView, viewHref } from '../platform/navigation';
+import { mainPages, pages, resolveView, viewHref } from '../platform/navigation';
 import type { Catalog, Job, Library, LibraryItem, RequestConfig, Resource } from '../platform/api';
+
+// Ant Design accessibility queries are expensive under Windows/JSDOM.
+vi.setConfig({ testTimeout: 30000 });
 
 vi.mock('../platform/charts', () => ({ Curves: () => null, Distribution: () => null, LossChart: () => null,
   ResourcesChart: () => null, Topology: () => null }));
@@ -14,6 +17,7 @@ vi.mock('../platform/evaluation', () => ({ ComparisonPanel: () => <h2>实验结�
   EvaluationPanel: () => <h2>独立评测工作区</h2>, EvaluationResults: () => null }));
 
 beforeAll(() => {
+  window.scrollTo = vi.fn();
   window.matchMedia = vi.fn().mockImplementation(query => ({ matches: false, media: query,
     addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
   globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
@@ -62,126 +66,133 @@ function mockApi() {
 }
 
 describe('workspace navigation', () => {
-  it('defaults to home while preserving the old routes and every existing query view', () => {
+  it('keeps four primary entries, legacy routes and exact job deep links', () => {
+    expect(Object.keys(mainPages)).toEqual(['home', 'train', 'experience', 'compare']);
     expect(resolveView(null, '/')).toBe('home');
     for (const view of Object.keys(pages)) expect(resolveView(view, '/')).toBe(view);
     expect(resolveView(null, '/overview')).toBe('overview');
     expect(resolveView(null, '/scenario-analysis')).toBe('cache');
     expect(resolveView(null, '/experiments/new')).toBe('train');
     expect(resolveView(null, '/reports')).toBe('jobs');
-    expect(resolveView('invalid', '/')).toBe('home');
     expect(resolveView('toString', '/')).toBe('home');
     expect(resolveView(null, '/unknown')).toBe('home');
     expect(viewHref('home')).toBe('/');
   });
 
-  it('groups the sidebar, closes the mobile drawer on selection and keeps the current task shortcut', async () => {
-    const navigate = vi.fn(), openCurrent = vi.fn();
-    render(<MemoryRouter><AppShell platform={{ menuItems: navigationItems, selectedKey: 'home', navigate,
-      connected: true, openCurrent, pageLabel: '系统首页', sectionLabel: '工作台' }}><div>页面内容</div></AppShell></MemoryRouter>);
-    for (const group of ['工作台', '模型验证', '训练实验', '隐私与安全', '模拟演示']) expect(screen.getByText(group)).toBeInTheDocument();
-    expect(screen.queryByText('准确率实验 · 缓存只读')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /查看当前任务/ }));
+  it('collapses the sidebar, closes the mobile drawer on navigation and preserves current task access', async () => {
+    const openCurrent = vi.fn();
+    render(<MemoryRouter><StudioShell view="home" connected running openCurrent={openCurrent}><div>页面内容</div></StudioShell><LocationProbe /></MemoryRouter>);
+    const nav = screen.getByRole('navigation', { name: '主要功能' });
+    expect(within(nav).getAllByRole('link')).toHaveLength(6);
+    expect(within(nav).getByRole('link', { name: '首页' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('button', { name: /当前任务/ }));
     expect(openCurrent).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: '收起侧栏' }));
+    expect(screen.getByRole('button', { name: '展开侧栏' }).closest('.studio-shell')).toHaveClass('studio-collapsed');
     const trigger = screen.getByRole('button', { name: '打开功能导航' });
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
     const drawer = await screen.findByRole('dialog');
-    fireEvent.click(within(drawer).getByRole('menuitem', { name: /独立评测/ }));
-    expect(navigate).toHaveBeenCalledWith('evaluate');
+    fireEvent.click(within(drawer).getByRole('link', { name: '训练实验' }));
+    expect(screen.getByLabelText('测试当前路径')).toHaveTextContent('/?view=train');
     await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
-    fireEvent.click(screen.getByRole('button', { name: '全域智汇 · 返回系统首页' }));
-    expect(navigate).toHaveBeenCalledWith('home');
   });
 
-  it('opens home by default, routes to a feature and returns without submitting a task', async () => {
+  it('routes from home to model validation and back without submitting a task', async () => {
     const fetch = mockApi();
     render(<MemoryRouter><PlatformApp /><LocationProbe /></MemoryRouter>);
-    expect(screen.getByRole('heading', { level: 1, name: '系统首页' })).toBeInTheDocument();
-    await screen.findByText('2 个图像模型检查点匹配到测试集');
-    fireEvent.click(screen.getByRole('link', { name: /进入模型体验台/ }));
+    expect(screen.getByRole('heading', { level: 1, name: /开始一次新的探索/ })).toBeInTheDocument();
+    await waitFor(() => expect(within(screen.getByLabelText('服务器资产概览')).getByRole('link', { name: /已保存模型/ })).toHaveTextContent('3'));
+    fireEvent.click(screen.getByRole('link', { name: /单图预测/ }));
     expect(await screen.findByRole('heading', { name: '单图体验工作区' })).toBeInTheDocument();
-    expect(screen.getByText('平台正在执行其他任务，单图预测需等待当前任务结束。')).toBeInTheDocument();
+    expect(screen.getByText('当前有任务运行中')).toBeInTheDocument();
     expect(screen.getByLabelText('测试当前路径')).toHaveTextContent('/?view=experience');
-    expect(document.title).toBe('模型体验台 · 全域智汇');
+    expect(document.title).toBe('模型验证 · 全域智汇');
     fireEvent.click(screen.getByRole('button', { name: '测试返回上一页' }));
-    expect(screen.getByRole('heading', { level: 1, name: '系统首页' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('link', { name: /已完成的基线实验/ }));
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/platform/jobs/${completed.id}`, expect.anything()));
-    expect(screen.getByLabelText('测试当前路径')).toHaveTextContent(`/?view=jobs&id=${completed.id}`);
+    expect(screen.getByLabelText('测试当前路径')).toHaveTextContent('/?view=jobs&id=' + completed.id);
     expect(fetch.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
   }, 20000);
 
-  it('preserves direct task links and falls back to a usable home for an unknown view', async () => {
+  it('preserves direct task links and ignores stray IDs outside the task view', async () => {
     const fetch = mockApi();
-    const page = render(<MemoryRouter initialEntries={[`/?view=jobs&id=${running.id}`]}><PlatformApp /></MemoryRouter>);
-    expect(screen.getByRole('heading', { level: 1, name: '任务与记录' })).toBeInTheDocument();
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/platform/jobs/${running.id}`, expect.anything()));
+    const page = render(<MemoryRouter initialEntries={['/?view=jobs&id=' + running.id]}><PlatformApp /></MemoryRouter>);
+    expect(screen.getByRole('heading', { level: 1, name: '训练实验' })).toBeInTheDocument();
+    await screen.findByRole('button', { name: /停止任务/ });
+    expect(fetch).toHaveBeenCalledWith('/api/platform/jobs/' + running.id, expect.anything());
     page.unmount();
     render(<MemoryRouter initialEntries={['/?view=missing&id=must-not-fetch']}><PlatformApp /></MemoryRouter>);
-    expect(screen.getByRole('heading', { level: 1, name: '系统首页' })).toBeInTheDocument();
-    await screen.findByText('2 个图像模型检查点匹配到测试集');
+    expect(screen.getByRole('heading', { level: 1, name: /开始一次新的探索/ })).toBeInTheDocument();
     expect(fetch.mock.calls.some(([url]) => url.includes('must-not-fetch'))).toBe(false);
   });
 
-  it('keeps homepage navigation available when the backend cannot be reached', async () => {
+  it('preserves edited training fields while switching training subpages', async () => {
+    const fetch = mockApi();
+    render(<MemoryRouter initialEntries={['/?view=train']}><PlatformApp /></MemoryRouter>);
+    fireEvent.change(await screen.findByLabelText('通信轮数'), { target: { value: '15' } });
+    fireEvent.change(screen.getByLabelText('实验名称'), { target: { value: '未提交的草稿' } });
+    const tabs = screen.getByRole('navigation', { name: '模块功能' });
+    fireEvent.click(within(tabs).getByRole('link', { name: '实验记录' }));
+    expect(screen.queryByRole('spinbutton', { name: /通信轮数/ })).not.toBeInTheDocument();
+    fireEvent.click(within(tabs).getByRole('link', { name: '新建实验' }));
+    expect(screen.getByLabelText('通信轮数')).toHaveValue('15');
+    expect(screen.getByLabelText('实验名称')).toHaveValue('未提交的草稿');
+    expect(fetch.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
+  }, 20000);
+
+  it('keeps navigation, retry and the separate map demo usable while offline', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('server offline')));
     render(<MemoryRouter><PlatformApp /></MemoryRouter>);
     await screen.findByText('server offline');
-    expect(screen.getByText('暂时无法读取任务')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /进入模型体验台/ })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /地图模拟演示/ })).toHaveAttribute('href', '/demo');
-    expect(screen.queryByText('当前没有进行中的任务')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /重连/ })).toBeInTheDocument();
+    expect(screen.getByText('服务器暂时离线')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /单图预测/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '地图模拟演示' })).toHaveAttribute('href', '/demo');
   });
 
-  it.each([['privacy', '隐私保护'], ['backdoor', '后门攻防']])('reserves %s without enabling task controls, even offline', async (view, label) => {
+  it.each([['privacy', '隐私保护'], ['backdoor', '后门攻防']])('reserves %s without starting tasks, even offline', async (view, label) => {
     const fetch = vi.fn().mockRejectedValue(new Error('server offline'));
     vi.stubGlobal('fetch', fetch);
-    render(<MemoryRouter initialEntries={[`/?view=${view}&id=must-not-fetch`]}><PlatformApp /></MemoryRouter>);
+    render(<MemoryRouter initialEntries={['/?view=' + view + '&id=must-not-fetch']}><PlatformApp /></MemoryRouter>);
     expect(screen.getByRole('heading', { level: 1, name: label })).toBeInTheDocument();
-    const module = screen.getByRole('region', { name: `${label}规划说明` });
-    expect(within(module).getByText('规划中 · 尚未接入真实任务')).toBeInTheDocument();
+    const module = screen.getByRole('region', { name: label + '规划说明' });
+    expect(within(module).getByText('功能预留，尚未接入真实任务。')).toBeInTheDocument();
     expect(within(module).getAllByText('待接入')).toHaveLength(3);
     expect(within(module).queryByRole('button')).not.toBeInTheDocument();
-    expect(within(module).getByRole('link', { name: /返回系统首页/ })).toHaveAttribute('href', '/');
     await screen.findByText('server offline');
     expect(fetch.mock.calls.every(([url, init]) => init.method === 'GET' && !url.includes('must-not-fetch'))).toBe(true);
-    fireEvent.click(within(module).getByRole('link', { name: /返回系统首页/ }));
-    expect(screen.getByRole('heading', { level: 1, name: '系统首页' })).toBeInTheDocument();
+    fireEvent.click(within(module).getByRole('link', { name: /返回首页/ }));
+    expect(screen.getByRole('heading', { level: 1, name: /开始一次新的探索/ })).toBeInTheDocument();
   });
 });
 
-describe('homepage real data and feature links', () => {
-  it('uses backend counts, compatible image models, real stages and exact task links', () => {
-    render(<MemoryRouter><SystemHome catalog={catalog} jobs={[running, completed]} library={library} resource={resource} stale={false} /></MemoryRouter>);
+describe('homepage live data', () => {
+  it('renders actual inventory, actual stages and precise job links', () => {
+    render(<MemoryRouter><SystemHome catalog={catalog} jobs={[running, completed]} library={library} resource={resource} stale={false} overview={running} /></MemoryRouter>);
     const inventory = screen.getByLabelText('服务器资产概览');
     expect(within(inventory).getByRole('link', { name: /已保存模型/ })).toHaveTextContent('3');
     expect(within(inventory).getByRole('link', { name: /已完成训练/ })).toHaveTextContent('1');
-    expect(screen.getByText('2 个图像模型检查点匹配到测试集')).toBeInTheDocument();
     expect(screen.getByText(running.stage)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /查看任务与进度/ })).toHaveAttribute('href', `/?view=jobs&id=${running.id}`);
+    expect(screen.getByRole('link', { name: /查看详情/ })).toHaveAttribute('href', '/?view=jobs&id=' + running.id);
     expect(screen.getByRole('link', { name: /查看服务器资源/ })).toHaveTextContent('32%');
-    for (const view of Object.keys(pages).filter(key => key !== 'home')) {
-      expect(screen.getAllByRole('link').some(link => link.getAttribute('href') === `/?view=${view}`)).toBe(true);
+    for (const view of ['train', 'jobs', 'cache', 'experience', 'evaluate', 'compare', 'privacy', 'backdoor']) {
+      expect(screen.getAllByRole('link').some(link => link.getAttribute('href') === '/?view=' + view)).toBe(true);
     }
-    expect(screen.getByRole('link', { name: /地图模拟演示/ })).toHaveAttribute('href', '/demo');
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('does not invent counts, activity or model readiness while loading or empty', () => {
+  it('distinguishes loading from empty without inventing metrics', () => {
     const page = render(<MemoryRouter><SystemHome jobs={[]} library={{ models: [], testsets: [] }} stale={false} /></MemoryRouter>);
     expect(within(screen.getByLabelText('服务器资产概览')).getAllByText('—')).toHaveLength(4);
-    expect(screen.getByText('正在读取任务')).toBeInTheDocument();
+    expect(screen.getAllByText('正在读取实验').length).toBeGreaterThan(0);
     page.rerender(<MemoryRouter><SystemHome catalog={catalog} jobs={[]} library={{ models: [], testsets: [] }} stale={false} /></MemoryRouter>);
-    expect(screen.getByText('当前没有进行中的任务')).toBeInTheDocument();
-    expect(screen.getByText('尚无匹配测试集的图像模型')).toBeInTheDocument();
+    expect(screen.getByText('还没有训练记录')).toBeInTheDocument();
     expect(screen.queryByText(/GPU 1/)).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText('服务器资产概览')).getByRole('link', { name: /已保存模型/ })).toHaveTextContent('0');
   });
 
-  it('marks stale tasks and resources without presenting them as live', () => {
-    render(<MemoryRouter><SystemHome catalog={catalog} jobs={[running, completed]} library={library} resource={resource} stale /></MemoryRouter>);
-    expect(screen.getByText('状态待刷新')).toBeInTheDocument();
-    expect(screen.getByText('连接异常，下方为上次读取的记录。')).toBeInTheDocument();
+  it('marks a stale snapshot and hides stale resource percentages', () => {
+    render(<MemoryRouter><SystemHome catalog={catalog} jobs={[running, completed]} library={library} resource={resource} stale overview={running} /></MemoryRouter>);
+    expect(screen.getByText('离线快照')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /查看服务器资源/ })).toHaveTextContent('资源数据待刷新');
     expect(screen.queryByText('32%')).not.toBeInTheDocument();
   });

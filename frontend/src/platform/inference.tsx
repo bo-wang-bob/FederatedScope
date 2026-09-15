@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Collapse, Empty, Pagination, Select, Space, Spin, Tag } from 'antd';
-import { ArrowRightOutlined, CheckCircleOutlined, DownloadOutlined, PictureOutlined, ScanOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, DownloadOutlined, PictureOutlined, ScanOutlined } from '@ant-design/icons';
 import { api, methodLabel, percent, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
 import './inference.css';
 
@@ -14,14 +14,14 @@ function SampleImage({ sample, large = false }: { sample: TestSample; large?: bo
 export function PredictionPanel({ job, open }: { job?: Job; open?: (id: string) => void }) {
   const result = job?.status === 'completed' ? job.result as Prediction : undefined;
   return <Card className="platform-panel experience-prediction" title={<span><ScanOutlined /> 模型判断</span>} extra={<Tag color={result ? result.correct ? 'success' : 'warning' : 'default'}>{result ? '实际推理结果' : job && !terminal(job.status) ? '正在推理' : '等待预测'}</Tag>}>
-    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{job.stage}</h3><p>正在读取已保存模型与样本特征</p></> : <><ScanOutlined /><h3>{job?.error ? '此次推理未完成' : '让模型给出自己的判断'}</h3><p>{job?.error || '选择一张测试图片，然后运行单图预测。'}</p></>}</div> : <>
+    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{job.stage}</h3></> : <><ScanOutlined /><h3>{job?.error ? '推理未完成' : '等待模型预测'}</h3><p>{job?.error || '选择样本后开始预测'}</p></>}</div> : <>
       <div className="experience-verdict"><span>预测类别</span><h2>{result.predictedName.replaceAll('_', ' ')}</h2><div><strong>{percent(result.confidence)}</strong><span>Softmax 分数</span></div></div>
       <div className={`experience-ground-truth ${result.correct ? 'matched' : 'mismatched'}`}><div><span>真实标签</span><b>{result.labelName.replaceAll('_', ' ')}</b></div><Tag color={result.correct ? 'success' : 'warning'}>{result.correct ? '预测一致' : '预测不一致'}</Tag></div>
       <div className="experience-ranks"><h3>TOP {result.topK.length}<span>分类分数</span></h3>{result.topK.map((item, index) => <div className="experience-rank" key={item.classIndex}><div><span><i>{String(index + 1).padStart(2, '0')}</i>{item.className.replaceAll('_', ' ')}</span><b>{percent(item.score)}</b></div><div className="experience-rank-track"><span style={{ width: `${item.score * 100}%` }} /></div></div>)}</div>
       <div className="experience-runtime"><span>分类器批次计算 <b>{result.inferenceMs.toFixed(1)} ms</b></span><span>加载与推理 <b>{result.elapsedSeconds.toFixed(2)} s</b></span></div>
-      <p className="experience-score-note">分数来自真实模型输出，未经置信度校准；单张预测不能代替完整测试集评测。</p>
+      <p className="experience-score-note">分数未经校准；单图结果不代表整体准确率。</p>
       <Space wrap>{open && <Button type="link" onClick={() => open(job!.id)}>完整记录 <ArrowRightOutlined /></Button>}<Button type="link" href={`/api/platform/jobs/${job!.id}/export`} icon={<DownloadOutlined />}>导出结果</Button></Space>
-      <Collapse ghost size="small" items={[{ key: 'version', label: '查看本次模型与样本版本', children: <div className="experience-version">{[['模型 SHA-256', result.checkpointSha256], ['测试特征包 SHA-256', result.testBundleSha256], ['当前原图 SHA-256', result.imageSha256], ['样本清单 SHA-256', result.manifestSha256], ['样本关联方式', result.testProvenance], ['推理口径', result.inferenceContract]].map(([label, value]) => <p key={label}><span>{label}</span><code>{value}</code></p>)}</div> }]} />
+      <Collapse ghost size="small" items={[{ key: 'version', label: '版本与来源', children: <div className="experience-version">{[['模型 SHA-256', result.checkpointSha256], ['测试特征包 SHA-256', result.testBundleSha256], ['当前原图 SHA-256', result.imageSha256], ['样本清单 SHA-256', result.manifestSha256], ['样本关联方式', result.testProvenance], ['推理口径', result.inferenceContract]].map(([label, value]) => <p key={label}><span>{label}</span><code>{value}</code></p>)}</div> }]} />
     </>}
   </Card>;
 }
@@ -88,9 +88,8 @@ export function ModelExperience({ library, disabled, create, open }: {
     } catch (e) { if (alive.current) setError((e as Error).message); }
     finally { if (alive.current) setSubmitting(false); }
   };
-  if (!models.length) return <Empty description="暂无可体验的已完成图像模型。完成缓存训练后，模型和测试集会自动出现在这里；文本模型请使用独立评测。" />;
+  if (!models.length) return <Empty description="暂无图像模型，完成训练后可用。文本模型请使用独立评测。" />;
   return <div className="model-experience">
-    <div className="experience-intro"><div><span className="platform-eyebrow">MODEL EXPERIENCE</span><h2>一个样本，看见模型的判断</h2><p>浏览真实测试图片，调用已保存模型，核对每一次预测。</p></div><Tag icon={<CheckCircleOutlined />} color="cyan">冻结特征分类器 · 真实推理</Tag></div>
     {model?.augmentationWarning && <Alert type="warning" title={model.augmentationWarning} />}
     <div className="experience-selectors"><div><label htmlFor="experience-model">01 / 选择模型</label><Select id="experience-model" aria-label="体验模型" showSearch optionFilterProp="label" value={modelId} disabled={frozen} onChange={value => { setModelId(value); setSelected(undefined); setJob(undefined); }} options={models.map(m => ({ value: m.id, label: `${m.name} · ${methodLabel(m.method)} · ${m.kind}` }))} /></div><div><label htmlFor="experience-testset">02 / 选择测试集</label><Select id="experience-testset" aria-label="体验测试集" value={testsetId} disabled={frozen} onChange={value => { setTestsetId(value); setDomain(undefined); setLabel(undefined); setPage(1); }} options={testsets.map(t => ({ value: t.id, label: `${t.group} · ${t.samples?.toLocaleString()} 个样本 · ${t.name}` }))} /></div><div className="experience-model-meta"><Tag>{methodLabel(model?.method)}</Tag><span>{model?.classes.length} 类 · 训练 {model?.trainingRounds ?? '—'} 轮</span>{model && <a href={`/api/platform/jobs/${model.jobId}/model-${model.kind}`}>下载模型 <DownloadOutlined /></a>}</div></div>
     {model && model.trainingRounds != null && model.trainingRounds < 5 && <Alert type="warning" showIcon title={`当前模型只训练了 ${model.trainingRounds} 轮，适合核验流程，不代表已达到目标准确率。`} />}
@@ -101,7 +100,7 @@ export function ModelExperience({ library, disabled, create, open }: {
         <div className="experience-thumbnails">{samples?.items.map(sample => <button key={sample.id} aria-label={`选择样本 ${sample.filename}`} aria-pressed={selected?.id === sample.id} className={selected?.id === sample.id ? 'selected' : ''} disabled={frozen} onClick={() => { setSelected(sample); setJob(undefined); }}><SampleImage sample={sample} /><span>{sample.className.replaceAll('_', ' ')}</span><small>{sample.domain}</small></button>)}</div>
         {!loading && samples?.total === 0 && <Empty description="这个筛选范围没有测试样本" />}<Pagination size="small" current={page} pageSize={12} total={samples?.total || 0} showSizeChanger={false} disabled={frozen} onChange={setPage} /></div>
     </div><div className="experience-output"><PredictionPanel job={job} open={open} /><Button className="experience-run" type="primary" size="large" icon={<ScanOutlined />} disabled={frozen || !selected?.imageAvailable || !selected.imageSha256 || loading} loading={busy} onClick={() => void predict()}>运行单图预测</Button>{job && !terminal(job.status) && <Button type="link" onClick={() => open(job.id)}>查看任务 / 停止</Button>}
-      <div className="experience-protocol"><b>如何读取这份结果</b><p>展示的是测试原图；推理输入是它对应的已有冻结特征，运行的是已保存分类器，不会重新提取特征。</p><p>旧缓存按划分与标签顺序关联样本，未内嵌原始样本 ID。当前图片哈希仅证明本次读取版本，不证明历史特征由该图片重新计算。</p><Button type="link" onClick={() => model && open(model.jobId)}>查看模型训练记录 <ArrowRightOutlined /></Button></div>
+      <div className="experience-protocol"><span>冻结特征推理 · 原图关联有来源限制</span><Collapse ghost size="small" items={[{ key: 'contract', label: '推理口径与来源', children: <><p>展示测试原图；推理使用对应的已有冻结特征和已保存分类器，不会重新提取特征。</p><p>旧缓存按划分与标签顺序关联样本，未内嵌原始样本 ID。图片哈希只证明本次读取版本，不证明历史特征由该图片生成。</p></> }]} /><Button type="link" onClick={() => model && open(model.jobId)}>训练记录 <ArrowRightOutlined /></Button></div>
     </div></div>
   </div>;
 }

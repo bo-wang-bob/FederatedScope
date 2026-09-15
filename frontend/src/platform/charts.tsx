@@ -1,19 +1,19 @@
-import { Chart, chartText } from '../components/ChartPanel';
+import { Chart } from '../components/ChartPanel';
 import { Empty } from 'antd';
 import type { Client, Point, Resource } from './api';
-const colors = ['#44d8ff', '#29e3ae', '#ffbd52', '#a38cff', '#f57ca0', '#74a1fb'];
+const colors = ['#8166df', '#62b49e', '#d8ad6e', '#8eafd9', '#c28cad', '#a2ad74'];
 function Plot({ option, style }: { option: object; style: { height: number } }) {
-  return <Chart option={option} height={style.height} appearance="dark" />;
+  return <Chart option={{ ...option, animation: !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches, animationDuration: 350, animationDurationUpdate: 250 }} height={style.height} />;
 }
-const common = { backgroundColor: 'transparent', color: colors, textStyle: { color: chartText, fontFamily: 'Inter, Microsoft YaHei, sans-serif', fontSize: 14 },
-  tooltip: { trigger: 'axis', backgroundColor: '#10263b', borderColor: '#34566f', textStyle: { color: '#e5f3ff' } }, grid: { left: 55, right: 20, top: 45, bottom: 38 } };
+const common = { backgroundColor: 'transparent', color: colors, textStyle: { color: '#9690a4', fontFamily: 'Inter, Microsoft YaHei, sans-serif', fontSize: 12 },
+  tooltip: { trigger: 'axis', backgroundColor: '#fff', borderColor: '#e5deee', textStyle: { color: '#60556e' } }, grid: { left: 50, right: 22, top: 45, bottom: 38 } };
 export function Curves({ points }: { points: Point[] }) {
-  if (!points.length) return <Empty description="尚无完成轮次的真实指标" />;
+  if (!points.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="等待训练指标" />;
   const domains = Object.keys(points[0].domains);
   return <Plot style={{ height: 330 }} option={{ ...common, legend: { type: 'scroll', top: 0 },
     xAxis: { type: 'category', name: '轮次', data: points.map(p => p.round === 0 ? '初始化' : p.round) },
     yAxis: { type: 'value', name: '准确率 %', min: 0, max: 100 },
-    series: [{ name: '总体（样本加权）', type: 'line', symbolSize: 7, lineStyle: { width: 3 }, data: points.map(p => p.accuracy * 100) },
+    series: [{ name: '总体', type: 'line', symbolSize: 5, lineStyle: { width: 2.5 }, areaStyle: { opacity: .04 }, data: points.map(p => p.accuracy * 100) },
       ...domains.map(name => ({ name, type: 'line', symbolSize: 4, data: points.map(p => p.domains[name] * 100) }))] }} />;
 }
 export function LossChart({ points }: { points: Point[] }) {
@@ -28,14 +28,14 @@ export function Topology({ clients }: { clients: Client[] }) {
   if (!clients.length) return <Empty description="预检后显示实际客户端拓扑" />;
   const domains = [...new Set(clients.map(c => c.domain))];
   const nodes: object[] = [{ id: 'server', name: '4090lziy\n联邦聚合', x: 350, y: 190, symbolSize: 80,
-    itemStyle: { color: '#134460', borderWidth: 2, borderColor: '#44d8ff', shadowBlur: 30, shadowColor: '#44d8ff44' }, label: { show: true, color: '#e6f8ff', fontSize: 14 } }];
+    itemStyle: { color: '#f1eafa', borderWidth: 2, borderColor: '#9d85cd' }, label: { show: true, color: '#8971ab', fontSize: 13 } }];
   const links: object[] = [];
   for (const [i, domain] of domains.entries()) {
     const a = (Math.PI * 2 * i / domains.length) - Math.PI / 2;
     const center = { x: 350 + Math.cos(a) * 210, y: 190 + Math.sin(a) * 130 };
     const group = clients.filter(c => c.domain === domain);
     nodes.push({ id: domain, name: `${domain}\n${group.length} 客户端`, ...center, symbolSize: 57,
-      itemStyle: { color: '#122b41', borderColor: colors[i % colors.length], borderWidth: 2, shadowBlur: 12, shadowColor: colors[i % colors.length] + '44' }, label: { show: true, position: 'bottom', color: '#c1dbea', fontSize: 13 } });
+      itemStyle: { color: '#faf8fd', borderColor: colors[i % colors.length], borderWidth: 1.5 }, label: { show: true, position: 'bottom', color: '#93829f', fontSize: 12 } });
     links.push({ source: 'server', target: domain });
     group.forEach((c, j) => {
       const angle = Math.PI * 2 * j / group.length;
@@ -58,7 +58,7 @@ export function Distribution({ clients, classes }: { clients: Client[]; classes:
     xAxis: { type: 'category', data: classes }, yAxis: { type: 'category', data: clients.map(c => `C${c.id}`) },
     dataZoom: [{ type: 'inside', yAxisIndex: 0 }, { type: 'slider', xAxisIndex: 0, bottom: 22 }],
     visualMap: { min: 0, max: data.reduce((max, row) => Math.max(max, row[2]), 1), calculable: true, orient: 'horizontal', bottom: 0,
-      inRange: { color: ['#10243a', '#17698c', '#5bdfff'] } }, series: [{ type: 'heatmap', data }] }} />;
+      inRange: { color: ['#f8f5fc', '#bfa9da', '#8166bb'] } }, series: [{ type: 'heatmap', data }] }} />;
 }
 export function ResourcesChart({ history }: { history: Resource[] }) {
   return <Plot style={{ height: 225 }} option={{ ...common, legend: { top: 0 },
@@ -80,5 +80,5 @@ export function Confusion({ matrix, classes }: { matrix: number[][]; classes: st
     xAxis: { type: 'category', name: '预测', data: classes }, yAxis: { type: 'category', name: '真实', data: classes },
     dataZoom: [{ type: 'inside', xAxisIndex: 0 }, { type: 'inside', yAxisIndex: 0 }],
     visualMap: { min: 0, max: Math.max(1, ...matrix.map(r => Math.max(...r))), orient: 'horizontal', bottom: 0,
-      inRange: { color: ['#10243a', '#17698c', '#5bdfff'] } }, series: [{ type: 'heatmap', data }] }} />;
+      inRange: { color: ['#f8f5fc', '#bfa9da', '#8166bb'] } }, series: [{ type: 'heatmap', data }] }} />;
 }
