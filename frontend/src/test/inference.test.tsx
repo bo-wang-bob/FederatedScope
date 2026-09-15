@@ -28,7 +28,7 @@ describe('single-image model experience', () => {
     vi.stubGlobal('fetch', fetch);
     const create = vi.fn().mockResolvedValue(prediction);
     render(<ModelExperience library={library} disabled={false} create={create} open={vi.fn()} />);
-    fireEvent.click(await screen.findByRole('button', { name: '选择样本 1.jpg' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择样本 Class B · 1.jpg · Art' }));
     expect(screen.getByAltText('测试原图 1.jpg')).toHaveAttribute('src', '/fixture/1.jpg');
     fireEvent.click(screen.getByRole('button', { name: /运行单图预测/ }));
     await waitFor(() => expect(create).toHaveBeenCalledWith('predict', expect.objectContaining({
@@ -36,7 +36,7 @@ describe('single-image model experience', () => {
     })));
     expect(await screen.findByText('预测不一致')).toBeInTheDocument();
     expect(screen.getByText('实际推理结果')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '选择样本 0.jpg' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择样本 Class A · 0.jpg · Art' }));
     expect(screen.queryByText('预测不一致')).not.toBeInTheDocument();
     expect(create).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls.every(([path]) => String(path).includes('/samples?'))).toBe(true);
@@ -46,7 +46,7 @@ describe('single-image model experience', () => {
       items: page.items.map(item => ({ ...item, imageAvailable: false, imageSha256: undefined, imageError: '缺少原图' })) } }) }));
     const create = vi.fn();
     render(<ModelExperience library={library} disabled={false} create={create} open={vi.fn()} />);
-    await screen.findByRole('button', { name: '选择样本 0.jpg' });
+    await screen.findByRole('button', { name: '选择样本 Class A · 0.jpg · Art' });
     expect(screen.getByRole('button', { name: /运行单图预测/ })).toBeDisabled();
     expect(create).not.toHaveBeenCalled();
   }, 30000);
@@ -57,7 +57,7 @@ it('uses an explicitly linked model and compatible testset instead of silently c
   const fetch=vi.fn().mockResolvedValue({ok:true,json:async()=>({data:page})});vi.stubGlobal('fetch',fetch);
   const create=vi.fn().mockResolvedValue(prediction);
   render(<ModelExperience library={{models:[model,secondModel],testsets:[...library.testsets,explicitTest]}} initialModel={secondModel.id} initialTestset={explicitTest.id} disabled={false} create={create} open={vi.fn()}/>);
-  await screen.findByRole('button',{name:'选择样本 0.jpg'});
+  await screen.findByRole('button',{name:'选择样本 Class A · 0.jpg · Art'});
   expect(fetch.mock.calls.every(([url])=>String(url).includes('/testsets/'+explicitTest.id+'/samples?'))).toBe(true);
   expect(screen.getByRole('link',{name:/整集评测/})).toHaveAttribute('href','/?view=evaluate&model='+encodeURIComponent(secondModel.id)+'&testset='+explicitTest.id);
   fireEvent.click(screen.getByRole('button',{name:/运行单图预测/}));

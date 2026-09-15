@@ -19,7 +19,7 @@ export function JobTable({jobs,open}:{jobs:Job[];open:(id:string)=>void}) {
   ]}/>;
 }
 export function JobDetail({job,library,stop,rerun}:{job:Job;library:Library;stop:(id:string)=>void;rerun:()=>void}) {
-  const [tab,setTab]=useState(['evaluate','predict'].includes(job.action)?'detail':'monitor'),[logs,setLogs]=useState('');
+  const [tab,setTab]=useState('monitor'),[logs,setLogs]=useState('');
   useEffect(()=>{
     if(tab!=='detail') return;
     let alive=true,busy=false;
@@ -54,11 +54,11 @@ export function JobDetail({job,library,stop,rerun}:{job:Job;library:Library;stop
       <div className="platform-stats"><Stat label="总体准确率" value={percent(final?.accuracy)}/><Stat label="分域平均" value={percent(final?.domainMean)}/><Stat label="最差域准确率" value={percent(final?.worstDomain)}/><Stat label="测试样本" value={job.data?.testSamples?.toLocaleString() || '—'}/></div></>}
     {job.action==='predict'&&<div className="job-prediction-result"><PredictionPanel job={job}/></div>}
     {job.action==='evaluate'&&<EvaluationResults job={job} library={library}/>}
-    <Tabs activeKey={training||job.action==='inspect'?tab:'detail'} onChange={setTab} items={[
+    {training||job.action==='inspect'?<Tabs activeKey={tab} onChange={setTab} items={[
       ...(training||job.action==='inspect'?[{key:'monitor',label:'训练结果',children:<><div className="job-chart-grid"><Panel title="准确率"><Curves points={points}/></Panel><Panel title="本地训练损失"><LossChart points={points}/></Panel></div>
         <Collapse className="job-client-disclosure" items={[{key:'clients',label:'客户端协作 · '+clients.length,children:<><Topology clients={clients}/><Table<Client> size="small" rowKey="id" dataSource={clients} pagination={{pageSize:10}} columns={[{title:'客户端',dataIndex:'id'},{title:'域',dataIndex:'domain'},{title:'样本',dataIndex:'samples'},{title:'状态',dataIndex:'stage'},{title:'轮次',dataIndex:'round',render:n=>n==null?'—':n+1},{title:'训练损失',dataIndex:'loss',render:n=>n?.toFixed(4)??'—'},{title:'训练准确率',dataIndex:'accuracy',render:percent}]}/></>}]} /></>},
       {key:'data',label:'数据分布',children:<Panel title="客户端与类别"><Distribution clients={clients} classes={job.data?.classes || []}/><p className="platform-muted">原始划分；配置抽样后的实际数量保存在实验日志。</p></Panel>}]:[]),
       {key:'detail',label:'参数与日志',children:detail},
-    ]}/>
+    ]}/>:<Collapse className="job-client-disclosure" onChange={keys=>setTab(keys.length?'detail':'monitor')} items={[{key:'audit',label:'参数与日志',children:detail}]}/>}
   </div>;
 }
