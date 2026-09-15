@@ -1,0 +1,53 @@
+/* Approved photo-led design, with real platform controllers and result surfaces. */
+.live-console .design-mode.connected::before{background:#a1bca9;border-color:#a1bca9}
+.live-console .design-mode.disconnected{color:#d3b39e}
+.live-console .design-mode.disconnected::before{border-color:#d3b39e}
+.live-console .studio-page-heading{height:48px;min-height:48px;margin-bottom:22px}
+.live-console .studio-page-heading h1{font-size:22px}
+.live-console .studio-route-tabs{border-color:#344644;background:#152023}
+.live-console .studio-route-tabs a.active{background:#304643;color:#e0ece6}
+.live-console small,.live-console .platform-muted,.live-console .table-date,.live-console .ant-tag,.live-console .studio-kicker,.live-console .wizard-draft-status,.live-console .launch-banner>div>span{font-size:14px}
+.live-console .experience-selectors{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr) auto;gap:20px;padding:16px 20px;border-color:#334341}
+.live-console .experience-selectors label{margin-bottom:6px;color:#b7c8c2}
+.live-console .experience-model-meta>span{display:none}
+.live-console .experience-context{padding:10px 2px 12px;gap:16px;flex-wrap:wrap;font-size:14px}
+.live-console .experience-context>span:first-child{display:none}
+.live-console .experience-context>span:nth-child(2){color:#c8b892}
+.live-console .experience-workspace{display:grid;grid-template-columns:242px minmax(270px,1fr) 278px;gap:0;align-items:stretch;height:clamp(390px,calc(100dvh - 330px),750px);border:1px solid #334341;border-radius:8px;overflow:hidden;background:#192225}
+.live-console .experience-sample-library{height:auto;border:0;border-right:1px solid #334341;border-radius:0;background:#192225;padding:20px 16px;overflow:hidden}
+.live-console .experience-gallery-head h3{color:#d0dfd8;font-size:16px;margin-bottom:18px}
+.live-console .experience-gallery-head h3>span{font-size:14px}
+.live-console .experience-thumbnails{grid-template-columns:1fr 1fr;grid-auto-rows:max-content;gap:12px}
+.live-console .experience-thumbnails>button{padding:0 0 7px;border-color:#3c4b47;background:#202e2e;border-radius:4px}
+.live-console .experience-thumbnails>button.selected{border-color:#afc7b6;background:#30433d;box-shadow:0 0 0 1px #afc7b6}
+.live-console .experience-thumbnails>button>img{height:92px;object-fit:cover;border-radius:0}
+.live-console .experience-thumbnails>button>span{font-size:14px;color:#cedbd4;padding:0 7px}
+.live-console .experience-sample-library .ant-pagination{margin-top:14px!important}
+.live-console .experience-stage{height:100%;min-height:0;border:0;border-radius:0;display:flex;flex-direction:column;background:#121a1c}
+.live-console .experience-stage-head{height:55px;flex:none;padding:0 18px;border-color:#293835}
+.live-console .experience-stage-head>span:first-child{font-size:14px;color:#c3d1cb}
+.live-console .experience-image{height:auto;min-height:0;flex:1;padding:20px;background:#121a1c;overflow:hidden}
+.live-console .experience-image>img{width:100%;height:100%;max-height:100%;object-fit:contain}
+.live-console .experience-image.experience-digit>img{width:160px;height:160px}
+.live-console .experience-caption{min-height:62px;flex:none;padding:10px 18px;border-color:#293835}
+.live-console .experience-caption>div>span,.live-console .experience-caption strong{font-size:14px;margin:0}
+.live-console .experience-caption>div>span{color:#a3b7ac}
+.live-console .experience-caption strong{color:#d7e4dc}
+.live-console .experience-output{display:flex;flex-direction:column;min-height:0;padding:0;border-left:1px solid #334341}
+.live-console .experience-output .experience-prediction{min-height:0;flex:1;display:flex;flex-direction:column;border:0;border-radius:0;background:#192225;overflow:hidden}
+.live-console .experience-output .experience-prediction .ant-card-head{flex:none;padding:0 16px;min-height:55px}
+.live-console .experience-output .experience-prediction .ant-card-body{flex:1;min-height:0;overflow:auto;padding:18px}
+.live-console .experience-output .experience-prediction-empty{height:100%;min-height:180px}
+.live-console .experience-output .experience-run{flex:none;width:calc(100% - 36px);margin:16px 18px 18px}
+.live-console .experience-prediction .ant-card-extra .ant-tag{font-size:14px;padding:0 6px}
+.live-console .experience-verdict>span,.live-console .experience-verdict>div>span,.live-console .experience-ground-truth span:not(.ant-tag),.live-console .experience-ranks h3>span,.live-console .experience-score-note,.live-console .experience-version p,.live-console .experience-version code,.live-console .experience-runtime,.live-console .experience-runtime b,.live-console .experience-rank i{font-size:14px}
+.live-console .experience-prediction-empty>.anticon{background:#263731;color:#97b4a5;border-color:#455d54}
+.live-console .experience-protocol{margin-top:10px}
+.live-console .evaluation-form,.live-console .evaluation-preview,.live-console .comparison-picker{background:#192225;border-color:#334341}
+.live-console .evaluation-submit>span,.live-console .evaluation-preview>.studio-kicker{display:none}
+.live-console .evaluation-submit>.ant-btn{margin-left:auto}
+.live-console .evaluation-preview dt,.live-console .evaluation-preview dd,.live-console .evaluation-preview>small,.live-console .comparison-status>small,.live-console .comparison-picker label small{font-size:14px}
+.live-console .comparison-picker label small{display:none}
+.live-console .studio-empty-state p{font-size:14px}
+.live-console .job-title-line>span,.live-console .platform-job-heading p,.live-console .job-progress small,.live-console .platform-stat>span,.live-console .job-next-action>div,.live-console .platform-job-link small{font-size:14px}
+@media(min-width:1600px){.live-console .experience-workspace{grid-template-columns:276px minmax(390px,1fr) 300px}.live-console .experience-thumbnails>button>img{height:112px}}

@@ -31,6 +31,8 @@ describe('single-image model experience', () => {
     fireEvent.click(await screen.findByRole('button', { name: '选择样本 Class B · 1.jpg · Art' }));
     expect(screen.getByAltText('测试原图 1.jpg')).toHaveAttribute('src', '/fixture/1.jpg');
     expect(screen.getByText('样本关联受限')).toBeVisible();
+    expect(screen.getByRole('button', { name: /运行单图预测/ })).toBeDisabled();
+    fireEvent.load(screen.getByAltText('测试原图 1.jpg'));
     fireEvent.click(screen.getByRole('button', { name: /运行单图预测/ }));
     await waitFor(() => expect(create).toHaveBeenCalledWith('predict', expect.objectContaining({
       modelId: model.id, testsetId: model.jobId, sampleId: page.items[1].id, imageSha256: page.items[1].imageSha256,
@@ -67,6 +69,7 @@ it('uses an explicitly linked model and compatible testset instead of silently c
   await screen.findByRole('button',{name:'选择样本 Class A · 0.jpg · Art'});
   expect(fetch.mock.calls.every(([url])=>String(url).includes('/testsets/'+explicitTest.id+'/samples?'))).toBe(true);
   expect(screen.getByRole('link',{name:/整集评测/})).toHaveAttribute('href','/?view=evaluate&model='+encodeURIComponent(secondModel.id)+'&testset='+explicitTest.id);
+  fireEvent.load(screen.getByAltText('测试原图 0.jpg'));
   fireEvent.click(screen.getByRole('button',{name:/运行单图预测/}));
   await waitFor(()=>expect(create).toHaveBeenCalledWith('predict',expect.objectContaining({modelId:secondModel.id,testsetId:explicitTest.id})));
 },30000);

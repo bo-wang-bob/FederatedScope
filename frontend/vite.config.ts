@@ -16,7 +16,8 @@ export default defineConfig(({ mode }) => ({
   server: {
     port: mode === 'design' ? 5174 : 5173,
     proxy: mode === 'design' ? undefined : {
-      '/api': process.env.FS_API_PROXY || 'http://127.0.0.1:8001',
+      // Preserve the browser's Host/Origin pair; keep backend same-origin checks intact.
+      '/api': { target: process.env.FS_API_PROXY || 'http://127.0.0.1:8001', changeOrigin: false },
     },
   },
   preview: { port: 4173 },

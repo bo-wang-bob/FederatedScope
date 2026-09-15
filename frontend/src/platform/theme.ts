@@ -9,7 +9,7 @@ export const researchTheme: ThemeConfig = {
     colorBgBase: '#10161c', colorBgLayout: '#10161c', colorBgContainer: '#171f27',
     colorBgElevated: '#202c36', colorText: '#e0e7eb', colorTextSecondary: '#a2b0bb',
     colorTextTertiary: '#8d9da9', colorBorder: '#34424d', colorBorderSecondary: '#2a3742',
-    borderRadius: 6, fontSize: 14, fontSizeSM: 12, controlHeight: 40,
+    borderRadius: 6, fontSize: 14, fontSizeSM: 14, controlHeight: 40,
     fontFamily: '"Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif',
     motionDurationMid: '0.16s', motionDurationSlow: '0.2s',
   },

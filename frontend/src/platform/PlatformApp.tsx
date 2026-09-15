@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { App as AntApp, Alert, Button, ConfigProvider, Input, Select, Skeleton, Space } from 'antd';
 import { ArrowLeftOutlined, ArrowRightOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import zhCN from 'antd/locale/zh_CN';
 import { api, key, methodLabel, terminal, type Catalog, type Job, type Library } from './api';
 import { ComparisonPanel, EvaluationPanel } from './evaluation';
 import { ModelExperience } from './inference';
@@ -14,10 +15,12 @@ import { JobDetail, JobTable } from './jobs';
 import { useTrainingLaunch } from './launch';
 import { researchTheme } from './theme';
 import './studio.css';
+import '../design/design.css';
+import './live.css';
 export { TrainingForm } from './training';
 
 export default function PlatformApp() {
-  return <ConfigProvider theme={researchTheme}>
+  return <ConfigProvider theme={researchTheme} locale={zhCN}>
     <AntApp><Workspace /></AntApp>
   </ConfigProvider>;
 }

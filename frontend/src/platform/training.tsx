@@ -67,7 +67,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
   return <div className="training-wizard studio-page-enter">
     <aside className="wizard-rail"><h2>实验配置</h2>
       <ol className="wizard-steps" aria-label="训练配置步骤">{['选择方案','训练设置','确认启动'].map((label,index) => <li key={label} className={step === index ? 'active' : step > index ? 'done' : ''}><button disabled={frozen || index > step} aria-current={step === index ? 'step' : undefined} onClick={() => { setStep(index); setErrors({}); }}><span>{step > index ? <CheckOutlined /> : '0' + (index + 1)}</span><strong>{label}</strong></button></li>)}</ol>
-      {!preview && <div className="wizard-draft-status"><i />{saved ? '本地草稿已保存' : '浏览器未允许保存草稿'}</div>}
+      {!preview && !saved && <div className="wizard-draft-status" role="alert">浏览器未允许保存草稿</div>}
       <Button type="text" size="small" icon={<ReloadOutlined />} disabled={frozen} onClick={() => { setDraft(initialDraft(catalog, draft.group)); setStep(0); setErrors({}); }}>恢复默认</Button>
     </aside>
     <section className="wizard-panel" aria-label="训练配置">

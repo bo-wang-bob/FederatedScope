@@ -13,7 +13,7 @@ describe('research console design contract', () => {
   it('uses consistent desktop controls and dark portal surfaces', () => {
     const token = theme.getDesignToken(researchTheme);
     expect(token.fontSize).toBe(14);
-    expect(token.fontSizeSM).toBe(12);
+    expect(token.fontSizeSM).toBe(14);
     expect(token.controlHeight).toBe(40);
     expect(token.colorBgElevated).toBe('#202c36');
     expect(token.motionDurationMid).toBe('0.16s');

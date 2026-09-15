@@ -4,16 +4,17 @@ import { Button, Checkbox, ConfigProvider, Modal, Select, Segmented, Tooltip } f
 import zhCN from 'antd/locale/zh_CN';
 import {
   ArrowLeftOutlined, ArrowRightOutlined, CheckOutlined, CloseOutlined, ExpandOutlined,
-  ExperimentOutlined, FileImageOutlined, GlobalOutlined, InfoCircleOutlined,
+  FileImageOutlined,
   LineChartOutlined, LockOutlined, PictureOutlined, ScanOutlined, SecurityScanOutlined,
 } from '@ant-design/icons';
-import { mainPages, mainView, pages, resolveView, viewHref, type PlatformView } from '../platform/navigation';
+import { pages, resolveView, viewHref } from '../platform/navigation';
 import { researchTheme } from '../platform/theme';
 import { TrainingForm } from '../platform/training';
 import type { Draft } from '../platform/draft';
 import type { RequestConfig } from '../platform/api';
 import { designCatalog, designMethods } from './catalog';
-import { imageSource, landscape, samples, type DesignSample } from './assets';
+import { samples, type DesignSample } from './assets';
+import { ConsoleShell as DesignShell, PhotoHome as Home } from './Presentation';
 import '../platform/studio.css';
 import './design.css';
 
@@ -21,54 +22,6 @@ const previewTheme = { ...researchTheme, token: { ...researchTheme.token, fontSi
 const domainOptions = [{ value: 'all', label: '全部域' }, { value: 'Art', label: 'Art' }, { value: 'Real_World', label: 'Real World' }];
 const classOptions = [{ value: 'all', label: '全部类别' }, ...Array.from(new Set(samples.map(s => s.category))).map(category => ({ value: category, label: category }))];
 type Notice = { title: string; detail: string };
-
-function DesignShell({ view, children, showSources }: PropsWithChildren<{ view: PlatformView; showSources: () => void }>) {
-  return <div className="studio-shell design-console">
-    <a className="studio-skip" href="#design-main">跳到主要内容</a>
-    <aside className="design-sidebar">
-      <Link to="/" className="design-brand" aria-label="跨域联邦学习 · 返回首页">
-        <span className="studio-brand-mark" aria-hidden="true"><i /><i /><i /><i /></span><span>跨域联邦学习</span>
-      </Link>
-      <nav className="design-nav" aria-label="主要功能">{Object.entries(mainPages).map(([id, page]) =>
-        <Link key={id} to={viewHref(id as PlatformView)} aria-label={page.label} aria-current={mainView(view) === id ? 'page' : undefined}>{page.icon}<span>{page.label}</span></Link>)}</nav>
-      <nav className="design-nav design-secondary" aria-label="仿真与研究扩展">
-        <a href="/demo"><GlobalOutlined /><span>地图仿真</span></a>
-        <Link to={viewHref('privacy')} aria-current={view === 'privacy' ? 'page' : undefined}><LockOutlined /><span>隐私研究</span></Link>
-        <Link to={viewHref('backdoor')} aria-current={view === 'backdoor' ? 'page' : undefined}><SecurityScanOutlined /><span>后门研究</span></Link>
-      </nav>
-      <div className="design-sidebar-end" aria-hidden="true"><span /><i /><span /></div>
-    </aside>
-    <div className="design-workspace">
-      <header className="design-topbar"><span>{pages[view].label}</span><div className="design-topbar-actions">
-        <span className="design-mode" role="status">设计预览</span>
-        <Tooltip title="图片来源"><Button type="text" icon={<InfoCircleOutlined />} aria-label="图片来源" onClick={showSources} /></Tooltip>
-      </div></header>
-      <main className="design-main" id="design-main">{children}</main>
-    </div>
-  </div>;
-}
-
-function Home() {
-  return <section className="design-home design-enter" aria-label="功能导航">
-    <div className="design-hero">
-      <img src={landscape} alt="纳米布沙漠卫星影像，作为科研仿真场景配图" fetchPriority="high" />
-      <div className="design-hero-content"><span className="design-hero-symbol" aria-hidden="true"><ExperimentOutlined /></span>
-        <h1>跨域联邦学习</h1>
-        <Link className="design-action" to={viewHref('train')}>新建训练 <ArrowRightOutlined /></Link>
-      </div>
-    </div>
-    <div className="design-home-modules">
-      <Link to={viewHref('experience')} className="design-module-card design-model-card" aria-label="模型验证">
-        <div className="design-card-images"><img src={samples[0].src} alt="Office-Home Art 域无线电设备样本" /><img src={samples[1].src} alt="Office-Home Real World 域无线电设备样本" /></div>
-        <div className="design-card-caption"><span><ScanOutlined /><h2>模型验证</h2></span><ArrowRightOutlined /></div>
-      </Link>
-      <Link to={viewHref('compare')} className="design-module-card design-compare-card" aria-label="算法对比">
-        <div className="design-card-images"><img src={samples[2].src} alt="Office-Home Real World 域笔记本电脑样本" /></div>
-        <div className="design-card-caption"><span><LineChartOutlined /><h2>算法对比</h2></span><ArrowRightOutlined /></div>
-      </Link>
-    </div>
-  </section>;
-}
 
 function PageHeading({ title, children }: PropsWithChildren<{ title: string }>) {
   return <div className="design-heading"><h1>{title}</h1>{children}</div>;
@@ -176,11 +129,11 @@ export default function DesignPreview() {
   const location = useLocation();
   const requested = resolveView(new URLSearchParams(location.search).get('view'), location.pathname);
   const view = requested === 'jobs' ? 'train' : requested;
-  const [sourcesOpen, setSourcesOpen] = useState(false), [notice, setNotice] = useState<Notice>();
+  const [notice, setNotice] = useState<Notice>();
   const [draft, setDraft] = useState<Draft>();
   useEffect(() => { document.title = `${pages[view].label} · 设计预览`; window.scrollTo({ top: 0, behavior: 'instant' }); }, [view]);
   return <ConfigProvider theme={previewTheme} locale={zhCN}>
-    <DesignShell view={view} showSources={() => setSourcesOpen(true)}>
+    <DesignShell view={view}>
       {view === 'home' && <Home />}
       {view === 'train' && <Training draft={draft} onDraft={setDraft} notify={setNotice} />}
       {(view === 'experience' || view === 'evaluate') && <Verification evaluate={view === 'evaluate'} notify={setNotice} />}
@@ -189,12 +142,5 @@ export default function DesignPreview() {
     </DesignShell>
     <Modal open={!!notice} title={notice?.title} onCancel={() => setNotice(undefined)} className="design-modal"
       footer={<Button type="primary" onClick={() => setNotice(undefined)}>确定</Button>}><p>{notice?.detail}</p></Modal>
-    <Modal open={sourcesOpen} title="图片来源" onCancel={() => setSourcesOpen(false)} footer={null} className="design-modal">
-      <div className="design-source-list"><section><h3>场景影像</h3><p>NASA Earth Observatory，Joshua Stevens；Landsat 数据来自 USGS。仅作场景配图，不代表训练数据或实验结果。</p>
-        <a href={imageSource} target="_blank" rel="noreferrer">Where the Dunes End <ArrowRightOutlined /></a></section>
-        <section><h3>测试样本</h3><p>现有 Office-Home 测试集中的 4 张原始图像，展示原始域与类别标签。历史特征与图像的逐样本关联仍有来源限制。</p></section>
-        <section><h3>预览范围</h3><p>配置选项为界面设计样例，未读取后端库存、未加载模型，不产生预测或评测结果。</p></section>
-      </div>
-    </Modal>
   </ConfigProvider>;
 }

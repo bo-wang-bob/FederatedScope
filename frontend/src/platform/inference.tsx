@@ -1,21 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Collapse, Empty, Pagination, Select, Space, Spin, Tag } from 'antd';
-import { ArrowRightOutlined, DownloadOutlined, PictureOutlined, ScanOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Collapse, Empty, Modal, Pagination, Select, Space, Spin, Tag, Tooltip } from 'antd';
+import { ArrowLeftOutlined, ArrowRightOutlined, DownloadOutlined, ExpandOutlined, PictureOutlined, ScanOutlined } from '@ant-design/icons';
 import { api, methodLabel, percent, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
 import { modelHref } from './navigation';
 import './inference.css';
 
-function SampleImage({ sample, large = false, onUnavailable }: { sample: TestSample; large?: boolean; onUnavailable?: () => void }) {
+function SampleImage({ sample, large = false, onUnavailable, onReady }: { sample: TestSample; large?: boolean; onUnavailable?: () => void; onReady?: () => void }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [sample.id, sample.imageSha256]);
   if (!sample.imageAvailable || failed) return <div className="experience-image-missing"><PictureOutlined /><span>{large ? sample.imageError || '原图暂时无法读取' : '原图不可用'}</span></div>;
-  return <img src={sample.imageUrl} alt={large ? `测试原图 ${sample.filename}` : `${sample.className} · ${sample.filename}`} loading={large ? 'eager' : 'lazy'} onError={() => { setFailed(true); onUnavailable?.(); }} />;
+  return <img src={sample.imageUrl} alt={large ? `测试原图 ${sample.filename}` : `${sample.className} · ${sample.filename}`} loading={large ? 'eager' : 'lazy'} onLoad={onReady} onError={() => { setFailed(true); onUnavailable?.(); }} />;
 }
 
 export function PredictionPanel({ job, open }: { job?: Job; open?: (id: string) => void }) {
   const result = job?.status === 'completed' ? job.result as Prediction : undefined;
   return <Card className="platform-panel experience-prediction" title={<span><ScanOutlined /> 预测结果</span>} extra={<Tag color={result ? result.correct ? 'success' : 'warning' : 'default'}>{result ? '实际推理结果' : job && !terminal(job.status) ? '正在推理' : '等待预测'}</Tag>}>
-    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{job.stage}</h3></> : <><ScanOutlined /><h3>{job?.error ? '推理未完成' : '尚未执行预测'}</h3><p>{job?.error || '选择样本后开始预测'}</p></>}</div> : <>
+    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{job.stage}</h3></> : <><ScanOutlined /><h3>{job?.error ? '推理未完成' : '尚未预测'}</h3>{job?.error && <p role="alert">{job.error}</p>}</>}</div> : <>
       <div className="experience-verdict"><span>预测类别</span><h2>{result.predictedName.replaceAll('_', ' ')}</h2><div><strong>{percent(result.confidence)}</strong><span>Softmax 分数</span></div></div>
       <div className={`experience-ground-truth ${result.correct ? 'matched' : 'mismatched'}`}><div><span>真实标签</span><b>{result.labelName.replaceAll('_', ' ')}</b></div><Tag color={result.correct ? 'success' : 'warning'}>{result.correct ? '预测一致' : '预测不一致'}</Tag></div>
       <div className="experience-ranks"><h3>TOP {result.topK.length}<span>分类分数</span></h3>{result.topK.map((item, index) => <div className="experience-rank" key={item.classIndex}><div><span><i>{String(index + 1).padStart(2, '0')}</i>{item.className.replaceAll('_', ' ')}</span><b>{percent(item.score)}</b></div><div className="experience-rank-track"><span style={{ width: `${item.score * 100}%` }} /></div></div>)}</div>
@@ -38,6 +38,9 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
   const [samples, setSamples] = useState<SamplePage>();
   const [selected, setSelected] = useState<TestSample>();
   const [imageFailed, setImageFailed] = useState(false);
+  const [loadedImage, setLoadedImage] = useState(''), [expanded, setExpanded] = useState(false);
+  const imageKey = selected ? `${selected.id}:${selected.imageSha256}:${selected.imageUrl}` : '';
+  const imageReady = !!imageKey && loadedImage === imageKey && !imageFailed;
   useEffect(() => setImageFailed(false), [selected?.id, selected?.imageSha256]);
   const [job, setJob] = useState<Job>();
   const [loading, setLoading] = useState(false), [submitting, setSubmitting] = useState(false);
@@ -58,7 +61,7 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
   }, [model?.id]);
   useEffect(() => {
     let active = true;
-    setSelected(undefined); setSamples(undefined); setJob(undefined); setError('');
+    setSelected(undefined); setLoadedImage(''); setSamples(undefined); setJob(undefined); setError('');
     if (!testsetId) return;
     setLoading(true);
     const query = new URLSearchParams({ offset: String((page - 1) * 12), limit: '12' });
@@ -81,8 +84,12 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
     }, 800);
     return () => { active = false; clearInterval(timer); };
   }, [job?.id, job?.status]);
+  const chooseSample = (sample: TestSample | undefined) => {
+    if (sample?.id === selected?.id && sample?.imageSha256 === selected?.imageSha256) return;
+    setLoadedImage(''); setImageFailed(false); setSelected(sample); setJob(undefined);
+  };
   const predict = async () => {
-    if (!selected || !model || !test || frozen) return;
+    if (!selected?.imageAvailable || !selected.imageSha256 || !imageReady || loading || !model || !test || frozen) return;
     setSubmitting(true); setError(''); setJob(undefined);
     try {
       const created = await create('predict', { modelId, testsetId, sampleId: selected.id, imageSha256: selected.imageSha256,
@@ -103,21 +110,27 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
     {error && <Alert type="error" showIcon title={error} action={<Button onClick={() => setRefresh(x => x+1)} disabled={busy}>重新读取</Button>} />}
     <div className="experience-workspace">
       <section className="experience-sample-library"><div className="experience-gallery-head"><h3>测试样本<span>{samples?.total.toLocaleString() ?? '—'}</span></h3><div className="experience-filters"><Select aria-label="测试域筛选" placeholder="全部域" allowClear value={domain} disabled={frozen || !test} onChange={v => {setDomain(v);setPage(1);}} options={test?.domains.map(d => ({value:d.name,label:d.name}))} /><Select aria-label="测试类别筛选" placeholder="全部类别" allowClear showSearch optionFilterProp="label" value={label} disabled={frozen || !test} onChange={v => {setLabel(v);setPage(1);}} options={test?.classes.map((name,i) => ({value:i,label:name.replaceAll('_',' ')}))} /></div></div>
-        <div className="experience-thumbnails" aria-busy={loading}>{loading ? <div className="sample-loading"><Spin /></div> : samples?.items.map(sample => <button key={sample.id} aria-label={'选择样本 '+sample.className.replaceAll('_',' ')+' · '+sample.filename+' · '+sample.domain} aria-pressed={selected?.id === sample.id} className={selected?.id === sample.id ? 'selected' : ''} disabled={frozen} onClick={() => {setSelected(sample);setJob(undefined);}}><SampleImage sample={sample} /><span>{sample.className.replaceAll('_',' ')}</span></button>)}</div>
+        <div className="experience-thumbnails" aria-busy={loading}>{loading ? <div className="sample-loading"><Spin /></div> : samples?.items.map(sample => <button key={sample.id} aria-label={'选择样本 '+sample.className.replaceAll('_',' ')+' · '+sample.filename+' · '+sample.domain} aria-pressed={selected?.id === sample.id} className={selected?.id === sample.id ? 'selected' : ''} disabled={frozen} onClick={() => chooseSample(sample)}><SampleImage sample={sample} /><span>{sample.className.replaceAll('_',' ')}</span></button>)}</div>
         {!loading && samples?.total === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有符合筛选的样本" />}
         {!test && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择测试集" />}
         <Pagination simple size="small" current={page} pageSize={12} total={samples?.total || 0} showSizeChanger={false} disabled={frozen || loading} onChange={setPage} />
       </section>
-      <section className="experience-stage"><div className="experience-stage-head"><span><PictureOutlined /> 测试原图</span>{selected && <span className="sample-domain">{selected.domain}</span>}</div>
-        <div className={'experience-image '+(model?.group.startsWith('digit3') ? 'experience-digit' : '')}>{loading ? <Spin size="large" /> : selected ? <SampleImage sample={selected} large onUnavailable={() => setImageFailed(true)} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择左侧样本" />}</div>
-        <div className="experience-caption"><div><span>真实标签</span><strong>{selected?.className.replaceAll('_',' ') || '—'}</strong></div><span title={selected?.filename}>{selected?.filename || '等待样本'}</span></div>
-        <div className="experience-stage-footer"><span>测试集原图 · 只读</span><span>{selected ? '样本 '+(selected.index+1) : ''}</span></div>
+      <section className="experience-stage"><div className="experience-stage-head"><span>{selected?.domain || '测试原图'}</span><Tooltip title="查看原图"><Button type="text" aria-label="查看原图" icon={<ExpandOutlined />} disabled={!imageReady} onClick={() => setExpanded(true)} /></Tooltip></div>
+        <div className={'experience-image '+(model?.group.startsWith('digit3') ? 'experience-digit' : '')}>{loading ? <Spin size="large" /> : selected ? <SampleImage key={imageKey} sample={selected} large onReady={() => setLoadedImage(imageKey)} onUnavailable={() => setImageFailed(true)} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择左侧样本" />}</div>
+        <div className="experience-caption"><div><span>真实标签</span><strong>{selected?.className.replaceAll('_',' ') || '—'}</strong></div><Space>{[-1,1].map(direction => {
+          const index = samples?.items.findIndex(item => item.id === selected?.id) ?? -1;
+          const next = index >= 0 ? samples?.items[index + direction] : undefined;
+          return <Button key={direction} type="text" aria-label={direction < 0 ? '上一张' : '下一张'} icon={direction < 0 ? <ArrowLeftOutlined /> : <ArrowRightOutlined />} disabled={frozen || loading || !next} onClick={() => chooseSample(next)} />;
+        })}</Space></div>
       </section>
-      <div className="experience-output"><Button className="experience-run" type="primary" size="large" icon={<ScanOutlined />} disabled={frozen || imageFailed || !selected?.imageAvailable || !selected.imageSha256 || loading || !test || !model} loading={busy} onClick={() => void predict()}>运行单图预测</Button>
+      <div className="experience-output"><PredictionPanel job={job} open={open} />
         {job && !terminal(job.status) && <Button type="link" onClick={() => open(job.id)}>查看任务 / 停止</Button>}
-        <PredictionPanel job={job} open={open} />
+        <Button className="experience-run" aria-label="运行单图预测" type="primary" size="large" icon={<ScanOutlined />} disabled={frozen || !imageReady || !selected?.imageAvailable || !selected.imageSha256 || loading || !test || !model} loading={busy} onClick={() => void predict()}>预测</Button>
       </div>
     </div>
     <div className="experience-protocol"><Collapse ghost size="small" items={[{key:'contract',label:'推理口径与来源限制',children:<><p>展示测试原图；实际推理使用关联的冻结特征与已保存分类器，不会重新提取特征。</p><p>旧数据按划分与标签顺序关联，缺少内嵌原始样本 ID；当前图片哈希不能证明历史特征由此图片生成。单图判断不代表整体准确率。</p></>}]} />{model && <Button type="link" onClick={() => open(model.jobId)}>查看训练记录 <ArrowRightOutlined /></Button>}</div>
+    <Modal open={expanded} title={selected?.className.replaceAll('_',' ')} onCancel={() => setExpanded(false)} footer={null} width={900} className="design-modal">
+      {expanded && selected && <img className="design-full-image" src={selected.imageUrl} alt={'完整测试原图 '+selected.filename} />}
+    </Modal>
   </div>;
 }

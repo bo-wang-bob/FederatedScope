@@ -16,5 +16,5 @@ export function FutureModuleEntries() {
 }
 export function PlannedModule({ moduleId }: { moduleId: PlannedModuleId }) {
   const module = plannedModules[moduleId];
-  return <section className="studio-planned" aria-label={`${module.label}规划说明`}><span className="studio-planned-icon">{module.icon}</span><Tag>未接入</Tag><h2>{module.label}</h2><p>功能预留，尚未接入真实任务。</p><div className="studio-planned-areas">{module.areas.map(area => <span key={area}>{area}<small>未接入</small></span>)}</div><Link to="/">返回首页 <ArrowRightOutlined /></Link></section>;
+  return <section className="design-reserved" aria-label={`${module.label}规划说明`}>{module.icon}<h2>未接入</h2></section>;
 }
