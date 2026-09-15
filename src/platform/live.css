@@ -1,4 +1,7 @@
 /* Approved photo-led design, with real platform controllers and result surfaces. */
+.demo-scope-strip{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:20px;padding:12px 16px;border:1px solid #334341;border-radius:6px;background:#192225;font-size:14px;color:#b7c8c2}
+.demo-scope-strip strong{font-size:14px;font-weight:500;color:#d7e4dc}
+.demo-module-symbol{display:flex;align-items:center;justify-content:center;min-height:170px;height:100%;background:radial-gradient(ellipse at center,#30443e 0,#192225 70%);color:#97b4a5;font-size:64px}
 .live-console .design-mode.connected::before{background:#a1bca9;border-color:#a1bca9}
 .live-console .design-mode.disconnected{color:#d3b39e}
 .live-console .design-mode.disconnected::before{border-color:#d3b39e}

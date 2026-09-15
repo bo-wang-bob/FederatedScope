@@ -35,15 +35,15 @@ export function validateDraft(draft: Draft, catalog: Catalog): Record<string, st
   }
   return errors;
 }
-export function initialDraft(catalog: Catalog, groupId?: string): Draft {
+export function initialDraft(catalog: Catalog, groupId?: string, storageKey = DRAFT_KEY): Draft {
   const group = catalog.groups.find(g => g.id === groupId) || catalog.groups.find(g => g.cacheFound) || catalog.groups[0];
   const fallback = group?.methods.find(m => m.enabled)?.defaults;
   if (!groupId) {
     try {
-      const saved = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
+      const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
       if (saved?.version === 2) {
         const savedGroup = catalog.groups.find(g => g.id === saved.request?.group);
-        if (savedGroup) {
+        if (savedGroup?.methods.some(method => method.id === saved.request.method && method.enabled)) {
           const base = savedGroup.methods.find(m => m.id === saved.request.method)?.defaults || savedGroup.methods.find(m => m.enabled)?.defaults;
           const safe = Object.fromEntries(Object.entries(requestFromDraft(saved.request)).filter(([,value]) => ['string','number','boolean'].includes(typeof value)));
           return { ...base, ...safe };
@@ -53,8 +53,8 @@ export function initialDraft(catalog: Catalog, groupId?: string): Draft {
   }
   return { ...fallback };
 }
-export function saveDraft(draft: Draft): boolean {
-  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 2, request: draft })); return true; } catch { return false; }
+export function saveDraft(draft: Draft, storageKey = DRAFT_KEY): boolean {
+  try { localStorage.setItem(storageKey, JSON.stringify({ version: 2, request: draft })); return true; } catch { return false; }
 }
 export function requestFromDraft(draft: Draft): RequestConfig {
   const fields = ['group','method','name','rounds','localEpochs','learningRate','batchSize','clientCount','sampleClients','samplesPerClient','seed','splitSeed','alpha','gpu','evaluationFrequency','augmentationMode','augmentationSourceId','allowLegacyAugmentation','generatedPerSample','generatedPerPrototype','targetPerClass','covarianceScale'];

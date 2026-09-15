@@ -14,14 +14,14 @@ beforeAll(() => {
     addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() }));
   globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 });
-beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
+beforeEach(() => { vi.stubEnv('VITE_DEMO_SCOPE','aircraft'); localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-const request: RequestConfig = { group: 'officehome_vit', method: 'fedavg', name: '', rounds: 1, clientCount: 4,
-  sampleClients: 4, batchSize: 8, localEpochs: 1, learningRate: .0001, seed: 42, splitSeed: 42,
+const request: RequestConfig = { group: 'military_vit', method: 'fedavg', name: '', rounds: 1, clientCount: 6,
+  sampleClients: 6, batchSize: 8, localEpochs: 1, learningRate: .0001, seed: 42, splitSeed: 42,
   alpha: .1, gpu: 0, evaluationFrequency: 1, samplesPerClient: 4 };
 const catalog: Catalog = { host: 'fixture', address: '', protocol: '', evaluationPolicy: '', groups: [{
-  id: request.group, dataset: 'Office-Home', backbone: 'vit', domains: 4, cacheFound: true, cacheFiles: 4,
+  id: request.group, dataset: 'MilitaryAircraft-3D', backbone: 'vit', domains: 3, cacheFound: true, cacheFiles: 3,
   cacheBytes: 0, partitionLocked: false, methods: [{ id: 'fedavg', label: 'FedAvg', enabled: true, reason: null, defaults: request }],
 }] };
 const model = { id: 'a'.repeat(32)+':final', jobId: 'a'.repeat(32), name: '后端模型', group: request.group,

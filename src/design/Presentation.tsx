@@ -8,8 +8,9 @@ import '../platform/studio.css';
 import './design.css';
 
 // Shared approved presentation; live data/commands stay in the platform controllers.
-export function ConsoleShell({ view, children, mode = 'preview', connected = false, running = false, openCurrent }: PropsWithChildren<{
+export function ConsoleShell({ view, children, mode = 'preview', connected = false, running = false, openCurrent, showDatasetImages = true }: PropsWithChildren<{
   view: PlatformView; mode?: 'preview' | 'live'; connected?: boolean; running?: boolean; openCurrent?: () => void;
+  showDatasetImages?: boolean;
 }>) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   return <div className={'studio-shell design-console' + (mode === 'live' ? ' live-console' : '')}>
@@ -36,14 +37,14 @@ export function ConsoleShell({ view, children, mode = 'preview', connected = fal
     <Modal open={sourcesOpen} title="图片来源" onCancel={() => setSourcesOpen(false)} footer={null} className="design-modal">
       <div className="design-source-list"><section><h3>场景影像</h3><p>NASA Earth Observatory，Joshua Stevens；Landsat 数据来自 USGS。仅作场景配图，不代表训练数据或实验结果。</p>
         <a href={imageSource} target="_blank" rel="noreferrer">Where the Dunes End <ArrowRightOutlined /></a></section>
-        <section><h3>测试样本</h3><p>首页素材来自现有 Office-Home 测试集。模型验证页展示所选测试集的原始图像；历史特征与图像的逐样本关联仍有来源限制。</p></section>
+        <section><h3>测试样本</h3><p>{showDatasetImages ? '首页素材来自现有 Office-Home 测试集。' : '场景影像不是军机测试样本。'}模型验证页展示所选测试集的原始图像；历史特征与图像的逐样本关联仍有来源限制。</p></section>
         {mode === 'preview' && <section><h3>预览范围</h3><p>配置选项为界面设计样例，未读取后端库存、未加载模型，不产生预测或评测结果。</p></section>}
       </div>
     </Modal>
   </div>;
 }
 
-export function PhotoHome() {
+export function PhotoHome({ showDatasetImages = true }: { showDatasetImages?: boolean }) {
   return <section className="design-home design-enter" aria-label="功能导航">
     <div className="design-hero"><img src={landscape} alt="纳米布沙漠卫星影像，作为科研仿真场景配图" fetchPriority="high" />
       <div className="design-hero-content"><span className="design-hero-symbol" aria-hidden="true"><ExperimentOutlined /></span><h1>跨域联邦学习</h1>
@@ -52,11 +53,11 @@ export function PhotoHome() {
     </div>
     <div className="design-home-modules">
       <Link to={viewHref('experience')} className="design-module-card design-model-card" aria-label="模型验证">
-        <div className="design-card-images"><img src={samples[0].src} alt="Office-Home Art 域无线电设备样本" /><img src={samples[1].src} alt="Office-Home Real World 域无线电设备样本" /></div>
+        {showDatasetImages ? <div className="design-card-images"><img src={samples[0].src} alt="Office-Home Art 域无线电设备样本" /><img src={samples[1].src} alt="Office-Home Real World 域无线电设备样本" /></div> : <div className="demo-module-symbol" aria-hidden="true"><ScanOutlined /></div>}
         <div className="design-card-caption"><span><ScanOutlined /><h2>模型验证</h2></span><ArrowRightOutlined /></div>
       </Link>
       <Link to={viewHref('compare')} className="design-module-card design-compare-card" aria-label="算法对比">
-        <div className="design-card-images"><img src={samples[2].src} alt="Office-Home Real World 域笔记本电脑样本" /></div>
+        {showDatasetImages ? <div className="design-card-images"><img src={samples[2].src} alt="Office-Home Real World 域笔记本电脑样本" /></div> : <div className="demo-module-symbol" aria-hidden="true"><LineChartOutlined /></div>}
         <div className="design-card-caption"><span><LineChartOutlined /><h2>算法对比</h2></span><ArrowRightOutlined /></div>
       </Link>
     </div>
