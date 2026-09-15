@@ -85,7 +85,7 @@ describe('desktop workspace navigation',()=>{
     fireEvent.click(screen.getByRole('button',{name:/当前任务/}));expect(openCurrent).toHaveBeenCalledOnce();
     expect(await screen.findByRole('link',{name:/隐私研究/})).toHaveAttribute('href','/?view=privacy');
     expect(screen.getByRole('link',{name:/后门研究/})).toHaveAttribute('href','/?view=backdoor');
-    expect(screen.getByRole('link',{name:/地图仿真/})).toHaveAttribute('href','/demo');
+    expect(screen.queryByRole('link',{name:/地图仿真/})).not.toBeInTheDocument();
   });
   it('navigates home → model verification → experiment without any writes or resource requests',async()=>{
     const fetch=mockApi();render(<MemoryRouter><PlatformApp/><LocationProbe/></MemoryRouter>);
@@ -130,7 +130,7 @@ describe('desktop workspace navigation',()=>{
     await screen.findByText('server offline');
     expect(screen.getByRole('button',{name:/重连/})).toBeInTheDocument();
     expect(within(screen.getByRole('region',{name:'功能导航'})).getByRole('link',{name:'模型验证'})).toBeInTheDocument();
-    expect(within(screen.getByRole('navigation',{name:'仿真与研究扩展'})).getByRole('link',{name:/地图仿真/})).toHaveAttribute('href','/demo');
+    expect(within(screen.getByRole('navigation',{name:'研究扩展'})).getByRole('link',{name:/隐私研究/})).toHaveAttribute('href','/?view=privacy');
     expect(screen.queryByText(/GPU|资源占用|缓存配置/)).not.toBeInTheDocument();
   });
   it('keeps data-cache legacy bookmarks useful without exposing a cache page',async()=>{

@@ -117,7 +117,7 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
         <Pagination simple size="small" current={page} pageSize={12} total={samples?.total || 0} showSizeChanger={false} disabled={frozen || loading} onChange={setPage} />
       </section>
       <section className="experience-stage"><div className="experience-stage-head"><span>{selected?.domain || '测试原图'}</span><Tooltip title="查看原图"><Button type="text" aria-label="查看原图" icon={<ExpandOutlined />} disabled={!imageReady} onClick={() => setExpanded(true)} /></Tooltip></div>
-        <div className={'experience-image '+(model?.group.startsWith('digit3') ? 'experience-digit' : '')}>{loading ? <Spin size="large" /> : selected ? <SampleImage key={imageKey} sample={selected} large onReady={() => setLoadedImage(imageKey)} onUnavailable={() => setImageFailed(true)} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择左侧样本" />}</div>
+        <div className={'experience-image '+(model?.group.startsWith('digit3') ? 'experience-digit' : '')}><div className="experience-image-frame">{loading ? <Spin size="large" /> : selected ? <SampleImage key={imageKey} sample={selected} large onReady={() => setLoadedImage(imageKey)} onUnavailable={() => setImageFailed(true)} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择左侧样本" />}</div></div>
         <div className="experience-caption"><div><span>真实标签</span><strong>{selected?.className.replaceAll('_',' ') || '—'}</strong></div><Space>{[-1,1].map(direction => {
           const index = samples?.items.findIndex(item => item.id === selected?.id) ?? -1;
           const next = index >= 0 ? samples?.items[index + direction] : undefined;
@@ -131,7 +131,7 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
     </div>
     <div className="experience-protocol"><Collapse ghost size="small" items={[{key:'contract',label:'推理口径与来源限制',children:<><p>展示测试原图；实际推理使用关联的冻结特征与已保存分类器，不会重新提取特征。</p><p>旧数据按划分与标签顺序关联，缺少内嵌原始样本 ID；当前图片哈希不能证明历史特征由此图片生成。单图判断不代表整体准确率。</p></>}]} />{model && <Button type="link" onClick={() => open(model.jobId)}>查看训练记录 <ArrowRightOutlined /></Button>}</div>
     <Modal open={expanded} title={selected?.className.replaceAll('_',' ')} onCancel={() => setExpanded(false)} footer={null} width={900} className="design-modal">
-      {expanded && selected && <img className="design-full-image" src={selected.imageUrl} alt={'完整测试原图 '+selected.filename} />}
+      {expanded && selected && <div className="experience-full-image-frame"><img src={selected.imageUrl} alt={'完整测试原图 '+selected.filename} /></div>}
     </Modal>
   </div>;
 }

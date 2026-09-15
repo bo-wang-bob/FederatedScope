@@ -1,4 +1,4 @@
-/* Model workbench: real samples and predictions, isolated from the map demo. */
+/* Model workbench: real samples and predictions. */
 .studio-shell .model-experience{width:100%;min-width:0}
 .studio-shell .experience-selectors{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) 170px;align-items:center;gap:24px;background:var(--studio-panel);border:1px solid var(--studio-line);border-radius:8px;padding:20px 22px}
 .experience-selectors>div{min-width:0}
@@ -38,8 +38,10 @@
 .experience-stage-head .anticon{margin-right:6px}
 .sample-domain{font-size:12px;background:#263d48;padding:3px 8px;border-radius:4px;color:#bdd7e3}
 .experience-image{height:360px;display:grid;place-items:center;position:relative;padding:24px;background-color:#101b23;background-image:radial-gradient(#57798c27 .8px,transparent .8px);background-size:16px 16px}
-.experience-image>img{max-width:100%;max-height:312px;object-fit:contain}
-.experience-image.experience-digit>img{width:160px;height:160px;image-rendering:pixelated}
+.experience-image-frame{position:absolute;inset:24px;display:flex;align-items:center;justify-content:center;min-width:0;min-height:0}
+.experience-image-frame>img,.experience-full-image-frame>img{display:block;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:scale-down}
+.experience-image.experience-digit .experience-image-frame>img{width:160px;height:160px;object-fit:contain;image-rendering:pixelated}
+.experience-full-image-frame{display:flex;align-items:center;justify-content:center;height:min(68dvh,720px);margin-top:20px;overflow:hidden}
 .experience-image-missing{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:#abc2d0}
 .experience-image-missing>.anticon{font-size:30px}
 .experience-image-missing>span{font-size:14px;overflow-wrap:anywhere}
@@ -94,4 +96,4 @@
 .experience-protocol .ant-collapse-header{padding-left:0!important;font-size:14px!important}
 .experience-protocol p{font-size:14px;color:#aec4d1;margin:6px 0}
 .experience-protocol>.ant-btn{font-size:14px;color:#a6c3d1}
-@media(min-width:1500px){.experience-workspace{grid-template-columns:256px minmax(0,1fr) 320px;gap:20px}.experience-thumbnails{grid-template-columns:repeat(3,1fr)}.experience-sample-library{height:610px}.experience-image{height:420px}.experience-image>img{max-height:372px}}
+@media(min-width:1500px){.experience-workspace{grid-template-columns:256px minmax(0,1fr) 320px;gap:20px}.experience-thumbnails{grid-template-columns:repeat(3,1fr)}.experience-sample-library{height:610px}.experience-image{height:420px}}

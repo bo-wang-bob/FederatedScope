@@ -1,7 +1,7 @@
 import { useState, type PropsWithChildren } from 'react';
 import { Link } from 'react-router-dom';
 import { Button, Modal, Tooltip } from 'antd';
-import { ArrowRightOutlined, ExperimentOutlined, GlobalOutlined, InfoCircleOutlined, LineChartOutlined, LockOutlined, ScanOutlined, SecurityScanOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, ExperimentOutlined, InfoCircleOutlined, LineChartOutlined, LockOutlined, ScanOutlined, SecurityScanOutlined } from '@ant-design/icons';
 import { mainPages, mainView, pages, viewHref, type PlatformView } from '../platform/navigation';
 import { imageSource, landscape, samples } from './assets';
 import '../platform/studio.css';
@@ -19,8 +19,7 @@ export function ConsoleShell({ view, children, mode = 'preview', connected = fal
       <Link to="/" className="design-brand" aria-label="跨域联邦学习 · 返回首页"><span className="studio-brand-mark" aria-hidden="true"><i /><i /><i /><i /></span><span>跨域联邦学习</span></Link>
       <nav className="design-nav" aria-label="主要功能">{Object.entries(mainPages).map(([id, page]) =>
         <Link key={id} to={viewHref(id as PlatformView)} aria-label={page.label} aria-current={mainView(view) === id ? 'page' : undefined}>{page.icon}<span>{page.label}</span></Link>)}</nav>
-      <nav className="design-nav design-secondary" aria-label="仿真与研究扩展">
-        <a href="/demo"><GlobalOutlined /><span>地图仿真</span></a>
+      <nav className="design-nav design-secondary" aria-label="研究扩展">
         <Link to={viewHref('privacy')} aria-current={view === 'privacy' ? 'page' : undefined}><LockOutlined /><span>隐私研究</span></Link>
         <Link to={viewHref('backdoor')} aria-current={view === 'backdoor' ? 'page' : undefined}><SecurityScanOutlined /><span>后门研究</span></Link>
       </nav>

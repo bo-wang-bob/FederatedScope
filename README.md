@@ -31,7 +31,7 @@ npm run build
 
 生产产物为 `dist/`。在后端设置 `FEDERATEDSCOPE_FRONTEND_DIST` 指向该目录后启动 API，即可由同一服务提供页面及接口。不要把本分支合并覆盖后端分支；二者是分别维护的交付快照。
 
-`npm run dev:design` / `npm run build:design` 保留不连接 API 的设计预览。`/demo` 为明确标记的前端地图模拟，不代表真实训练。
+`npm run dev:design` / `npm run build:design` 保留不连接 API 的设计预览。地图仿真入口和独立页面已移除，旧 `/demo` 链接返回首页；隐私和后门研究入口保留。
 
 拆分源版本已通过 61 项前端测试和生产构建，并完成真实单图预测、独立评测与导出验收；本次只调整分支目录和说明，没有重新训练。历史一体化服务器专用的 `scripts/publish_static.py` 不纳入独立前端包。
 
@@ -41,7 +41,7 @@ npm run build
 
 ## 军机演示（2026-09-15）
 
-默认界面仅展示 **MilitaryAircraft-3D / ViT / FedAvg、FedProx、本架构**，包括训练、模型库、单图验证、独立评测、实验记录和对比。其他配置和数据不删除；进行中的任务仍可停止。地图保留模拟标识，首页不再展示 Office-Home 样本。
+默认界面仅展示 **MilitaryAircraft-3D / ViT / FedAvg、FedProx、本架构**，包括训练、模型库、单图验证、独立评测、实验记录和对比。其他配置和数据不删除；进行中的任务仍可停止。首页不展示 Office-Home 样本。模型验证的缩略图完整显示，主图和原图弹窗按比例缩小适配，默认不放大低分辨率原图。
 
 配套后端注册项为 `military_vit`。军机原型运行在独立端口 `8002`，本机 SSH 隧道为 `http://127.0.0.1:18002/`；开发时设置 `FS_API_PROXY=http://127.0.0.1:18002`。原 `18001` 服务不改动。
 
