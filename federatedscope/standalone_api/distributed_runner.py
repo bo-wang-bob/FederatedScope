@@ -22,6 +22,7 @@ import yaml
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, List, Sequence
+from .paths import env_path
 
 from federatedscope.standalone_api.runner import (
     EventCallback, MetricCallback, RunnerPreflightError,
@@ -111,14 +112,15 @@ def load_lab_topology() -> LabTopology:
     jump = _env('FEDERATEDSCOPE_DISTRIBUTED_JUMP', '')
     client_repo = _env(
         'FEDERATEDSCOPE_CLIENT_REPO',
-        'D:/Projects/FederatedScope-worktrees/unified-security-standalone')
+        'FederatedScope-prototype-backend')
     third_repo = _env(
         'FEDERATEDSCOPE_SUBSERVER_REPO',
-        'C:/Users/pc/FederatedScope-worktrees/unified-security-standalone')
-    root_repo = _env(
-        'FEDERATEDSCOPE_ROOT_REPO',
-        '/root/autodl-tmp/FederatedScope-worktrees/'
-        'unified-security-standalone')
+        'FederatedScope-prototype-backend')
+    # Local paths are anchored to this checkout; SSH paths are interpreted
+    # on the remote host and must never be resolved using the local filesystem.
+    root_local = _env('FEDERATEDSCOPE_ROOT_LOCAL', '1') == '1'
+    root_repo = (str(env_path('FEDERATEDSCOPE_ROOT_REPO', '.')) if root_local
+                 else _env('FEDERATEDSCOPE_ROOT_REPO', 'FederatedScope-prototype-backend'))
     return LabTopology(
         topology_id='lab-three-machine',
         client=DistributedNode(
@@ -128,10 +130,10 @@ def load_lab_topology() -> LabTopology:
             operating_system='windows', repo=client_repo,
             python=_env(
                 'FEDERATEDSCOPE_CLIENT_PYTHON',
-                'D:/ProgramData/anaconda3/envs/pi_fmd_gpu_py39/python.exe'),
+                f'{client_repo}/.venv/Scripts/python.exe'),
             site_packages=_env(
                 'FEDERATEDSCOPE_CLIENT_SITE_PACKAGES',
-                'D:/Projects/FederatedScope/.venv_client_cpu/Lib/site-packages')),
+                '')),
         subserver=DistributedNode(
             key='subserver', label='4090 子服务器',
             target=_env(
@@ -139,10 +141,10 @@ def load_lab_topology() -> LabTopology:
             operating_system='windows', repo=third_repo,
             python=_env(
                 'FEDERATEDSCOPE_SUBSERVER_PYTHON',
-                'C:/Users/pc/miniconda3/envs/cerp/python.exe'),
+                f'{third_repo}/.venv/Scripts/python.exe'),
             site_packages=_env(
                 'FEDERATEDSCOPE_SUBSERVER_SITE_PACKAGES',
-                'C:/Users/pc/miniconda3/envs/cerp/Lib/site-packages'),
+                ''),
             jump=jump),
         root=DistributedNode(
             key='root', label='双 4090 根服务器',
@@ -151,17 +153,16 @@ def load_lab_topology() -> LabTopology:
             operating_system='linux', repo=root_repo,
             python=_env(
                 'FEDERATEDSCOPE_ROOT_PYTHON',
-                '/root/.local/share/mamba/envs/GGEUR/bin/python'),
-            local=_env('FEDERATEDSCOPE_ROOT_LOCAL', '1') == '1'),
+                sys.executable if root_local else f'{root_repo}/.venv/bin/python'),
+            local=root_local),
         client_resource_repo=_env(
             'FEDERATEDSCOPE_CLIENT_RESOURCE_REPO',
-            'D:/Projects/FederatedScope'),
+            client_repo),
         subserver_resource_repo=_env(
             'FEDERATEDSCOPE_SUBSERVER_RESOURCE_REPO',
-            'C:/Users/pc/FederatedScope'),
-        root_resource_repo=_env(
-            'FEDERATEDSCOPE_ROOT_RESOURCE_REPO',
-            '/root/autodl-tmp/FederatedScope'),
+            third_repo),
+        root_resource_repo=(str(env_path('FEDERATEDSCOPE_ROOT_RESOURCE_REPO', root_repo))
+            if root_local else _env('FEDERATEDSCOPE_ROOT_RESOURCE_REPO', root_repo)),
     )
 
 
@@ -307,7 +308,7 @@ class DistributedProcessRunner:
             result['root'].append(f'{root_base}/{data_rel}')
         if model_rel and root_clients:
             root_model = {
-                'vit': '/root/.cache/clip/ViT-B-16.pt',
+                'vit': f'{root_base}/{model_rel}',
                 'mixer': f'{root_base}/{model_rel}',
                 'rnn': f'{root_base}/{model_rel}',
                 'lstm': f'{root_base}/{model_rel}',
@@ -516,7 +517,7 @@ class DistributedProcessRunner:
             'domainnet_4domains/domainnet_manifest.json',
             '--client-clip-model-path',
             f'{client_resources}/pretrained_models/ViT-B-16.pt',
-            '--root-client-clip-model-path', '/root/.cache/clip/ViT-B-16.pt',
+            '--root-client-clip-model-path', f'{root_resources}/pretrained_models/ViT-B-16.pt',
             '--third-client-clip-model-path',
             f'{third_resources}/pretrained_models/ViT-B-16.pt',
             '--client-mixer-checkpoint-path',

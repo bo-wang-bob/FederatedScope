@@ -12,6 +12,7 @@ import numpy as np
 from federatedscope.core.data.dirichlet_partition import (
     class_histograms, partition_indices_by_label)
 from federatedscope.standalone_api.schemas import DOMAIN_KEYS
+from .paths import env_path
 
 
 FALLBACK_DOMAIN_TOTALS = [1698, 3055, 3107, 3049]
@@ -23,9 +24,7 @@ def _relative_record(path: Path, root: Path, label: int) -> Dict[str, Any]:
 
 def _dataset_inventory(seed: int) -> Optional[Dict[str, Any]]:
     """Build the exact train/test inventory without decoding any image."""
-    root = Path(os.environ.get(
-        'FEDERATEDSCOPE_DATA_ROOT',
-        '/root/autodl-tmp/datasets/OfficeHomeDataset_10072016'))
+    root = env_path('FEDERATEDSCOPE_DATA_ROOT', 'data/OfficeHomeDataset_10072016')
     if not root.exists():
         return None
     from federatedscope.cv.dataset.office_home import OfficeHome

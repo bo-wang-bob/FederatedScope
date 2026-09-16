@@ -25,7 +25,7 @@ federate:
 
 data:
   type: 'office-home'
-  root: '/root/autodl-tmp/datasets/OfficeHomeDataset_10072016'
+  root: 'data/OfficeHomeDataset_10072016'
   splits: [0.7, 0.0, 0.3]
 
 dataloader:
@@ -50,7 +50,7 @@ ggeur:
   timm_model: 'mixer_b16_224'
   timm_pretrained: False  # Set to False when using local checkpoint
   # *** IMPORTANT: Set this path to your local weights file ***
-  timm_checkpoint_path: '/root/autodl-tmp/models/mixer_b16_224_complete.pth'
+  timm_checkpoint_path: 'pretrained_models/mixer_b16_224_complete.pth'
   timm_in_chans: 3
   timm_global_pool: 'avg'
   freeze_backbone: True  # Freeze pretrained backbone (GGEUR requirement)

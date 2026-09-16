@@ -112,7 +112,9 @@ class DistributedRunnerCommandTest(unittest.TestCase):
         self.assertIn('--case-specs officehome_vit:ggeur', rendered)
         self.assertIn('--total-round-num 100', rendered)
         self.assertIn('--eval-frequency 5', rendered)
-        self.assertIn('FederatedScope-worktrees', rendered)
+        self.assertEqual(command[command.index('--root-repo') + 1], runner.topology.root.repo)
+        self.assertEqual(command[command.index('--client-repo') + 1], runner.topology.client.repo)
+        self.assertEqual(command[command.index('--subserver-repo') + 1], runner.topology.subserver.repo)
         self.assertIn('--root-device 1', rendered)
 
     def test_remote_probe_can_be_disabled_for_offline_validation(self):

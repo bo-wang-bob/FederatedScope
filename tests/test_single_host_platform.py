@@ -154,8 +154,8 @@ class PlatformTests(unittest.TestCase):
         with patch.dict(os.environ, {'FS_PLATFORM_CACHE_OFFICEHOME_VIT': '/existing/train',
                                     'FS_PLATFORM_TEST_CACHE_OFFICEHOME_VIT': '/existing/test'}):
             config, provenance = self.configs.build(self.configs.normalize(self.payload), self.temp.name)
-        self.assertEqual(config['ggeur']['feature_cache_dir'], str(Path('/existing/train')))
-        self.assertEqual(provenance['testCacheDir'], '/existing/test')
+        self.assertEqual(config['ggeur']['feature_cache_dir'], str(Path('/existing/train').resolve()))
+        self.assertEqual(provenance['testCacheDir'], str(Path('/existing/test').resolve()))
 
     def test_catalog_reports_latest_terminal_preflight(self):
         job = self.complete_preflight()

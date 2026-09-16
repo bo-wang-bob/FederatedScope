@@ -139,6 +139,9 @@ dmypy.json
 **/.DS_Store
 
 /data/
+/datasets/
+/fedmia_local/
+/membership_examples.json
 
 exp/
 .vscode/

@@ -17,6 +17,7 @@ from typing import Any, Dict, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
 from federatedscope.standalone_api.repository import JsonRepository
+from .paths import env_path, project_path
 from federatedscope.standalone_api.runner import (
     RunnerPreflightError, StandaloneProcessRunner)
 from federatedscope.standalone_api.distributed_runner import (
@@ -45,9 +46,8 @@ def public_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
 class ApiContext:
     def __init__(self, repo_root: Path, state_root: Path):
         self.repo_root = repo_root
-        self.frontend_dist = Path(os.environ.get(
-            'FEDERATEDSCOPE_FRONTEND_DIST',
-            str(repo_root / 'frontend' / 'dist'))).resolve()
+        self.frontend_dist = env_path('FEDERATEDSCOPE_FRONTEND_DIST',
+                                     'frontend/dist', repo_root)
         self.repository = JsonRepository(state_root)
         runner = DispatchingExperimentRunner(
             StandaloneProcessRunner(repo_root),
@@ -311,9 +311,8 @@ class ApiHandler(BaseHTTPRequestHandler):
 def create_server(host: str = '127.0.0.1', port: int = 8000,
                   state_root: Path | None = None) -> ThreadingHTTPServer:
     repo_root = Path(__file__).resolve().parents[2]
-    root = state_root or Path(os.environ.get(
-        'FEDERATEDSCOPE_API_STATE_DIR',
-        str(repo_root / 'exp' / 'standalone_api')))
+    root = (project_path(state_root, repo_root) if state_root else
+            env_path('FEDERATEDSCOPE_API_STATE_DIR', 'exp/standalone_api', repo_root))
     context = ApiContext(repo_root, root)
     handler = type('BoundApiHandler', (ApiHandler,), {'context': context})
     return ThreadingHTTPServer((host, port), handler)

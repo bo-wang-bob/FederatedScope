@@ -7,6 +7,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List
+from .paths import env_path
 
 
 DOMAIN_KEYS = ['Art', 'Clipart', 'Product', 'Real_World']
@@ -316,12 +317,10 @@ def capabilities(repo_root: Path) -> Dict[str, Any]:
         public_metric_registry
     from federatedscope.standalone_api.distributed_runner import \
         distributed_catalog, load_lab_topology
-    data_root = Path(os.environ.get(
-        'FEDERATEDSCOPE_DATA_ROOT',
-        '/root/autodl-tmp/datasets/OfficeHomeDataset_10072016'))
-    model_path = Path(os.environ.get(
-        'FEDERATEDSCOPE_MODEL_PATH',
-        '/root/autodl-tmp/models/open_clip_vitb16.bin'))
+    data_root = env_path('FEDERATEDSCOPE_DATA_ROOT',
+                        'data/OfficeHomeDataset_10072016', repo_root)
+    model_path = env_path('FEDERATEDSCOPE_MODEL_PATH',
+                         'pretrained_models/open_clip_vitb16.bin', repo_root)
     templates = repo_root / 'scripts' / 'standalone_configs'
     devices = ['cpu']
     try:

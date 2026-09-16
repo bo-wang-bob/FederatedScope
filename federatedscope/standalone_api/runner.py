@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List
 
 from federatedscope.core.monitoring.events import parse_training_event_line
 from federatedscope.standalone_api.preflight import inspect_runtime
+from .paths import env_path
 
 
 EventCallback = Callable[[str, Dict[str, Any]], None]
@@ -46,12 +47,10 @@ class StandaloneProcessRunner:
 
     def preflight(self, config: Dict[str, Any]) -> Dict[str, Any]:
         template = self._template(config)
-        data_root = Path(os.environ.get(
-            'FEDERATEDSCOPE_DATA_ROOT',
-            '/root/autodl-tmp/datasets/OfficeHomeDataset_10072016'))
-        model_path = Path(os.environ.get(
-            'FEDERATEDSCOPE_MODEL_PATH',
-            '/root/autodl-tmp/models/open_clip_vitb16.bin'))
+        data_root = env_path('FEDERATEDSCOPE_DATA_ROOT',
+                            'data/OfficeHomeDataset_10072016', self.repo_root)
+        model_path = env_path('FEDERATEDSCOPE_MODEL_PATH',
+                             'pretrained_models/open_clip_vitb16.bin', self.repo_root)
         result = inspect_runtime(
             config, template, data_root, model_path, self.repo_root)
         if not result['ready']:

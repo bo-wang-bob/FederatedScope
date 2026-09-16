@@ -16,7 +16,7 @@ fedprox:
 
 data:
   type: 'domainnet'
-  root: '/root/autodl-tmp/datasets/DomainNet'
+  root: 'data/DomainNet'
   splits: [0.7, 0.0, 0.3]
 
 dataloader:

@@ -15,7 +15,7 @@ fedprox:
 
 data:
   type: domainnet
-  root: /root/autodl-tmp/datasets/MilitaryAircraft3D
+  root: data/MilitaryAircraft3D
   splits: [0.7, 0.0, 0.3]
 
 dataloader:
@@ -40,7 +40,7 @@ ggeur:
   feature_extractor: clip
   clip_model: ViT-B-16
   clip_pretrained: openai
-  clip_model_path: /root/.cache/clip/ViT-B-16.pt
+  clip_model_path: pretrained_models/ViT-B-16.pt
   embedding_dim: 512
   extract_batch_size: 64
   use_fp16_extraction: true

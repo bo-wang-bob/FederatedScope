@@ -10,6 +10,8 @@ from pathlib import Path
 
 import yaml
 
+from .paths import env_path, project_path
+
 
 METHODS = {'fedavg': 'FedAvg', 'fedprox': 'FedProx', 'fedproto': 'FedProto',
            'fedopt': 'FedOpt', 'moon': 'MOON', 'heterogeneous_solution': '本架构'}
@@ -38,10 +40,8 @@ class ConfigFactory:
     def __init__(self, repo):
         self.repo = Path(repo).resolve()
         self.sources = self.repo / 'scripts/example_configs/ggeur_final_5models'
-        self.resources = Path(os.environ.get('FS_PLATFORM_RESOURCES',
-                                            '/root/autodl-tmp/FederatedScope'))
-        self.datasets = Path(os.environ.get('FS_PLATFORM_DATASETS',
-                                           '/root/autodl-tmp/datasets'))
+        self.resources = env_path('FS_PLATFORM_RESOURCES', '.', self.repo)
+        self.datasets = env_path('FS_PLATFORM_DATASETS', 'data', self.repo)
 
     def source(self, group, method):
         if (not isinstance(group, str) or not isinstance(method, str)
@@ -69,8 +69,9 @@ class ConfigFactory:
 
     def cache_dir(self, group):
         directory = 'military_aircraft_vit_fixedsplit_v2' if group == 'military_vit' else group
-        return Path(os.environ.get('FS_PLATFORM_CACHE_' + group.upper(),
-                    str(self.resources / 'exp/distributed_feature_cache' / directory)))
+        return env_path('FS_PLATFORM_CACHE_' + group.upper(),
+                        self.resources / 'exp/distributed_feature_cache' / directory,
+                        self.repo)
 
     def defaults(self, group, method):
         raw = yaml.safe_load(self.source(group, method).read_text(encoding='utf-8'))
@@ -100,8 +101,7 @@ class ConfigFactory:
                                     raw['ggeur'].get('augmented_feature_cache_dir', ''))
         if not configured:
             return None
-        path = Path(configured)
-        return path if path.is_absolute() else self.resources / path
+        return project_path(configured, self.resources)
 
     def augmentation_available(self, group):
         root = self.augmentation_dir(group)
@@ -212,6 +212,9 @@ class ConfigFactory:
         raw['data']['root'] = str(self.datasets / FAMILIES[family][1])
         g = raw['ggeur']
         augmented = req['method'] == 'heterogeneous_solution'
+        for key in ('clip_model_path', 'timm_checkpoint_path', 'bert_model_path'):
+            if g.get(key):
+                g[key] = str(project_path(g[key], self.resources))
         g.update(hierarchical_training=False, use_feature_cache=True,
                  require_complete_feature_cache=True,
                  feature_cache_dir=str(self.cache_dir(req['group'])),
@@ -251,14 +254,15 @@ class ConfigFactory:
             # Paths stay under the separately registered MilitaryAircraft3D root.
             g['domainnet_manifest_path'] = ''
             g['domainnet_domains'] = ['aerial', 'natural', 'recon']
-            g['clip_model_path'] = os.environ.get('FS_PLATFORM_MILITARY_VIT_WEIGHTS',
-                                                '/root/.cache/clip/ViT-B-16.pt')
+            g['clip_model_path'] = str(env_path('FS_PLATFORM_MILITARY_VIT_WEIGHTS',
+                self.resources / 'pretrained_models/ViT-B-16.pt', self.repo))
         if family == 'mdsent':
             raw['data']['dirichlet_alpha'] = req['alpha']
             raw['data']['args'][0]['seed'] = req['splitSeed']
             g['bert_model_path'] = str(self.resources / 'pretrained_models/nlptown_bert_base_multilingual_uncased_senti')
         return raw, {'source': str(path.relative_to(self.repo)), 'sourceSha256': sha256(path),
-                     'testCacheDir': os.environ.get('FS_PLATFORM_TEST_CACHE_' + req['group'].upper()),
+                     'testCacheDir': str(env_path('FS_PLATFORM_TEST_CACHE_' + req['group'].upper(),
+                         '.', self.repo)) if os.environ.get('FS_PLATFORM_TEST_CACHE_' + req['group'].upper()) else None,
                      'protocol': 'frozen-features-v2', 'parameterBindings': {
                          'rounds': 'federate.total_round_num = rounds + 1 (round 0 is initialization)', 'clientCount': 'federate.client_num',
                          'sampleClients': 'federate.sample_client_num (0=all)',

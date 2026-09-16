@@ -20,6 +20,7 @@ import zipfile
 from .app import ApiHandler
 from .platform_config import PlatformError, sha256
 from .platform_service import PlatformService
+from .paths import env_path, project_path
 from .schemas import ValidationError
 
 
@@ -27,8 +28,7 @@ class PlatformHandler(ApiHandler):
     server_version = 'FederatedScopeSingleHost/1.0'
 
     def _fedmia_root(self) -> Path:
-        return Path(os.environ.get(
-            'FS_FEDMIA_LOCAL_ROOT', r'E:\系统\fedmia_local')).resolve()
+        return env_path('FS_FEDMIA_LOCAL_ROOT', '../fedmia_local')
 
     def _fedmia_module(self):
         cached = getattr(self.context, 'fedmia_examples_module', None)
@@ -394,7 +394,7 @@ class PlatformHandler(ApiHandler):
     def _privacy_membership_root(self) -> Path:
         configured = os.environ.get('FS_PLATFORM_MEMBERSHIP_DIR')
         if configured:
-            return Path(configured).expanduser().resolve()
+            return project_path(configured)
         return (self.context.platform.state /
                 'privacy_membership').resolve()
 
@@ -583,9 +583,9 @@ class PlatformHandler(ApiHandler):
 
 def create_server(host='127.0.0.1', port=8001, state=None):
     repo = Path(__file__).resolve().parents[2]
-    service = PlatformService(repo, state or repo / 'exp/single_host_platform')
+    service = PlatformService(repo, project_path(state or 'exp/single_host_platform', repo))
     context = type('PlatformContext', (), {'platform': service,
-        'frontend_dist': Path(os.environ.get('FEDERATEDSCOPE_FRONTEND_DIST', repo / 'frontend/dist')).resolve()})()
+        'frontend_dist': env_path('FEDERATEDSCOPE_FRONTEND_DIST', 'frontend/dist', repo)})()
     handler = type('BoundPlatformHandler', (PlatformHandler,), {'context': context})
     try:
         server = ThreadingHTTPServer((host, port), handler)

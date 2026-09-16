@@ -12,7 +12,7 @@ federate:
 
 data:
   type: 'domainnet'
-  root: '/root/autodl-tmp/datasets/DomainNet'
+  root: 'data/DomainNet'
   splits: [0.7, 0.0, 0.3]
 
 dataloader:
@@ -36,7 +36,7 @@ ggeur:
   feature_extractor: 'clip'
   clip_model: 'ViT-B-16'
   clip_pretrained: 'openai'
-  clip_model_path: '/root/autodl-tmp/models/open_clip_vitb16.bin'
+  clip_model_path: 'pretrained_models/open_clip_vitb16.bin'
   embedding_dim: 512
   use_feature_cache: True
   feature_cache_dir: ''

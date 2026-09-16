@@ -4,13 +4,15 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/autodl-tmp/FederatedScope-worktrees/prototype/backend
-ExecStart=/root/.local/share/mamba/envs/GGEUR/bin/python -m federatedscope.standalone_api.platform_app --host 127.0.0.1 --port 8002 --state-dir /root/autodl-tmp/FederatedScope-worktrees/prototype/backend/exp/platform
+# systemd requires an absolute WorkingDirectory; %h is the service user's home.
+# Adapt this checkout location and the Python executable to your installation.
+WorkingDirectory=%h/FederatedScope-prototype-backend
+ExecStart=%h/FederatedScope-prototype-backend/.venv/bin/python -m federatedscope.standalone_api.platform_app --host 127.0.0.1 --port 8002 --state-dir exp/platform
 Environment=PYTHONUNBUFFERED=1
 Environment=OMP_NUM_THREADS=2
-Environment=FS_PLATFORM_RESOURCES=/root/autodl-tmp/FederatedScope
-Environment=FS_PLATFORM_DATASETS=/root/autodl-tmp/datasets
-Environment=FEDERATEDSCOPE_FRONTEND_DIST=/root/autodl-tmp/FederatedScope-worktrees/prototype/frontend/dist
+Environment=FS_PLATFORM_RESOURCES=.
+Environment=FS_PLATFORM_DATASETS=data
+Environment=FEDERATEDSCOPE_FRONTEND_DIST=../FederatedScope-prototype-frontend/dist
 Restart=on-failure
 RestartSec=5
 KillMode=control-group
