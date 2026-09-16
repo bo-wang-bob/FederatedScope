@@ -125,6 +125,8 @@ def portable_privacy_helper(path):
 def prepare(args):
     output = args.output.absolute()
     sources = [REPO, args.frontend, args.dataset, args.features, args.weights, args.privacy, args.state]
+    officehome = officehome_inputs(args)
+    sources.extend(officehome.values())
     # Lexical existence also catches a dangling destination link.
     if os.path.lexists(output):
         raise ValueError('output already exists; choose a NEW directory: ' + str(output))
@@ -154,6 +156,8 @@ def prepare(args):
     copy_checked(args.dataset, resources / 'datasets/MilitaryAircraft3D')
     copy_checked(args.features, resources / 'exp/distributed_feature_cache/military_aircraft_vit_fixedsplit_v2')
     copy_checked(args.weights, resources / 'models/ViT-B-16.pt')
+    for relative, source in officehome.items():
+        copy_checked(source, resources / relative)
     privacy = resources / 'fedmia_local'
     for name in ('show_fedmia_examples.py', 'datasets/OfficeHomeDataset_10072016',
                  'runs/no_defense/config.yaml', 'runs/no_defense/ggeur_fedmia_features',
@@ -184,12 +188,23 @@ def prepare(args):
                          bytes=sum(v['bytes'] for v in inventory.values()), jobs=len(list(state.glob('jobs/*/job.json'))))))
 
 
+def officehome_inputs(args):
+    dataset = getattr(args, 'officehome_dataset', None)
+    features = getattr(args, 'officehome_features', None)
+    if bool(dataset) != bool(features):
+        raise ValueError('OfficeHome dataset and feature cache must be supplied together')
+    return {'datasets/OfficeHomeDataset_10072016': dataset,
+            'exp/distributed_feature_cache/officehome_vit': features} if dataset else {}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('output', 'frontend', 'dataset', 'features', 'weights', 'privacy', 'state'):
         parser.add_argument('--' + key, type=Path, required=True)
     parser.add_argument('--cache-job', required=True)
     parser.add_argument('--source-label', default='working copy (see file hashes)')
+    parser.add_argument('--officehome-dataset', type=Path)
+    parser.add_argument('--officehome-features', type=Path)
     prepare(parser.parse_args())
 
 

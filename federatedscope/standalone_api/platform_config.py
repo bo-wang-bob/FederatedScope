@@ -86,7 +86,7 @@ class ConfigFactory:
                     learningRate=float(raw['train']['optimizer']['lr']),
                     seed=int(raw.get('seed', 42)), splitSeed=42,
                     alpha=float(g.get('lds_alpha', raw['data'].get('dirichlet_alpha', .1))),
-                    gpu=int(raw.get('device', 0)) if group == 'military_vit' else 1,
+                    gpu=int(raw.get('device', 0)) if group in {'military_vit', 'officehome_vit'} else 1,
                     evaluationFrequency=1,
                     samplesPerClient=int(g.get('platform_target_samples_per_client', 0)) if method == 'heterogeneous_solution' else 0,
                     allowLegacyAugmentation=False,

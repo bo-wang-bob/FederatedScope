@@ -68,6 +68,19 @@ class PlatformTests(unittest.TestCase):
                 count += 1
         self.assertGreater(count, 30)
 
+    def test_officehome_vit_three_methods_use_single_gpu_and_own_defaults(self):
+        for method in ('fedavg', 'fedprox', 'heterogeneous_solution'):
+            with self.subTest(method=method):
+                req = self.configs.normalize(dict(group='officehome_vit', method=method))
+                self.assertEqual(req['gpu'], 0)
+                self.assertEqual(req['clientCount'], 60)
+                self.assertEqual(req['localEpochs'], 1)
+                cfg, _ = self.configs.build(req, self.temp.name)
+                self.assertEqual(cfg['device'], 0)
+                self.assertTrue(cfg['use_gpu'])
+                self.assertEqual(req['learningRate'], .0002 if method == 'fedprox' else .0001)
+                self.assertEqual(req['targetPerClass'], 50 if method == 'heterogeneous_solution' else 0)
+
     def test_reject_invalid_and_ignored_parameters(self):
         for extra in ({'rounds': True}, {'learningRate': float('nan')}, {'gpu': '1'},
                       {'clientCount': 59}, {'sampleClients': 61}, {'unexpected': 2},

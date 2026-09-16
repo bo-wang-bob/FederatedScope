@@ -14,7 +14,9 @@ FederatedScope-delivery/
     ├── federatedscope/、scripts/、deploy/、docs/、tests/
     ├── resources/                 # Docker 中只读挂载
     │   ├── datasets/MilitaryAircraft3D/
+    │   ├── datasets/OfficeHomeDataset_10072016/  # OfficeHome 训练/验证原图
     │   ├── exp/distributed_feature_cache/military_aircraft_vit_fixedsplit_v2/
+    │   ├── exp/distributed_feature_cache/officehome_vit/  # 四域训练及测试缓存
     │   ├── caches/military_vit_default/   # 独立 40/20/20 增强缓存
     │   ├── models/ViT-B-16.pt
     │   └── fedmia_local/
@@ -45,6 +47,8 @@ python backend/scripts/prepare_platform_directory.py \
   --frontend /来源/frontend \
   --dataset /来源/MilitaryAircraft3D \
   --features /来源/military_aircraft_vit_fixedsplit_v2 \
+  --officehome-dataset /来源/OfficeHomeDataset_10072016 \
+  --officehome-features /来源/officehome_vit \
   --weights /来源/ViT-B-16.pt \
   --privacy /来源/fedmia_local \
   --state /来源/exp/platform \
@@ -52,6 +56,14 @@ python backend/scripts/prepare_platform_directory.py \
 ```
 
 只复制，不移动或覆盖来源。运行中/未清理的任务、软链接、复制时文件变化、未知隐私脚本均阻断。失败目录带 PREPARATION_INCOMPLETE，不能部署；修复原因后另选新目录。
+
+OfficeHome 两项参数需要同时提供；不提供时仍可准备原军机交付范围。训练图片与隐私回放图片分别保留，不默认视为同一版本。OfficeHome / ViT 开放 FedAvg、FedProx、本架构，默认 GPU 0、60 客户端、3 通信轮、本地 1 轮；本架构沿用该数据集的 50/50/50 增强配置，按配置生成增强特征，不重新提取图片特征。军机 40/20/20 默认配置不变。
+
+OfficeHome 完整执行短测（隔离状态目录，三方法各两轮，不验收准确率门槛）：
+
+```bash
+python backend/scripts/platform_offline_smoke.py --group officehome_vit --report /外部位置/officehome-smoke.json
+```
 
 ## 复制或换目录后检查
 

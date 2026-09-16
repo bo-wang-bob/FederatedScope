@@ -23,12 +23,13 @@ sys.path.insert(0, str(REPO))
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--group', choices=('military_vit', 'officehome_vit'), default='military_vit')
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
     os.environ.update(FS_PLATFORM_OFFLINE='1', HF_HUB_OFFLINE='1', WANDB_MODE='disabled')
     from federatedscope.standalone_api.platform_app import create_server
     state = Path(tempfile.mkdtemp(prefix='fs-offline-smoke-'))
-    report = dict(ok=False, state=str(state), workerOfflineGuard=True, rounds=2,
+    report = dict(ok=False, state=str(state), workerOfflineGuard=True, rounds=2, group=args.group,
                   scope='isolated HTTP / frozen-feature training / no accuracy threshold', methods=[])
     server, thread, base = None, None, ''
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -59,7 +60,7 @@ def main():
             return json.load(response)['data']
 
     def wait(job):
-        deadline = time.monotonic() + 180
+        deadline = time.monotonic() + 600
         while time.monotonic() < deadline:
             job = call('jobs/' + job['id'])
             if job['status'] in {'completed', 'failed', 'stopped', 'interrupted'}:
@@ -73,19 +74,21 @@ def main():
     try:
         start()
         service = server.RequestHandlerClass.context.platform
-        defaults = service.configs.defaults('military_vit', 'heterogeneous_solution')
+        defaults = service.configs.defaults(args.group, 'heterogeneous_solution')
         choice = service._augmentation_execution(defaults)[1]
-        if choice != {'mode': 'reuse', 'bundle': True}:
+        if args.group == 'military_vit' and choice != {'mode': 'reuse', 'bundle': True}:
             raise RuntimeError('短流程要求独立增强缓存包；不会临时生成或复用正式任务记录')
         for method in ('fedavg', 'fedprox', 'heterogeneous_solution'):
-            request = dict(group='military_vit', method=method, rounds=2, gpu=args.gpu)
+            request = dict(group=args.group, method=method, rounds=2, gpu=args.gpu)
             preflight = wait(call('preflight', dict(request, idempotencyKey=uuid.uuid4().hex)))
             trained = wait(call('train', dict(request, preflightId=preflight['id'], idempotencyKey=uuid.uuid4().hex)))
             evaluated = wait(call('evaluate', dict(modelId=trained['id'] + ':final',
                 testsetId=trained['id'], idempotencyKey=uuid.uuid4().hex)))
             result, expected = evaluated['result'], trained['metrics'][-1]
-            if result['samples'] != 225 or abs(result['accuracy'] - expected['accuracy']) > 1e-12:
+            if result['samples'] <= 0 or abs(result['accuracy'] - expected['accuracy']) > 1e-12:
                 raise RuntimeError('保存模型重新评测与训练结果不一致')
+            if args.group == 'military_vit' and result['samples'] != 225:
+                raise RuntimeError('军机测试集样本数不一致')
             for domain, accuracy in expected['domains'].items():
                 if abs(result['domains'][domain]['accuracy'] - accuracy) > 1e-12:
                     raise RuntimeError('分域结果不一致：' + domain)
@@ -99,8 +102,9 @@ def main():
                 raise RuntimeError('模型验证口径已改变')
             payload, _ = download('/api/platform/jobs/' + evaluated['id'] + '/csv')
             rows = list(csv.reader(io.StringIO(payload.decode('utf-8-sig'))))
-            if len(rows) != 21:
-                raise RuntimeError('评测 CSV 未覆盖总体及三域的五类指标')
+            expected_rows = 1 + (4 * 5 if args.group == 'military_vit' else 5 * 65)
+            if len(rows) != expected_rows:
+                raise RuntimeError('评测 CSV 未覆盖总体、各域及全部类别指标')
             payload, _ = download('/api/platform/jobs/' + evaluated['id'] + '/export')
             if json.loads(payload)['id'] != evaluated['id']:
                 raise RuntimeError('评测导出来源错误')

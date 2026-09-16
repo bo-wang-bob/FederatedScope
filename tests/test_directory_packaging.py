@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts import prepare_platform_directory as prepare
@@ -10,6 +11,17 @@ from scripts import check_platform_directory as check
 
 
 class DirectoryPackagingTests(unittest.TestCase):
+    def test_officehome_resources_are_paired_and_use_portable_training_paths(self):
+        self.assertEqual(prepare.officehome_inputs(SimpleNamespace()), {})
+        with self.assertRaises(ValueError):
+            prepare.officehome_inputs(SimpleNamespace(officehome_dataset=Path('images')))
+        with self.assertRaises(ValueError):
+            prepare.officehome_inputs(SimpleNamespace(officehome_features=Path('features')))
+        self.assertEqual(prepare.officehome_inputs(SimpleNamespace(
+            officehome_dataset=Path('images'), officehome_features=Path('features'))), {
+                'datasets/OfficeHomeDataset_10072016': Path('images'),
+                'exp/distributed_feature_cache/officehome_vit': Path('features')})
+
     def test_copy_does_not_include_host_environment_or_dependencies(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
