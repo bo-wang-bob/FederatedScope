@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 from http.server import ThreadingHTTPServer
 import io
 import json
@@ -12,6 +13,7 @@ from pathlib import Path
 import re
 import signal
 import threading
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 import zipfile
 
@@ -24,6 +26,314 @@ from .schemas import ValidationError
 class PlatformHandler(ApiHandler):
     server_version = 'FederatedScopeSingleHost/1.0'
 
+    def _fedmia_root(self) -> Path:
+        return Path(os.environ.get(
+            'FS_FEDMIA_LOCAL_ROOT', r'E:\系统\fedmia_local')).resolve()
+
+    def _fedmia_module(self):
+        cached = getattr(self.context, 'fedmia_examples_module', None)
+        if cached is not None:
+            return cached
+        script = self._fedmia_root() / 'show_fedmia_examples.py'
+        if not script.is_file():
+            raise PlatformError(f'找不到本地 FedMIA 脚本：{script}', 500)
+        spec = importlib.util.spec_from_file_location(
+            'local_show_fedmia_examples', script)
+        if spec is None or spec.loader is None:
+            raise PlatformError('无法加载本地 FedMIA 脚本', 500)
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except ModuleNotFoundError as error:
+            missing = getattr(error, 'name', str(error))
+            raise PlatformError(
+                f'本地 FedMIA 推断缺少 Python 依赖：{missing}。'
+                '请在启动后端的 Python 环境安装 torch、torchvision、scipy、yacs、pyyaml、pillow。',
+                500) from error
+        self.context.fedmia_examples_module = module
+        return module
+
+    def _fedmia_run_dir(self, kind: str) -> Path:
+        root = self._fedmia_root()
+        run = root / 'runs' / kind
+        if not (run / 'config.yaml').is_file():
+            raise PlatformError(f'缺少 {kind} 的 config.yaml：{run}', 500)
+        if not (run / 'ggeur_fedmia_features').is_dir():
+            raise PlatformError(f'缺少 {kind} 的 ggeur_fedmia_features：{run}', 500)
+        return run
+
+    def _fedmia_dataset_root(self) -> Path:
+        root = self._fedmia_root() / 'datasets' / 'OfficeHomeDataset_10072016'
+        if not root.is_dir():
+            raise PlatformError(f'缺少 OfficeHome 数据集目录：{root}', 500)
+        return root
+
+    def _fedmia_cfg(self, run_dir: Path, module):
+        cfg = module.load_cfg(run_dir, 'fedmia_ii', 'test')
+        cfg.defrost()
+        cfg.data.root = str(self._fedmia_dataset_root())
+        cfg.freeze()
+        return cfg
+
+    def _fedmia_available_clients(self, run_dir: Path) -> list[int]:
+        feature_dir = run_dir / 'ggeur_fedmia_features'
+        clients = set()
+        for path in feature_dir.glob('client_*_features_round*.pt'):
+            match = re.search(r'client_(\d+)_features_round', path.name)
+            if match:
+                clients.add(int(match.group(1)))
+        return sorted(clients)
+
+    def _fedmia_attack_metrics(self, member_scores, nonmember_scores,
+                               module) -> dict[str, float]:
+        pos = module.np.asarray(member_scores, dtype=module.np.float64)
+        neg = module.np.asarray(nonmember_scores, dtype=module.np.float64)
+        if len(pos) == 0 or len(neg) == 0:
+            return {'auc': 0.0, 'tprAt1Fpr': 0.0, 'fprAtThreshold': 0.0}
+        scores = module.np.concatenate([pos, neg])
+        order = module.np.argsort(scores)
+        ranks = module.np.empty(len(scores), dtype=module.np.float64)
+        sorted_scores = scores[order]
+        start = 0
+        while start < len(sorted_scores):
+            end = start + 1
+            while end < len(sorted_scores) and sorted_scores[end] == sorted_scores[start]:
+                end += 1
+            ranks[order[start:end]] = (start + end + 1) / 2.0
+            start = end
+        pos_rank_sum = ranks[:len(pos)].sum()
+        auc = (pos_rank_sum - len(pos) * (len(pos) + 1) / 2.0) / \
+            (len(pos) * len(neg))
+        threshold = float(module.np.quantile(neg, 0.99))
+        tpr = float(module.np.mean(pos >= threshold))
+        fpr = float(module.np.mean(neg >= threshold))
+        return {
+            'auc': float(auc),
+            'tprAt1Fpr': tpr,
+            'fprAtThreshold': fpr,
+        }
+
+    def _fedmia_score_distribution(self, member_scores, nonmember_scores,
+                                   module) -> dict[str, Any]:
+        member = module.np.asarray(member_scores, dtype=module.np.float64)
+        nonmember = module.np.asarray(nonmember_scores, dtype=module.np.float64)
+        bins = module.np.linspace(0.0, 1.0, 41)
+        member_counts, _ = module.np.histogram(member, bins=bins)
+        nonmember_counts, _ = module.np.histogram(nonmember, bins=bins)
+        member_total = max(float(member_counts.sum()), 1.0)
+        nonmember_total = max(float(nonmember_counts.sum()), 1.0)
+        member_norm = member_counts.astype(module.np.float64) / member_total
+        nonmember_norm = nonmember_counts.astype(module.np.float64) / nonmember_total
+        return {
+            'bins': [float(value) for value in bins],
+            'member': [float(value) for value in member_norm],
+            'nonmember': [float(value) for value in nonmember_norm],
+            'memberMean': float(member.mean()) if len(member) else 0.0,
+            'nonmemberMean': float(nonmember.mean()) if len(nonmember) else 0.0,
+            'meanGap': float(member.mean() - nonmember.mean())
+            if len(member) and len(nonmember) else 0.0,
+            'memberSamples': int(len(member)),
+            'nonmemberSamples': int(len(nonmember)),
+        }
+
+    def _fedmia_bundle(self, client_id: int) -> dict[str, Any]:
+        cache = getattr(self.context, 'fedmia_cache', None)
+        if cache is None:
+            cache = {}
+            self.context.fedmia_cache = cache
+        lock = getattr(self.context, 'fedmia_cache_lock', None)
+        if lock is None:
+            lock = threading.RLock()
+            self.context.fedmia_cache_lock = lock
+        with lock:
+            if client_id in cache:
+                return cache[client_id]
+            shared = cache.setdefault('_shared', {})
+            module = shared.get('module')
+            if module is None:
+                module = self._fedmia_module()
+                shared['module'] = module
+            no_dir = shared.get('no_dir')
+            if no_dir is None:
+                no_dir = self._fedmia_run_dir('no_defense')
+                shared['no_dir'] = no_dir
+            defense_dir = shared.get('defense_dir')
+            if defense_dir is None:
+                defense_dir = self._fedmia_run_dir('defense')
+                shared['defense_dir'] = defense_dir
+            clients = shared.get('clients')
+            if clients is None:
+                clients = self._fedmia_available_clients(no_dir)
+                shared['clients'] = clients
+            if client_id not in clients:
+                raise PlatformError(f'客户端 {client_id} 没有可用攻击特征', 404)
+            no_cfg = shared.get('no_cfg')
+            if no_cfg is None:
+                no_cfg = self._fedmia_cfg(no_dir, module)
+                shared['no_cfg'] = no_cfg
+            defense_cfg = shared.get('defense_cfg')
+            if defense_cfg is None:
+                defense_cfg = self._fedmia_cfg(defense_dir, module)
+                shared['defense_cfg'] = defense_cfg
+            no_features = shared.get('no_features')
+            if no_features is None:
+                no_features = module.load_feature_artifacts(
+                    no_dir / 'ggeur_fedmia_features', no_cfg,
+                    unsafe_load=True)
+                shared['no_features'] = no_features
+            defense_features = shared.get('defense_features')
+            if defense_features is None:
+                defense_features = module.load_feature_artifacts(
+                    defense_dir / 'ggeur_fedmia_features', defense_cfg,
+                    unsafe_load=True)
+                shared['defense_features'] = defense_features
+            image_items = shared.get('image_items')
+            if image_items is None:
+                image_items = {}
+                shared['image_items'] = image_items
+            if client_id not in image_items:
+                image_items[client_id] = module.load_image_items(
+                    no_dir, no_cfg, client_id)
+
+            no_result = module.compute_scores(no_features, no_cfg, client_id,
+                                              'fedmia_ii')
+            defense_result = module.compute_scores(
+                defense_features, defense_cfg, client_id, 'fedmia_ii')
+            member_items, nonmember_items = image_items[client_id]
+            no_member_scores = module.np.asarray(
+                no_result.scores_member, dtype=module.np.float64)
+            no_nonmember_scores = module.np.asarray(
+                no_result.scores_nonmember, dtype=module.np.float64)
+            defense_member_scores = module.np.asarray(
+                defense_result.scores_member, dtype=module.np.float64)
+            defense_nonmember_scores = module.np.asarray(
+                defense_result.scores_nonmember, dtype=module.np.float64)
+            bundle = {
+                'module': module,
+                'clients': clients,
+                'names': module.class_names_for(no_cfg),
+                'member_items': member_items,
+                'nonmember_items': nonmember_items,
+                'no_member_scores': no_member_scores,
+                'no_nonmember_scores': no_nonmember_scores,
+                'defense_member_scores': defense_member_scores,
+                'defense_nonmember_scores': defense_nonmember_scores,
+                'metrics': {
+                    'noDefense': self._fedmia_attack_metrics(
+                        no_member_scores, no_nonmember_scores, module),
+                    'defense': self._fedmia_attack_metrics(
+                        defense_member_scores, defense_nonmember_scores, module),
+                },
+                'distributions': {
+                    'noDefense': self._fedmia_score_distribution(
+                        no_member_scores, no_nonmember_scores, module),
+                    'defense': self._fedmia_score_distribution(
+                        defense_member_scores, defense_nonmember_scores, module),
+                },
+                'payloads': {},
+            }
+            cache[client_id] = bundle
+            return bundle
+
+    def _fedmia_client_payload(self, client_id: int, group: str,
+                               limit: int, seed: int,
+                               threshold: float) -> dict[str, Any]:
+        if group not in {'member', 'nonmember'}:
+            raise PlatformError('成员状态只能是 member 或 nonmember')
+        bundle = self._fedmia_bundle(client_id)
+        payload_key = (group, int(limit), int(seed), float(threshold))
+        cache_lock = getattr(self.context, 'fedmia_cache_lock', None)
+        if cache_lock is not None:
+            with cache_lock:
+                cached = bundle['payloads'].get(payload_key)
+                if cached is not None:
+                    return cached
+        module = bundle['module']
+        names = bundle['names']
+        no_scores = {
+            'member': bundle['no_member_scores'],
+            'nonmember': bundle['no_nonmember_scores'],
+        }[group]
+        defense_scores = {
+            'member': bundle['defense_member_scores'],
+            'nonmember': bundle['defense_nonmember_scores'],
+        }[group]
+        source_items = {
+            'member': bundle['member_items'],
+            'nonmember': bundle['nonmember_items'],
+        }[group]
+        truth = 1 if group == 'member' else 0
+        usable = min(len(source_items), len(no_scores), len(defense_scores))
+        if usable <= 0:
+            raise PlatformError('该客户端没有可展示的成员推理样本', 404)
+        rng = module.np.random.default_rng(int(seed))
+        order = module.comparison_priority(
+            module.np.arange(usable), truth, module.np.asarray(no_scores),
+            module.np.asarray(defense_scores), threshold, rng)
+        items = []
+        for rank, index in enumerate(order[:max(1, min(limit, usable))],
+                                     start=1):
+            path, label, original_index = source_items[int(index)]
+            no_pred = 'member' if float(no_scores[index]) >= threshold \
+                else 'nonmember'
+            defense_pred = 'member' if float(defense_scores[index]) >= threshold \
+                else 'nonmember'
+            items.append({
+                'id': f'{client_id}-{group}-{int(index)}',
+                'rank': rank,
+                'clientId': client_id,
+                'group': group,
+                'truth': group,
+                'domain': Path(path).parts[-3] if len(Path(path).parts) >= 3 else '',
+                'className': module.label_name(int(label), names),
+                'filename': Path(path).name,
+                'sampleIndex': int(index),
+                'originalDatasetIndex': int(original_index),
+                'imageUrl': (
+                    f'/api/platform/privacy/membership/images/'
+                    f'{client_id}/{group}/{int(index)}'
+                ),
+                'noDefenseScore': float(no_scores[index]),
+                'defenseScore': float(defense_scores[index]),
+                'noDefensePrediction': no_pred,
+                'defensePrediction': defense_pred,
+            })
+        payload = {
+            'configured': True,
+            'clientId': client_id,
+            'group': group,
+            'clients': bundle['clients'],
+            'threshold': threshold,
+            'metrics': bundle['metrics'],
+            'distributions': bundle['distributions'],
+            'items': items,
+            'source': str(self._fedmia_root()),
+        }
+        if cache_lock is not None:
+            with cache_lock:
+                bundle['payloads'][payload_key] = payload
+        return payload
+
+    def _fedmia_image(self, client_id: int, group: str, index: int) -> None:
+        if group not in {'member', 'nonmember'}:
+            raise PlatformError('成员状态只能是 member 或 nonmember')
+        bundle = self._fedmia_bundle(client_id)
+        source_items = (bundle['member_items'] if group == 'member'
+                        else bundle['nonmember_items'])
+        if index < 0 or index >= len(source_items):
+            raise PlatformError('样本图片索引不存在', 404)
+        image = Path(source_items[index][0]).resolve()
+        dataset_root = self._fedmia_dataset_root()
+        try:
+            image.relative_to(dataset_root)
+        except ValueError as error:
+            raise PlatformError('样本图片路径非法', 403) from error
+        if not image.is_file():
+            raise PlatformError('样本图片不存在', 404)
+        self._download(image, image.name,
+                       mimetypes.guess_type(image.name)[0] or
+                       'application/octet-stream', inline=True)
+
     def _body(self):
         try:
             length = int(self.headers.get('Content-Length', '0'))
@@ -33,10 +343,12 @@ class PlatformHandler(ApiHandler):
             raise PlatformError('配置请求必须在 64 KiB 以内', 413)
         return super()._body()
 
-    def _cors_headers(self):
+    def _cors_headers(self, cache=False):
         # No wildcard cross-origin write access to a training control plane.
         self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Cache-Control', 'no-store')
+        self.send_header(
+            'Cache-Control',
+            'public, max-age=3600' if cache else 'no-store')
 
     def _dispatch(self, write=False):
         try:
@@ -62,19 +374,114 @@ class PlatformHandler(ApiHandler):
 
     def _download(self, payload, name, content_type, inline=False):
         self.send_response(200)
-        self._cors_headers()
+        self._cors_headers(cache=inline)
         self.send_header('Content-Type', content_type)
         disposition = 'inline' if inline else 'attachment'
         self.send_header('Content-Disposition', f'{disposition}; filename="{name}"')
         size = payload.stat().st_size if isinstance(payload, Path) else len(payload)
         self.send_header('Content-Length', str(size))
         self.end_headers()
-        if isinstance(payload, Path):
-            with payload.open('rb') as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-                    self.wfile.write(chunk)
-        else:
-            self.wfile.write(payload)
+        try:
+            if isinstance(payload, Path):
+                with payload.open('rb') as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                        self.wfile.write(chunk)
+            else:
+                self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError, ValueError):
+            return
+
+    def _privacy_membership_root(self) -> Path:
+        configured = os.environ.get('FS_PLATFORM_MEMBERSHIP_DIR')
+        if configured:
+            return Path(configured).expanduser().resolve()
+        return (self.context.platform.state /
+                'privacy_membership').resolve()
+
+    def _privacy_membership_payload(self) -> dict[str, Any]:
+        root = self._privacy_membership_root()
+        manifest = root / 'membership_examples.json'
+        if not manifest.is_file():
+            return {
+                'configured': False,
+                'source': None,
+                'items': [],
+                'message': '尚未放置成员推理展示包',
+                'expectedPath': str(manifest),
+            }
+        try:
+            payload = json.loads(manifest.read_text(encoding='utf-8'))
+        except json.JSONDecodeError as error:
+            raise PlatformError(f'成员推理展示包 JSON 解析失败：{error}', 500)
+        items = payload.get('items', [])
+        if not isinstance(items, list):
+            raise PlatformError('membership_examples.json 的 items 必须是数组', 500)
+        public_items = []
+        for index, raw in enumerate(items):
+            if not isinstance(raw, dict):
+                continue
+            identifier = str(raw.get('id') or f'sample-{index + 1:03d}')
+            truth = raw.get('truth')
+            if truth not in {'member', 'nonmember'}:
+                continue
+            no_defense = raw.get('noDefensePrediction',
+                                 raw.get('no_defense_prediction'))
+            defense = raw.get('defensePrediction',
+                              raw.get('defense_prediction'))
+            if no_defense not in {'member', 'nonmember'}:
+                no_defense = 'member' if float(raw.get(
+                    'noDefenseScore', raw.get('no_defense_score', 0))) >= 0.5 \
+                    else 'nonmember'
+            if defense not in {'member', 'nonmember'}:
+                defense = 'member' if float(raw.get(
+                    'defenseScore', raw.get('defense_score', 0))) >= 0.5 \
+                    else 'nonmember'
+            public_items.append({
+                'id': identifier,
+                'truth': truth,
+                'domain': raw.get('domain') or '',
+                'className': raw.get('className') or raw.get('class_name') or '',
+                'filename': raw.get('filename') or '',
+                'imageUrl': f'/api/platform/privacy/membership/images/{identifier}',
+                'noDefensePrediction': no_defense,
+                'defensePrediction': defense,
+            })
+        return {
+            'configured': True,
+            'source': payload.get('source'),
+            'items': public_items,
+            'message': payload.get('message'),
+            'expectedPath': str(manifest),
+        }
+
+    def _privacy_membership_image(self, identifier: str) -> None:
+        root = self._privacy_membership_root()
+        manifest = root / 'membership_examples.json'
+        if not manifest.is_file():
+            raise PlatformError('尚未放置成员推理展示包', 404)
+        payload = json.loads(manifest.read_text(encoding='utf-8'))
+        items = payload.get('items', [])
+        target = None
+        for index, raw in enumerate(items if isinstance(items, list) else []):
+            if not isinstance(raw, dict):
+                continue
+            item_id = str(raw.get('id') or f'sample-{index + 1:03d}')
+            if item_id == identifier:
+                target = raw.get('image') or raw.get('imagePath') or \
+                    raw.get('image_path')
+                break
+        if not target:
+            raise PlatformError('成员推理样本图片不存在', 404)
+        image = (root / str(target)).resolve()
+        try:
+            image.relative_to(root)
+        except ValueError as error:
+            raise PlatformError('成员推理图片路径非法', 403) from error
+        if not image.is_file():
+            raise PlatformError('成员推理样本图片不存在', 404)
+        self._download(image, image.name,
+                       mimetypes.guess_type(image.name)[0] or
+                       'application/octet-stream', inline=True)
 
     def _route(self, write):
         path = urlparse(self.path).path.rstrip('/') or '/'
@@ -97,6 +504,27 @@ class PlatformHandler(ApiHandler):
                 self._download(file, identifier + file.suffix.lower(), mimetypes.guess_type(file.name)[0] or 'application/octet-stream', inline=True)
             else:
                 self._data(service.samples.page(testset_id, parse_qs(urlparse(self.path).query, keep_blank_values=True)))
+            return
+        membership_image = re.fullmatch(
+            r'/api/platform/privacy/membership/images/(\d+)/(member|nonmember)/(\d+)',
+            path)
+        if not write and membership_image:
+            client_id, group, index = membership_image.groups()
+            self._fedmia_image(int(client_id), group, int(index))
+            return
+        membership = re.fullmatch(r'/api/platform/privacy/membership', path)
+        if not write and membership:
+            query = parse_qs(urlparse(self.path).query)
+            clients = self._fedmia_available_clients(
+                self._fedmia_run_dir('no_defense'))
+            default_client = clients[0] if clients else 1
+            client_id = int(query.get('clientId', [default_client])[0])
+            group = query.get('group', ['member'])[0]
+            limit = int(query.get('limit', ['20'])[0])
+            seed = int(query.get('seed', ['2026'])[0])
+            threshold = float(query.get('threshold', ['0.5'])[0])
+            self._data(self._fedmia_client_payload(
+                client_id, group, limit, seed, threshold))
             return
         if write and path in {'/api/platform/preflight', '/api/platform/train', '/api/platform/evaluate', '/api/platform/predict'}:
             action = {'preflight': 'inspect', 'train': 'train', 'evaluate': 'evaluate', 'predict': 'predict'}[path.split('/')[-1]]
