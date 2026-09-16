@@ -14,6 +14,7 @@ import yaml
 METHODS = {'fedavg': 'FedAvg', 'fedprox': 'FedProx', 'fedproto': 'FedProto',
            'fedopt': 'FedOpt', 'moon': 'MOON', 'heterogeneous_solution': '本架构'}
 FAMILIES = {'officehome': ('Office-Home', 'OfficeHomeDataset_10072016', 4),
+            'military': ('MilitaryAircraft-3D', 'MilitaryAircraft3D', 3),
             'domainnet': ('DomainNet', 'DomainNet', 4),
             'digit3': ('Digits-3Domain', 'digit_three_domain', 3),
             'mdsent': ('MDSent', 'sentiment', 4)}
@@ -47,18 +48,29 @@ class ConfigFactory:
                 or group not in self.groups() or method not in METHODS):
             raise PlatformError('不支持的数据配置或算法')
         name = 'ggeur' if method == 'heterogeneous_solution' else method
-        path = self.sources / group / (name + '.yaml')
+        if group == 'military_vit':
+            names = {'fedavg': 'fedavg_pilot', 'fedprox': 'fedprox_pilot',
+                     'heterogeneous_solution': 'platform_pilot'}
+            if method not in names:
+                raise PlatformError('军机演示仅支持 FedAvg、FedProx 和本架构')
+            path = self.repo / 'scripts/military_aircraft_3domain/configs' / (names[method] + '.yaml')
+        else:
+            path = self.sources / group / (name + '.yaml')
         if not path.is_file():
             raise PlatformError(f'{group} 没有 {method} 的已验证配置')
         return path
 
     def groups(self):
-        return sorted(p.name for p in self.sources.iterdir() if p.is_dir()
-                      and p.name.split('_')[0] in FAMILIES)
+        groups = {p.name for p in self.sources.iterdir() if p.is_dir()
+                  and p.name.split('_')[0] in FAMILIES}
+        if (self.repo / 'scripts/military_aircraft_3domain/configs').is_dir():
+            groups.add('military_vit')
+        return sorted(groups)
 
     def cache_dir(self, group):
+        directory = 'military_aircraft_vit_fixedsplit_v2' if group == 'military_vit' else group
         return Path(os.environ.get('FS_PLATFORM_CACHE_' + group.upper(),
-                    str(self.resources / 'exp/distributed_feature_cache' / group)))
+                    str(self.resources / 'exp/distributed_feature_cache' / directory)))
 
     def defaults(self, group, method):
         raw = yaml.safe_load(self.source(group, method).read_text(encoding='utf-8'))
@@ -71,7 +83,8 @@ class ConfigFactory:
                     learningRate=float(raw['train']['optimizer']['lr']),
                     seed=int(raw.get('seed', 42)), splitSeed=42,
                     alpha=float(g.get('lds_alpha', raw['data'].get('dirichlet_alpha', .1))),
-                    gpu=1, evaluationFrequency=1,
+                    gpu=int(raw.get('device', 0)) if group == 'military_vit' else 1,
+                    evaluationFrequency=1,
                     samplesPerClient=int(g.get('platform_target_samples_per_client', 0)) if method == 'heterogeneous_solution' else 0,
                     allowLegacyAugmentation=False,
                     augmentationSourceId='',
@@ -233,6 +246,13 @@ class ConfigFactory:
                      digit3_global_manifest_path=str(self.datasets / 'digit_three_domain/dataset_manifest.json'))
         if family == 'domainnet':
             g['domainnet_manifest_path'] = str(self.resources / 'exp/distributed_manifests/domainnet_4domains/domainnet_manifest.json')
+        if family == 'military':
+            # Reuse the folder-based loader, not the unrelated DomainNet manifest.
+            # Paths stay under the separately registered MilitaryAircraft3D root.
+            g['domainnet_manifest_path'] = ''
+            g['domainnet_domains'] = ['aerial', 'natural', 'recon']
+            g['clip_model_path'] = os.environ.get('FS_PLATFORM_MILITARY_VIT_WEIGHTS',
+                                                '/root/.cache/clip/ViT-B-16.pt')
         if family == 'mdsent':
             raw['data']['dirichlet_alpha'] = req['alpha']
             raw['data']['args'][0]['seed'] = req['splitSeed']

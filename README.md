@@ -49,3 +49,30 @@ python -m unittest discover -s tests -p 'test_single_host*.py' -v
 ```
 
 拆分源已完成真实预测、独立评测和资源清理验收。本次核对后端源码与配置未变，不运行新的训练，也不为打包修改环境依赖。
+
+## 军机演示接入（2026-09-15）
+
+新增 `military_vit`，复用 `scripts/military_aircraft_3domain/configs/` 下的 FedAvg、FedProx、本架构配置。数据集为 MilitaryAircraft-3D，3 域（aerial/natural/recon）、5 类、750 张图，默认 15 个模拟客户端、划分种子 42、525 张训练图和 225 张测试图；ViT-B/16 冻结特征加 MLP 分类器。recon 是原数据方案中的确定性图像变换域，不代表真实侦察采集。
+
+4090lziy 资源（只读复用，不复制进 Git）：
+
+- 原图：`/root/autodl-tmp/datasets/MilitaryAircraft3D`
+- ViT 权重：`/root/.cache/clip/ViT-B-16.pt`，可用 `FS_PLATFORM_MILITARY_VIT_WEIGHTS` 覆盖。
+- 原始特征：`$FS_PLATFORM_RESOURCES/exp/distributed_feature_cache/military_aircraft_vit_fixedsplit_v2`，可用 `FS_PLATFORM_CACHE_MILITARY_VIT` 覆盖。
+- 原始缓存缺失会预检失败；本架构默认按本次配置生成增强特征，不自动接受来源不完整的历史增强缓存。基础缓存没有嵌入样本 ID，保留其来源限制说明。
+
+独立部署模板：`scripts/federatedscope-prototype.service`，绑定 `127.0.0.1:8002`，独立状态目录 `prototype/backend/exp/platform`，前端来自 `prototype/frontend/dist`。仅通过 SSH 隧道访问；现有 8000/8001 服务不改动。默认军机训练使用原配置的 GPU 0。
+
+```bash
+python scripts/platform_acceptance.py --url http://127.0.0.1:8002 --group military_vit --method fedavg --rounds 2 --gpu 0
+# 同样分别验证 fedprox 和 heterogeneous_solution
+python -m scripts.platform_prediction_acceptance --url http://127.0.0.1:8002 --group military_vit --state exp/platform
+```
+
+`platform_acceptance.py` 还支持 `--name`、`--generated-per-sample`、`--generated-per-prototype`、`--target-per-class` 和 `--covariance-scale`。成功完成且实际生成增强特征的训练会自动进入 `/api/platform/catalog` 的 `augmentationSources`，供前端作为完整配置预设或严格缓存复用来源，不需要手工复制参数。
+
+固定种子 42、相同划分和其余训练参数下，已保存 100 轮本架构增强量实验：每类目标 10、20、40、60；样本与原型候选生成数均为 20，协方差缩放 0.01。独立评测用于核对保存模型可重新加载，结果只代表当前这组运行，不能单独证明稳定提升。
+
+25 项后端测试通过。三种方法各 2 轮真实验收结果：FedAvg 31.56%、FedProx 27.11%、本架构 60.44%；三者重新加载 final 模型后，225 张测试图的总体和分域准确率均与训练结果一致，任务进程已清理。本架构本次生成增强数据。此处只证明链路可运行，不能据短轮试跑声称稳定提升。
+
+独立评测与单图测试复用保存的冻结 ViT 特征，并验证原图、样本及模型哈希；尚不支持任意上传图片重新运行 ViT。前端负责隐藏其他配置，后端仍保留原有能力及数据。

@@ -18,7 +18,7 @@ class SampleCatalog:
         job = self.service.get(testset_id)
         if job['action'] != 'train' or job['status'] != 'completed':
             raise PlatformError('测试集未完成或未登记', 404)
-        if job['request']['group'].split('_')[0] not in {'officehome', 'digit3', 'domainnet'}:
+        if job['request']['group'].split('_')[0] not in {'officehome', 'digit3', 'domainnet', 'military'}:
             raise PlatformError('单图体验台当前仅支持图像测试集；文本模型可使用独立评测')
         path = self.service.directory(testset_id) / 'data_manifest.json'
         data = json.loads(path.read_text(encoding='utf-8'))

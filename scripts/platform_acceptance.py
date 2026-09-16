@@ -12,6 +12,12 @@ def main():
     parser.add_argument('--group', default='officehome_vit')
     parser.add_argument('--method', default='fedavg')
     parser.add_argument('--rounds', type=int, default=2)
+    parser.add_argument('--gpu', type=int, default=1)
+    parser.add_argument('--name', default='')
+    parser.add_argument('--generated-per-sample', type=int)
+    parser.add_argument('--generated-per-prototype', type=int)
+    parser.add_argument('--target-per-class', type=int)
+    parser.add_argument('--covariance-scale', type=float)
     parser.add_argument('--preflight-only', action='store_true')
     args = parser.parse_args()
 
@@ -40,7 +46,18 @@ def main():
         raise TimeoutError('Acceptance task timed out and was stopped')
 
     request = dict(group=args.group, method=args.method, rounds=args.rounds,
-                   name='真实闭环验收-' + args.group, gpu=1)
+                   name=args.name or '真实闭环验收-' + args.group, gpu=args.gpu)
+    augmentation = {
+        'generatedPerSample': args.generated_per_sample,
+        'generatedPerPrototype': args.generated_per_prototype,
+        'targetPerClass': args.target_per_class,
+        'covarianceScale': args.covariance_scale,
+    }
+    if any(value is not None for value in augmentation.values()):
+        if args.method != 'heterogeneous_solution':
+            parser.error('augmentation parameters require --method heterogeneous_solution')
+        request.update({key: value for key, value in augmentation.items()
+                        if value is not None})
     preflight = wait(call('/api/platform/preflight', dict(request, idempotencyKey=uuid.uuid4().hex)))
     if args.preflight_only:
         print(json.dumps({'group': args.group, 'preflightId': preflight['id'],
