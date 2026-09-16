@@ -1,6 +1,20 @@
 import type { Catalog, RequestConfig } from './api';
-export const DRAFT_KEY = 'federated-studio.draft.v2';
+export const DRAFT_KEY = 'federated-studio.draft.v3';
 export type Draft = Partial<RequestConfig>;
+
+export function withPresentationDefaults(draft: Draft): Draft {
+  if (draft.method !== 'heterogeneous_solution') return draft;
+  return {
+    ...draft,
+    augmentationMode: 'generate',
+    augmentationSourceId: '',
+    allowLegacyAugmentation: false,
+    generatedPerSample: 20,
+    generatedPerPrototype: 20,
+    targetPerClass: 40,
+    covarianceScale: 0.01,
+  };
+}
 const numeric: [keyof RequestConfig, string, number, number, boolean][] = [
   ['rounds','通信轮数',1,1000,true], ['localEpochs','本地轮数',1,100,true],
   ['learningRate','学习率',1e-8,1,false], ['batchSize','批大小',1,1024,true],
@@ -51,7 +65,7 @@ export function initialDraft(catalog: Catalog, groupId?: string, storageKey = DR
       }
     } catch { /* Corrupt or unavailable storage does not block creating a new experiment. */ }
   }
-  return { ...fallback };
+  return withPresentationDefaults({ ...fallback });
 }
 export function saveDraft(draft: Draft, storageKey = DRAFT_KEY): boolean {
   try { localStorage.setItem(storageKey, JSON.stringify({ version: 2, request: draft })); return true; } catch { return false; }

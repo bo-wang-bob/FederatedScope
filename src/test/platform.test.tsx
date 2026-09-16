@@ -43,11 +43,29 @@ describe('three-step training workflow',()=>{
     const data={...catalog,groups:[{...catalog.groups[0],methods:[{id:own.method,label:'本架构',enabled:true,reason:null,augmentedCacheFound:false,defaults:own}]}]};
     const fetch=vi.fn().mockImplementation(async(path:string)=>response(path.endsWith('preflight')?preflight:training));vi.stubGlobal('fetch',fetch);
     render(<Workflow data={data}/>);next();
+    expect(screen.getByRole('spinbutton',{name:'每个样本生成数'})).toHaveValue('20');
+    expect(screen.getByRole('spinbutton',{name:'每个原型生成数'})).toHaveValue('20');
+    expect(screen.getByRole('spinbutton',{name:'每类目标样本数'})).toHaveValue('40');
+    expect(screen.getByRole('spinbutton',{name:'协方差缩放'})).toHaveValue('0.01');
+    expect(screen.queryByLabelText('生成方式')).not.toBeInTheDocument();
+    expect(screen.queryByText('更多训练参数')).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole('spinbutton',{name:'每个样本生成数'}),{target:{value:'2'}});
     fireEvent.change(screen.getByRole('spinbutton',{name:'每类目标样本数'}),{target:{value:'20'}});
     next();fireEvent.click(screen.getByRole('button',{name:/启动训练/}));
     await waitFor(()=>expect(fetch).toHaveBeenCalledTimes(2));
     expect(JSON.parse(fetch.mock.calls[1][1].body)).toMatchObject({method:'heterogeneous_solution',augmentationMode:'generate',generatedPerSample:2,targetPerClass:20,allowLegacyAugmentation:false});
+  });
+  it('loads a completed augmentation run as a selectable generation preset',async()=>{
+    const own={...defaults,method:'heterogeneous_solution',augmentationMode:'generate' as const,generatedPerSample:1,generatedPerPrototype:1,targetPerClass:1,covarianceScale:.01,augmentationSourceId:'',allowLegacyAugmentation:false};
+    const preset={...own,name:'已跑配置',rounds:100,generatedPerSample:20,generatedPerPrototype:20,targetPerClass:10};
+    const data={...catalog,groups:[{...catalog.groups[0],augmentationSources:[{id:'c'.repeat(32),name:'已跑配置',request:preset}],methods:[{id:own.method,label:'本架构',enabled:true,reason:null,augmentedCacheFound:true,defaults:own}]}]};
+    vi.stubGlobal('fetch',vi.fn());render(<Workflow data={data}/>);next();
+    fireEvent.mouseDown(screen.getByLabelText('已验证增强配置'));
+    fireEvent.click(await screen.findByText('每类 10 · 样本 20 / 原型 20 · 100 轮'));
+    expect(screen.getByRole('spinbutton',{name:'每个样本生成数'})).toHaveValue('20');
+    expect(screen.getByRole('spinbutton',{name:'每个原型生成数'})).toHaveValue('20');
+    expect(screen.getByRole('spinbutton',{name:'每类目标样本数'})).toHaveValue('10');
+    expect(screen.getByRole('spinbutton',{name:'通信轮数'})).toHaveValue('100');
   });
   it('validates dependent parameters before confirmation and never submits invalid values',()=>{
     const fetch=vi.fn();vi.stubGlobal('fetch',fetch);render(<Workflow/>);next();
