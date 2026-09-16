@@ -21,6 +21,10 @@ import yaml
 from .platform_config import ConfigFactory, PlatformError, sha256
 from .repository import JsonRepository
 from .platform_samples import SampleCatalog
+from .platform_paths import resolve_path, relative_path, cache_file
+
+GENERATION_FIELDS = ('group', 'method', 'clientCount', 'seed', 'splitSeed', 'alpha',
+                     'generatedPerSample', 'generatedPerPrototype', 'targetPerClass', 'covarianceScale')
 
 TERMINAL = {'completed', 'failed', 'stopped', 'interrupted'}
 
@@ -38,7 +42,8 @@ def read(path, default=None):
 
 class PlatformService:
     def __init__(self, repo, state, recover=True):
-        self.repo, self.state = Path(repo).resolve(), Path(state).resolve()
+        self.repo = Path(repo).resolve()
+        self.state = resolve_path(self.repo, state)
         self.state.mkdir(parents=True, exist_ok=True)
         self.configs = ConfigFactory(self.repo)
         self.samples = SampleCatalog(self)
@@ -142,6 +147,62 @@ class PlatformService:
             if job['status'] not in TERMINAL or not job.get('cleanup', {}).get('ok', True):
                 raise PlatformError(f'请先等待或清理任务 {job["id"][:8]}；平台一次运行一个任务', 409)
 
+    def _augmentation_execution(self, req, pinned=None):
+        """Resolve auto once at preflight; reuse the same choice when training."""
+        execution = dict(req)
+        selection = pinned
+        if req.get('augmentationMode') == 'auto' and selection is None:
+            for source in self.list(detail=True):
+                aug = source.get('result', {}).get('augmentation', {})
+                if (source['action'] == 'train' and source['status'] == 'completed'
+                        and aug.get('mode') == 'generate'
+                        and aug.get('provenance') == 'generated-from-recorded-training-samples'
+                        and all(source['request'].get(k) == req.get(k) for k in GENERATION_FIELDS)):
+                    selection = {'mode': 'reuse', 'sourceId': source['id']}
+                    break
+            if selection is None:
+                root = self.configs.augmentation_dir(req['group'])
+                manifest = read(root / 'augmentation.json') if root else None
+                if manifest and all(manifest.get('request', {}).get(k) == req.get(k) for k in GENERATION_FIELDS):
+                    selection = {'mode': 'reuse', 'bundle': True}
+                else:
+                    selection = {'mode': 'generate'}
+        if req.get('augmentationMode') != 'auto':
+            selection = {'mode': req.get('augmentationMode', 'none')}
+            if req.get('augmentationSourceId'):
+                selection['sourceId'] = req['augmentationSourceId']
+        execution['augmentationMode'] = selection['mode']
+        execution['augmentationSourceId'] = selection.get('sourceId', '')
+        registered, root = None, None
+        if selection.get('sourceId'):
+            source = self.get(selection['sourceId'])
+            registered = copy.deepcopy(source.get('result', {}).get('augmentation', {}))
+            if (source['status'] != 'completed' or source['action'] != 'train'
+                    or source['request']['group'] != req['group']
+                    or registered.get('mode') != 'generate'
+                    or registered.get('provenance') != 'generated-from-recorded-training-samples'):
+                raise PlatformError('只允许复用已完成实验的完整新生成缓存')
+            root = self.directory(source['id']) / 'augmented_cache'
+        elif selection.get('bundle'):
+            root = self.configs.augmentation_dir(req['group'])
+            manifest = read(root / 'augmentation.json')
+            if (not manifest or not all(manifest.get('request', {}).get(k) == req.get(k) for k in GENERATION_FIELDS)
+                    or manifest.get('augmentation', {}).get('provenance') != 'generated-from-recorded-training-samples'):
+                raise PlatformError('离线增强缓存清单缺失或配置已改变')
+            registered = copy.deepcopy(manifest['augmentation'])
+        if registered is not None:
+            if len(registered.get('clients', {})) != req['clientCount']:
+                raise PlatformError('增强缓存客户端记录不完整')
+            try:
+                for row in registered['clients'].values():
+                    path = cache_file(root, row['path'], selection.get('sourceId'))
+                    if not path.is_file() or sha256(path) != row['sha256']:
+                        raise PlatformError('增强缓存文件缺失或哈希变化，请检查发布资源')
+                    row['path'] = path.relative_to(root.resolve()).as_posix()
+            except ValueError as error:
+                raise PlatformError(str(error)) from error
+        return execution, selection, registered, root
+
     def create(self, action, payload):
         if action not in {'inspect', 'train', 'evaluate', 'predict'}:
             raise PlatformError('不支持的任务类型')
@@ -169,27 +230,21 @@ class PlatformService:
             job_id = uuid.uuid4().hex
             output = self.directory(job_id)
             output.mkdir(parents=True)
-            spec = {'action': action, 'request': req, 'output': str(output)}
+            spec = {'action': action, 'request': req, 'output': relative_path(self.repo, output),
+                    'pathBase': 'backend-directory'}
             config, provenance = {}, {}
             if action not in {'evaluate', 'predict'}:
-                config, provenance = self.configs.build(req, output)
-                if req.get('augmentationSourceId'):
-                    source = self.get(req['augmentationSourceId'])
-                    aug = source.get('result', {}).get('augmentation', {})
-                    if (source['status'] != 'completed' or source['action'] != 'train'
-                            or source['request']['group'] != req['group'] or aug.get('mode') != 'generate'
-                            or aug.get('provenance') != 'generated-from-recorded-training-samples'):
-                        raise PlatformError('只允许复用同配置组已完成实验的完整新生成缓存')
-                    root = (self.directory(source['id']) / 'augmented_cache').resolve()
-                    for row in aug.get('clients', {}).values():
-                        if Path(row['path']).resolve().parent != root:
-                            raise PlatformError('缓存来源路径越界')
-                    config['ggeur']['augmented_feature_cache_dir'] = str(root)
-                    spec['registeredAugmentation'] = aug
-                    provenance['augmentationSourceId'] = source['id']
+                execution, selection, registered, root = self._augmentation_execution(
+                    req, preflight.get('provenance', {}).get('augmentationSelection') if preflight else None)
+                spec['request'] = execution
+                config, provenance = self.configs.build(execution, output)
+                provenance['augmentationSelection'] = selection
+                if registered is not None:
+                    config['ggeur']['augmented_feature_cache_dir'] = relative_path(self.repo, root)
+                    spec['registeredAugmentation'] = registered
                 config_path = output / 'effective.yaml'
                 config_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding='utf-8')
-                spec['configPath'] = str(config_path)
+                spec['configPath'] = relative_path(self.repo, config_path)
                 if preflight:
                     spec['expectedData'] = preflight['result']['testFingerprint']
                     spec['expectedPartition'] = preflight['result']['partitionFingerprint']
@@ -200,8 +255,9 @@ class PlatformService:
                 provenance['augmentation'] = {k: v for k, v in model_job['result'].get('augmentation', {}).items()
                                               if k != 'clients'}
                 kind = req['modelId'].split(':')[1]
-                spec.update(checkpointPath=str(self.directory(model_job['id']) / f'checkpoints/mlp_{kind}.pt'),
-                            bundlePath=str(self.directory(test_job['id']) / 'checkpoints/pretrained_test_features.pt'),
+                spec.update(checkpointPath=relative_path(self.repo, self.directory(model_job['id']) / f'checkpoints/mlp_{kind}.pt'),
+                            bundlePath=relative_path(self.repo, self.directory(test_job['id']) / 'checkpoints/pretrained_test_features.pt'),
+                            featureSpace=model_job['result']['featureSpace'],
                             checkpointHash=model_job['result']['artifactHashes'][f'mlp_{kind}.pt'],
                             bundleHash=test_job['result']['artifactHashes']['pretrained_test_features.pt'])
                 if action == 'predict':
@@ -209,10 +265,10 @@ class PlatformService:
                     image_path = self.samples.image_path(test_job, sample)
                     if sha256(image_path) != req['imageSha256']:
                         raise PlatformError('原图在浏览后发生改变，请刷新样本列表', 409)
-                    spec.update(sample={**sample, 'imagePath': str(image_path)},
+                    spec.update(sample={**sample, 'imagePath': relative_path(self.repo, image_path)},
                                 classNames=data['classes'],
                                 testProvenance=data.get('testProvenance', {}).get(sample['domain'], 'unknown'),
-                                manifestPath=str(self.directory(test_job['id']) / 'data_manifest.json'),
+                                manifestPath=relative_path(self.repo, self.directory(test_job['id']) / 'data_manifest.json'),
                                 manifestHash=sha256(self.directory(test_job['id']) / 'data_manifest.json'))
             provenance.update(codeCommit=self.commit, python=sys.version, protocol='frozen-features-v2')
             # Capture the actual Python sources too: a branch may legitimately

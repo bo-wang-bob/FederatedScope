@@ -4,9 +4,11 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib.util
+import inspect
 from http.server import ThreadingHTTPServer
 import io
 import json
+import math
 import mimetypes
 import os
 from pathlib import Path
@@ -22,6 +24,7 @@ from .platform_config import PlatformError, sha256
 from .platform_service import PlatformService
 from .paths import env_path, project_path
 from .schemas import ValidationError
+from .platform_paths import resolve_path
 
 
 class PlatformHandler(ApiHandler):
@@ -29,6 +32,44 @@ class PlatformHandler(ApiHandler):
 
     def _fedmia_root(self) -> Path:
         return env_path('FS_FEDMIA_LOCAL_ROOT', '../fedmia_local')
+
+    def _fedmia_clients(self) -> list[int]:
+        return sorted(set(self._fedmia_available_clients(
+            self._fedmia_run_dir('no_defense'))) & set(
+                self._fedmia_available_clients(self._fedmia_run_dir('defense'))))
+
+    def _fedmia_membership(self, query) -> dict[str, Any]:
+        allowed = {'clientId', 'group', 'limit', 'seed', 'threshold'}
+        if set(query) - allowed or any(len(values) != 1 for values in query.values()):
+            raise PlatformError('成员推理查询参数非法')
+        try:
+            client = int(query['clientId'][0]) if 'clientId' in query else None
+            group = query.get('group', ['member'])[0]
+            limit = int(query.get('limit', ['20'])[0])
+            seed = int(query.get('seed', ['2026'])[0])
+            threshold = float(query.get('threshold', ['0.5'])[0])
+        except (ValueError, TypeError) as error:
+            raise PlatformError('成员推理查询参数类型错误') from error
+        if (group not in {'member', 'nonmember'} or not 1 <= limit <= 200
+                or not 0 <= seed < 2 ** 32 or (client is not None and client < 1)
+                or not math.isfinite(threshold) or not 0 <= threshold <= 1):
+            raise PlatformError('成员推理查询参数超出范围')
+        root = self._fedmia_root()
+        files = ['show_fedmia_examples.py', 'runs/no_defense/config.yaml',
+                 'runs/defense/config.yaml']
+        directories = ['runs/no_defense/ggeur_fedmia_features',
+                       'runs/defense/ggeur_fedmia_features',
+                       'datasets/OfficeHomeDataset_10072016']
+        missing = [p for p in files if not (root / p).is_file()]
+        missing += [p for p in directories if not (root / p).is_dir()]
+        clients = self._fedmia_clients() if not missing else []
+        if missing or not clients:
+            return {'configured': False, 'source': None, 'items': [],
+                    'message': '隐私模块资源未就绪，训练与模型评测不受影响。',
+                    'expectedPath': str(root), 'missing': missing,
+                    'clients': clients}
+        return self._fedmia_client_payload(
+            client if client is not None else clients[0], group, limit, seed, threshold)
 
     def _fedmia_module(self):
         cached = getattr(self.context, 'fedmia_examples_module', None)
@@ -72,7 +113,10 @@ class PlatformHandler(ApiHandler):
         cfg = module.load_cfg(run_dir, 'fedmia_ii', 'test')
         cfg.defrost()
         cfg.data.root = str(self._fedmia_dataset_root())
-        cfg.freeze()
+        # FederatedScope CN.freeze saves config.yaml by default; inference must
+        # not rewrite the source run (which is mounted read-only in deployment).
+        parameters = inspect.signature(cfg.freeze).parameters
+        cfg.freeze(**{key: False for key in ('save', 'inform') if key in parameters})
         return cfg
 
     def _fedmia_available_clients(self, run_dir: Path) -> list[int]:
@@ -163,7 +207,7 @@ class PlatformHandler(ApiHandler):
                 shared['defense_dir'] = defense_dir
             clients = shared.get('clients')
             if clients is None:
-                clients = self._fedmia_available_clients(no_dir)
+                clients = self._fedmia_clients()
                 shared['clients'] = clients
             if client_id not in clients:
                 raise PlatformError(f'客户端 {client_id} 没有可用攻击特征', 404)
@@ -208,6 +252,14 @@ class PlatformHandler(ApiHandler):
                 defense_result.scores_member, dtype=module.np.float64)
             defense_nonmember_scores = module.np.asarray(
                 defense_result.scores_nonmember, dtype=module.np.float64)
+            for items, before, after in (
+                    (member_items, no_member_scores, defense_member_scores),
+                    (nonmember_items, no_nonmember_scores, defense_nonmember_scores)):
+                if (before.ndim != 1 or after.ndim != 1
+                        or len(items) != len(before) or len(items) != len(after)
+                        or not module.np.isfinite(before).all()
+                        or not module.np.isfinite(after).all()):
+                    raise PlatformError('成员推理分数与样本数量不一致或含无效值', 409)
             bundle = {
                 'module': module,
                 'clients': clients,
@@ -514,17 +566,8 @@ class PlatformHandler(ApiHandler):
             return
         membership = re.fullmatch(r'/api/platform/privacy/membership', path)
         if not write and membership:
-            query = parse_qs(urlparse(self.path).query)
-            clients = self._fedmia_available_clients(
-                self._fedmia_run_dir('no_defense'))
-            default_client = clients[0] if clients else 1
-            client_id = int(query.get('clientId', [default_client])[0])
-            group = query.get('group', ['member'])[0]
-            limit = int(query.get('limit', ['20'])[0])
-            seed = int(query.get('seed', ['2026'])[0])
-            threshold = float(query.get('threshold', ['0.5'])[0])
-            self._data(self._fedmia_client_payload(
-                client_id, group, limit, seed, threshold))
+            query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            self._data(self._fedmia_membership(query))
             return
         if write and path in {'/api/platform/preflight', '/api/platform/train', '/api/platform/evaluate', '/api/platform/predict'}:
             action = {'preflight': 'inspect', 'train': 'train', 'evaluate': 'evaluate', 'predict': 'predict'}[path.split('/')[-1]]
@@ -583,9 +626,10 @@ class PlatformHandler(ApiHandler):
 
 def create_server(host='127.0.0.1', port=8001, state=None):
     repo = Path(__file__).resolve().parents[2]
-    service = PlatformService(repo, project_path(state or 'exp/single_host_platform', repo))
+    service = PlatformService(repo, state or 'exp/platform')
     context = type('PlatformContext', (), {'platform': service,
-        'frontend_dist': env_path('FEDERATEDSCOPE_FRONTEND_DIST', 'frontend/dist', repo)})()
+        'fedmia_cache': {}, 'fedmia_cache_lock': threading.RLock(),
+        'frontend_dist': resolve_path(repo, os.environ.get('FEDERATEDSCOPE_FRONTEND_DIST', '../frontend/dist'))})()
     handler = type('BoundPlatformHandler', (PlatformHandler,), {'context': context})
     try:
         server = ThreadingHTTPServer((host, port), handler)

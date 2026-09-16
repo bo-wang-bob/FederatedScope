@@ -1,0 +1,26 @@
+# Allowlist prevents data, old experiments, .git, secrets and dependency trees
+# from entering the future image build context.
+**
+!backend
+!backend/federatedscope
+!backend/federatedscope/**
+!backend/scripts
+!backend/scripts/**
+!backend/deploy
+!backend/deploy/**
+!backend/setup.py
+!backend/README.md
+!frontend
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig*.json
+!frontend/vite.config.ts
+!frontend/src
+!frontend/src/**
+!frontend/public
+!frontend/public/**
+**/__pycache__
+**/*.pyc
+**/runs
+**/.env

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from federatedscope.standalone_api.platform_config import ConfigFactory, PlatformError
 from federatedscope.standalone_api.platform_samples import SampleCatalog
+from federatedscope.standalone_api.platform_paths import resolve_path
 
 
 class AircraftRegistrationTests(unittest.TestCase):
@@ -30,7 +31,8 @@ class AircraftRegistrationTests(unittest.TestCase):
                 req = self.configs.normalize({'group': 'military_vit', 'method': method,
                     'rounds': 2, 'learningRate': .003, 'localEpochs': 2, 'batchSize': 9})
                 raw, provenance = self.configs.build(req, Path(root) / method)
-                self.assertEqual(raw['data']['root'], str(self.configs.datasets / 'MilitaryAircraft3D'))
+                self.assertFalse(Path(raw['data']['root']).is_absolute())
+                self.assertEqual(resolve_path(self.configs.repo, raw['data']['root']), self.configs.datasets / 'MilitaryAircraft3D')
                 self.assertEqual(raw['ggeur']['domainnet_domains'], ['aerial', 'natural', 'recon'])
                 self.assertEqual(raw['ggeur']['domainnet_manifest_path'], '')
                 self.assertEqual(raw['model']['num_classes'], 5)
@@ -46,7 +48,17 @@ class AircraftRegistrationTests(unittest.TestCase):
                 if method == 'fedprox':
                     self.assertTrue(raw['fedprox']['use'])
                     self.assertEqual(raw['fedprox']['mu'], 5)
-                self.assertEqual(raw['ggeur']['num_generated_per_prototype'], int(method == 'heterogeneous_solution'))
+                self.assertEqual(raw['ggeur']['num_generated_per_prototype'], 20 if method == 'heterogeneous_solution' else 0)
+
+    def test_defaults_are_the_aircraft_release_contract(self):
+        req = self.configs.defaults('military_vit', 'heterogeneous_solution')
+        self.assertEqual([req[k] for k in ('rounds', 'localEpochs', 'targetPerClass',
+            'generatedPerSample', 'generatedPerPrototype', 'sampleClients')], [100, 1, 40, 20, 20, 0])
+        self.assertEqual(req['augmentationMode'], 'auto')
+        for method in ('fedavg', 'fedprox'):
+            baseline = self.configs.defaults('military_vit', method)
+            self.assertEqual(baseline['rounds'], 100)
+            self.assertEqual(baseline['augmentationMode'], 'none')
 
     def test_cache_override_and_readonly_sample_path(self):
         with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {'FS_PLATFORM_CACHE_MILITARY_VIT': root}):

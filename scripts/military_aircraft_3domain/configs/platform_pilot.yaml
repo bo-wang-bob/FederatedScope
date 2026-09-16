@@ -6,12 +6,12 @@ federate:
   method: ggeur
   mode: standalone
   client_num: 15
-  total_round_num: 20
+  total_round_num: 101
   sample_client_num: 0
 
 data:
   type: domainnet
-  root: data/MilitaryAircraft3D
+  root: resources/datasets/MilitaryAircraft3D
   splits: [0.7, 0.0, 0.3]
 
 dataloader:
@@ -26,7 +26,7 @@ model:
   num_classes: 5
 
 train:
-  local_update_steps: 5
+  local_update_steps: 1
   optimizer:
     type: Adam
     lr: 0.00005
@@ -36,19 +36,19 @@ ggeur:
   feature_extractor: clip
   clip_model: ViT-B-16
   clip_pretrained: openai
-  clip_model_path: pretrained_models/ViT-B-16.pt
+  clip_model_path: resources/models/ViT-B-16.pt
   embedding_dim: 512
   extract_batch_size: 64
   use_fp16_extraction: true
   use_feature_cache: true
-  feature_cache_dir: exp/distributed_feature_cache/military_aircraft_vit_fixedsplit_v2
-  require_complete_feature_cache: false
+  feature_cache_dir: resources/exp/distributed_feature_cache/military_aircraft_vit_fixedsplit_v2
+  require_complete_feature_cache: true
   reuse_augmented_feature_cache: true
   save_augmented_feature_cache: true
-  augmented_feature_cache_dir: exp/military_aircraft_3domain/platform_cache_p64_uncapped_s001
-  num_generated_per_sample: 0
-  num_generated_per_prototype: 1
-  target_size_per_class: 0
+  augmented_feature_cache_dir: caches/military_vit_default
+  num_generated_per_sample: 20
+  num_generated_per_prototype: 20
+  target_size_per_class: 40
   generation_covariance_scale: 0.01
   local_prototypes_per_class: 64
   max_cross_client_prototypes_per_class: 0

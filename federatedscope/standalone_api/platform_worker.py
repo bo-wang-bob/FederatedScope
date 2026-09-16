@@ -18,6 +18,8 @@ os.environ.setdefault('FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '2')
 
 from federatedscope.standalone_api.repository import JsonRepository
+from federatedscope.standalone_api.platform_paths import (
+    cache_file, portable_backbone, compatible_backbones)
 
 
 def save(path, value):
@@ -30,6 +32,18 @@ def digest(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             result.update(chunk)
     return result.hexdigest()
+
+
+def check_feature_contract(checkpoint, bundle, spec):
+    space = spec.get('featureSpace')
+    if space:
+        for artifact in (checkpoint, bundle):
+            if artifact.get('featureSpace', space) != space:
+                raise ValueError('模型与测试集特征指纹不一致')
+            artifact.setdefault('featureSpace', space)
+    if (checkpoint['dataset'] != bundle['dataset']
+            or not compatible_backbones(checkpoint, bundle)):
+        raise ValueError('模型与测试集的特征空间或数据集不匹配')
 
 
 def emit(kind, **payload):
@@ -292,9 +306,10 @@ def train(spec):
                 return False
             from federatedscope.standalone_api.platform_augmentation import safe_load, validate_arrays
             row = info['augmentation']['clients'][str(self.ID)]
-            if digest(row['path']) != row['sha256']:
+            cache_path = cache_file(cfg.ggeur.augmented_feature_cache_dir, row['path'])
+            if digest(cache_path) != row['sha256']:
                 raise ValueError(f'客户端 {self.ID} 增强缓存已变化')
-            payload = safe_load(row['path'])
+            payload = safe_load(cache_path)
             self.augmented_features, self.augmented_labels = validate_arrays(payload,
                 cfg.ggeur.embedding_dim, cfg.model.num_classes)
             self._capture_generated_distribution_snapshot()
@@ -335,7 +350,7 @@ def train(spec):
             temporary = target.with_suffix('.pt.tmp')
             torch.save(payload, temporary)
             os.replace(temporary, target)
-            row = dict(path=str(target), sha256=digest(target), samples=len(self.augmented_labels),
+            row = dict(path=target.name, sha256=digest(target), samples=len(self.augmented_labels),
                 histogram=np.bincount(self.augmented_labels, minlength=cfg.model.num_classes).tolist())
             info['augmentation']['clients'][str(self.ID)] = row
             info['augmentation']['generatedClients'] = len(info['augmentation']['clients'])
@@ -452,6 +467,21 @@ def train(spec):
             info['augmentation']['clients'], sort_keys=True).encode()).hexdigest()
     save(output / 'data_manifest.json', {**info, 'partition': partition, 'test': tests})
     emit('augmentation', **info['augmentation'])
+    # Checkpoints describe feature identity rather than a weight file's old
+    # server location. Preserve the same contract in final/best/test bundles.
+    for artifact_path in checkpoint.parent.glob('*.pt'):
+        if artifact_path.name not in {'mlp_final.pt', 'mlp_best.pt', 'pretrained_test_features.pt'}:
+            continue
+        artifact = torch.load(artifact_path, map_location='cpu', weights_only=True)
+        artifact['backbone'] = portable_backbone(artifact['backbone'])
+        artifact['featureSpace'] = info['featureSpace']
+        torch.save(artifact, artifact_path)
+    checkpoint_manifest = checkpoint.parent / 'checkpoint_manifest.json'
+    if checkpoint_manifest.is_file():
+        manifest = json.loads(checkpoint_manifest.read_text(encoding='utf-8'))
+        manifest['backbone'] = portable_backbone(manifest['backbone'])
+        manifest['featureSpace'] = info['featureSpace']
+        save(checkpoint_manifest, manifest)
     artifacts = {p.name: digest(p) for p in checkpoint.parent.iterdir() if p.is_file()}
     save(output / 'result.json', {**info, 'artifactHashes': artifacts,
          'checkpoint': 'checkpoints/mlp_final.pt', 'history': runner.server.test_accuracies_history,
@@ -510,8 +540,7 @@ def evaluate(spec):
         raise ValueError('模型或测试包哈希变化，拒绝加载')
     checkpoint = torch.load(spec['checkpointPath'], map_location='cpu', weights_only=True)
     bundle = torch.load(spec['bundlePath'], map_location='cpu', weights_only=True)
-    if checkpoint['backbone'] != bundle['backbone'] or checkpoint['dataset'] != bundle['dataset']:
-        raise ValueError('模型和测试集的特征空间或数据集不匹配')
+    check_feature_contract(checkpoint, bundle, spec)
     model = build_model(checkpoint['architecture'])
     model.load_state_dict(checkpoint['state_dict'], strict=True)
     model.eval()
@@ -563,8 +592,7 @@ def predict(spec):
     emit('stage', stage='加载已保存模型与冻结测试特征')
     checkpoint = torch.load(spec['checkpointPath'], map_location='cpu', weights_only=True)
     bundle = torch.load(spec['bundlePath'], map_location='cpu', weights_only=True)
-    if checkpoint['backbone'] != bundle['backbone'] or checkpoint['dataset'] != bundle['dataset']:
-        raise ValueError('模型与测试特征空间不匹配')
+    check_feature_contract(checkpoint, bundle, spec)
     model = build_model(checkpoint['architecture'])
     model.load_state_dict(checkpoint['state_dict'], strict=True)
     model.eval()
@@ -612,14 +640,19 @@ def predict(spec):
 
 
 def main():
+    from federatedscope.standalone_api.platform_offline import configure_offline_worker
+    configure_offline_worker()
     parser = argparse.ArgumentParser()
     parser.add_argument('spec')
     args = parser.parse_args()
-    spec = json.loads(Path(args.spec).read_text(encoding='utf-8'))
+    spec_path = Path(args.spec).resolve()
+    spec = json.loads(spec_path.read_text(encoding='utf-8'))
+    if spec.get('pathBase') == 'backend-directory':
+        os.chdir(Path(__file__).resolve().parents[2])
     import psutil
     save(Path(spec['output']) / 'process.json', {
         'pid': os.getpid(), 'created': psutil.Process().create_time(),
-        'spec': str(Path(args.spec).resolve()),
+        'spec': str(spec_path),
     })
     try:
         if spec['action'] == 'predict':

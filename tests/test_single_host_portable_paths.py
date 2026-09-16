@@ -20,8 +20,8 @@ class PortablePathsTests(unittest.TestCase):
             try:
                 os.chdir(directory)
                 configs = ConfigFactory(REPO_ROOT)
-                self.assertEqual(configs.resources, REPO_ROOT)
-                self.assertEqual(configs.datasets, REPO_ROOT / 'data')
+                self.assertEqual(configs.resources, REPO_ROOT / 'resources')
+                self.assertEqual(configs.datasets, REPO_ROOT / 'resources/datasets')
                 handler = object.__new__(PlatformHandler)
                 self.assertEqual(handler._fedmia_root(), REPO_ROOT.parent / 'fedmia_local')
                 with patch.dict(os.environ, {'FS_FEDMIA_LOCAL_ROOT': 'private/features'}):
@@ -44,7 +44,7 @@ class PortablePathsTests(unittest.TestCase):
             self.assertEqual(configs.cache_dir('military_vit'), REPO_ROOT / 'cache/military')
             req = configs.normalize({'group': 'military_vit', 'method': 'fedprox'})
             raw, _ = configs.build(req, REPO_ROOT / 'exp/path-test')
-            self.assertEqual(raw['ggeur']['clip_model_path'], str(REPO_ROOT / 'weights/ViT-B-16.pt'))
+            self.assertEqual(raw['ggeur']['clip_model_path'], 'weights/ViT-B-16.pt')
             self.assertTrue(raw['fedprox']['use'])
 
     def test_membership_metrics_and_distribution_remain_available(self):

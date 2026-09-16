@@ -75,15 +75,20 @@ def metadata_matches(actual, expected):
 
 def inspect_existing(probe, clients, caches, info, allow_legacy, registered=None):
     import numpy as np
+    from .platform_paths import cache_file
     root = Path(probe.ggeur_cfg.augmented_feature_cache_dir).resolve()
     expected = probe._augmented_cache_metadata()
     version = root / 'augmented_features' / expected['augmented_feature_cache_version']
     if not registered and not version.is_dir():
         raise ValueError('缺少配置对应版本的增强缓存；请切换重新生成模式')
     if registered:
-        paths = [Path(row['path']) for row in registered['clients'].values()]
+        paths = [cache_file(root, row['path']) if not Path(row['path']).is_absolute()
+                 else Path(row['path']) for row in registered['clients'].values()]
         for row in registered['clients'].values():
-            if file_hash(row['path']) != row['sha256']:
+            path = cache_file(root, row['path']) if not Path(row['path']).is_absolute() else Path(row['path'])
+            if root not in path.resolve().parents or path.is_symlink():
+                raise ValueError('增强缓存路径越界')
+            if file_hash(path) != row['sha256']:
                 raise ValueError('已登记的增强缓存被修改')
         namespaces = [sorted(paths)]
     else:
@@ -130,7 +135,7 @@ def inspect_existing(probe, clients, caches, info, allow_legacy, registered=None
                         raw = np.asarray([caches[d][k] for d, k, y in original if y == label], dtype=np.float32)
                         if label not in means or not np.allclose(raw.mean(0), means[label], rtol=1e-5, atol=1e-6):
                             raise ValueError(f'客户端 {cid} 增强源特征均值不一致')
-                rows[str(cid)] = dict(path=str(path), sha256=file_hash(path), samples=len(labels),
+                rows[str(cid)] = dict(path=path.relative_to(root).as_posix(), sha256=file_hash(path), samples=len(labels),
                     histogram=np.bincount(labels, minlength=expected['num_classes']).tolist())
             if set(map(int, rows)) != set(clients):
                 raise ValueError('增强缓存客户端不完整')
@@ -150,7 +155,7 @@ def inspect_existing(probe, clients, caches, info, allow_legacy, registered=None
         for candidate in candidates:
             h = hashlib.sha256()
             for cid in sorted(candidate['clients'], key=int):
-                payload = safe_load(candidate['clients'][cid]['path'])
+                payload = safe_load(cache_file(root, candidate['clients'][cid]['path']))
                 x, y = validate_arrays(payload, expected['embedding_dim'], expected['num_classes'])
                 h.update(x.tobytes()); h.update(y.tobytes())
                 for label, value in sorted(payload.get('global_prototypes', {}).items()):

@@ -1,4 +1,6 @@
-# 跨域联邦学习 · 后端原型
+# 跨域协同训练 · 后端原型
+
+2026-09-16 离线改造：军机三方法默认 100 轮，本架构每类 40 / 样本 20 / 原型 20 / 本地轮数 1。资源、任务配置和模型定位采用相对路径；本架构自动核验并复用匹配缓存。启动及目录规范见 [离线运行说明](docs/PORTABLE_PLATFORM.md)。下面的旧服务器路径仅记录历史部署方式。
 
 分支：`prototype/backend`。对应前端：[prototype/frontend](https://github.com/bo-wang-bob/FederatedScope/tree/prototype/frontend)。
 

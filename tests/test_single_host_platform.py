@@ -15,6 +15,7 @@ from federatedscope.standalone_api.platform_config import ConfigFactory, Platfor
 from federatedscope.standalone_api.platform_service import PlatformService, now
 from federatedscope.standalone_api.platform_worker import classification_metrics, evaluate, digest
 from federatedscope.standalone_api.repository import JsonRepository
+from federatedscope.standalone_api.platform_paths import resolve_path
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -90,7 +91,7 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(g['generation_covariance_scale'], .25)
         self.assertEqual(g['platform_target_samples_per_client'], 40)
         self.assertFalse(g['reuse_augmented_feature_cache'])
-        self.assertEqual(Path(g['augmented_feature_cache_dir']), Path(self.temp.name) / 'augmented_cache')
+        self.assertEqual(resolve_path(REPO, g['augmented_feature_cache_dir']), Path(self.temp.name) / 'augmented_cache')
         self.assertEqual(next(m for m in self.configs.catalog()['groups'][0]['methods']
             if m['id'] == 'heterogeneous_solution')['label'], '本架构')
 
@@ -154,8 +155,8 @@ class PlatformTests(unittest.TestCase):
         with patch.dict(os.environ, {'FS_PLATFORM_CACHE_OFFICEHOME_VIT': '/existing/train',
                                     'FS_PLATFORM_TEST_CACHE_OFFICEHOME_VIT': '/existing/test'}):
             config, provenance = self.configs.build(self.configs.normalize(self.payload), self.temp.name)
-        self.assertEqual(config['ggeur']['feature_cache_dir'], str(Path('/existing/train').resolve()))
-        self.assertEqual(provenance['testCacheDir'], str(Path('/existing/test').resolve()))
+        self.assertEqual(resolve_path(REPO, config['ggeur']['feature_cache_dir']), Path('/existing/train').resolve())
+        self.assertEqual(resolve_path(REPO, provenance['testCacheDir']), Path('/existing/test').resolve())
 
     def test_catalog_reports_latest_terminal_preflight(self):
         job = self.complete_preflight()

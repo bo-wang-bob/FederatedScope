@@ -6,9 +6,11 @@ import hashlib
 import math
 import os
 import re
+import socket
 from pathlib import Path
 
 import yaml
+from .platform_paths import relative_path, portable_config
 
 from .paths import env_path, project_path
 
@@ -40,8 +42,8 @@ class ConfigFactory:
     def __init__(self, repo):
         self.repo = Path(repo).resolve()
         self.sources = self.repo / 'scripts/example_configs/ggeur_final_5models'
-        self.resources = env_path('FS_PLATFORM_RESOURCES', '.', self.repo)
-        self.datasets = env_path('FS_PLATFORM_DATASETS', 'data', self.repo)
+        self.resources = env_path('FS_PLATFORM_RESOURCES', 'resources', self.repo)
+        self.datasets = env_path('FS_PLATFORM_DATASETS', self.resources / 'datasets', self.repo)
 
     def source(self, group, method):
         if (not isinstance(group, str) or not isinstance(method, str)
@@ -76,7 +78,7 @@ class ConfigFactory:
     def defaults(self, group, method):
         raw = yaml.safe_load(self.source(group, method).read_text(encoding='utf-8'))
         g = raw['ggeur']
-        return dict(group=group, method=method, name='', rounds=3,
+        return dict(group=group, method=method, name='', rounds=100 if group == 'military_vit' else 3,
                     clientCount=raw['federate']['client_num'],
                     sampleClients=raw['federate'].get('sample_client_num', 0),
                     batchSize=raw['dataloader']['batch_size'],
@@ -89,7 +91,7 @@ class ConfigFactory:
                     samplesPerClient=int(g.get('platform_target_samples_per_client', 0)) if method == 'heterogeneous_solution' else 0,
                     allowLegacyAugmentation=False,
                     augmentationSourceId='',
-                    augmentationMode='generate' if method == 'heterogeneous_solution' else 'none',
+                    augmentationMode=('auto' if group == 'military_vit' else 'generate') if method == 'heterogeneous_solution' else 'none',
                     generatedPerSample=int(g.get('num_generated_per_sample', 0)) if method == 'heterogeneous_solution' else 0,
                     generatedPerPrototype=int(g.get('num_generated_per_prototype', 0)) if method == 'heterogeneous_solution' else 0,
                     targetPerClass=int(g.get('target_size_per_class', 0)) if method == 'heterogeneous_solution' else 0,
@@ -101,7 +103,8 @@ class ConfigFactory:
                                     raw['ggeur'].get('augmented_feature_cache_dir', ''))
         if not configured:
             return None
-        return project_path(configured, self.resources)
+        return project_path(configured, self.repo if 'FS_PLATFORM_AUGMENTED_' + group.upper() in os.environ
+                            else self.resources)
 
     def augmentation_available(self, group):
         root = self.augmentation_dir(group)
@@ -129,7 +132,7 @@ class ConfigFactory:
                                 cacheFound=bool(files), cacheFiles=len(files),
                                 cacheBytes=sum(p.stat().st_size for p in files),
                                 partitionLocked=family == 'digit3'))
-        return dict(groups=entries, host='4090lziy', address='10.112.81.135',
+        return dict(groups=entries, host=socket.gethostname(), address='',
                     mode='single-host', cacheOnly=True,
                     protocol='frozen-features-v2 / 原始特征基线 + 本架构按配置增强',
                     evaluationPolicy='final 模型默认；best 使用训练期测试集择优，不能视为无偏验证')
@@ -137,7 +140,7 @@ class ConfigFactory:
     def normalize(self, payload):
         if not isinstance(payload, dict):
             raise PlatformError('配置必须是 JSON 对象')
-        group, method = payload.get('group', 'officehome_vit'), payload.get('method', 'fedavg')
+        group, method = payload.get('group', 'military_vit'), payload.get('method', 'fedavg')
         req = self.defaults(group, method)
         unknown = set(payload) - set(req) - {'idempotencyKey', 'preflightId'}
         if unknown:
@@ -150,7 +153,7 @@ class ConfigFactory:
             raise PlatformError('增强缓存来源实验 ID 非法')
         if req['augmentationSourceId'] and req['augmentationMode'] != 'reuse':
             raise PlatformError('只有复用模式可选择已有实验缓存')
-        if req['augmentationMode'] not in ('none', 'reuse', 'generate'):
+        if req['augmentationMode'] not in ('none', 'reuse', 'generate', 'auto'):
             raise PlatformError('不支持的增强模式')
         if method == 'heterogeneous_solution':
             if req['augmentationMode'] == 'none':
@@ -255,14 +258,15 @@ class ConfigFactory:
             g['domainnet_manifest_path'] = ''
             g['domainnet_domains'] = ['aerial', 'natural', 'recon']
             g['clip_model_path'] = str(env_path('FS_PLATFORM_MILITARY_VIT_WEIGHTS',
-                self.resources / 'pretrained_models/ViT-B-16.pt', self.repo))
+                self.resources / 'models/ViT-B-16.pt', self.repo))
         if family == 'mdsent':
             raw['data']['dirichlet_alpha'] = req['alpha']
             raw['data']['args'][0]['seed'] = req['splitSeed']
             g['bert_model_path'] = str(self.resources / 'pretrained_models/nlptown_bert_base_multilingual_uncased_senti')
-        return raw, {'source': str(path.relative_to(self.repo)), 'sourceSha256': sha256(path),
-                     'testCacheDir': str(env_path('FS_PLATFORM_TEST_CACHE_' + req['group'].upper(),
-                         '.', self.repo)) if os.environ.get('FS_PLATFORM_TEST_CACHE_' + req['group'].upper()) else None,
+        test_cache = os.environ.get('FS_PLATFORM_TEST_CACHE_' + req['group'].upper())
+        return portable_config(raw, self.repo), {'source': path.relative_to(self.repo).as_posix(), 'sourceSha256': sha256(path),
+                     'pathBase': 'backend-directory',
+                     'testCacheDir': relative_path(self.repo, test_cache) if test_cache else None,
                      'protocol': 'frozen-features-v2', 'parameterBindings': {
                          'rounds': 'federate.total_round_num = rounds + 1 (round 0 is initialization)', 'clientCount': 'federate.client_num',
                          'sampleClients': 'federate.sample_client_num (0=all)',
