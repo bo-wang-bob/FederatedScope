@@ -68,3 +68,20 @@ it('renders API errors without fallback demo metrics', async () => {
   expect(screen.getByText('成员推理分数与样本数量不一致')).toBeInTheDocument();
   expect(screen.queryByText('AUC')).not.toBeInTheDocument();
 });
+
+it('removes the warning banner and exposes the interpretation limit on demand', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ data: {
+    ...payload(), alignment: { memberSamples: 27, nonmemberSamples: 27,
+      message: '共同样本：成员 27 个，非成员 27 个。不作为严格防御增益结论。' },
+  } }) })));
+  render(<PlannedModule moduleId="privacy" />);
+  const note = await screen.findByRole('button', { name: '查看结果口径' });
+  expect(screen.queryByText(/不作为严格防御增益结论/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByText('共同样本指标与当前样本预测')).toBeInTheDocument();
+  expect(screen.queryByText('整体指标与当前样本预测')).not.toBeInTheDocument();
+  expect(screen.getByRole('region', { name: '攻击分数分布图表' })).toHaveAttribute('tabindex', '0');
+  expect(screen.getByRole('region', { name: '攻防指标对照' })).toHaveAttribute('tabindex', '0');
+  fireEvent.click(note);
+  await waitFor(() => expect(screen.getByText(/不作为严格防御增益结论/)).toBeVisible());
+});

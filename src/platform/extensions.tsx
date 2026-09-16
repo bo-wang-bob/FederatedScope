@@ -1,6 +1,6 @@
-import { ArrowRightOutlined, BarChartOutlined, CheckCircleFilled, ExperimentOutlined,
+import { ArrowRightOutlined, BarChartOutlined, CheckCircleFilled, ExperimentOutlined, InfoCircleOutlined,
   LockOutlined, SafetyCertificateOutlined, SecurityScanOutlined } from '@ant-design/icons';
-import { Alert, Select, Skeleton, Tag } from 'antd';
+import { Alert, Popover, Select, Skeleton, Tag } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from './api';
@@ -53,6 +53,7 @@ type MembershipPayload = {
   source: string | null;
   message?: string;
   expectedPath?: string;
+  alignment?: { message: string; memberSamples: number; nonmemberSamples: number } | null;
   metrics?: {
     noDefense: MembershipMetrics;
     defense: MembershipMetrics;
@@ -140,7 +141,7 @@ function PrivacyDistributionChart({ distributions }: { distributions?: Membershi
   return <section className="privacy-distribution-card">
     <div className="privacy-card-heading"><span className="privacy-heading-icon"><BarChartOutlined /></span><div><h3>攻击分数分布</h3><p>防御前后分数可分性对照</p></div><em>Client 对照</em></div>
     <div className="privacy-chart-legend"><span><i className="training" />训练样本</span><span><i className="nontraining" />非训练样本</span></div>
-    <div className="privacy-distribution-plots">
+    <div className="privacy-distribution-plots" role="region" aria-label="攻击分数分布图表" tabIndex={0}>
       <PrivacyDistributionPlot distribution={distributions?.noDefense} label="无防御" mode="noDefense" />
       <PrivacyDistributionPlot distribution={distributions?.defense} label="有防御" mode="defense" />
     </div>
@@ -245,7 +246,7 @@ function PrivacyMembershipPanel() {
       </section>
       <PrivacyDistributionChart distributions={payload.distributions} />
       <section className="privacy-result" aria-label="成员推理攻击结果">
-        <div className="privacy-card-heading privacy-result-heading"><span className="privacy-heading-icon"><ExperimentOutlined /></span><div><h3>攻击结果对照</h3><p>整体指标与当前样本预测</p></div><em>Client {payload.clientId}</em></div>
+        <div className="privacy-card-heading privacy-result-heading"><span className="privacy-heading-icon"><ExperimentOutlined /></span><div><h3 className="privacy-result-title">攻击结果对照{payload.alignment && <Popover title="结果口径" content={<p className="privacy-result-note">{payload.alignment.message}</p>} trigger="click"><button className="privacy-info-button" type="button" aria-label="查看结果口径"><InfoCircleOutlined /></button></Popover>}</h3><p>{payload.alignment ? '共同样本指标与当前样本预测' : '整体指标与当前样本预测'}</p></div><em>Client {payload.clientId}</em></div>
         <div className="privacy-selected-summary">
           <img src={selected.imageUrl} alt={selected.className || selected.filename} />
           <div>
@@ -254,14 +255,14 @@ function PrivacyMembershipPanel() {
             <p><b className={membershipStatus[selected.truth].tone}>{selected.truth === 'member' ? '客户端训练样本' : '非训练样本'}</b><i>{selected.domain || 'Office-Home'}</i></p>
           </div>
         </div>
-        <div className="privacy-comparison-list">
+        <div className="privacy-comparison-list" role="region" aria-label="攻防指标对照" tabIndex={0}>
           {comparisons.map(item => {
             const correct = item.prediction === selected.truth;
             return <article className={`privacy-comparison-card ${item.key}`} key={item.key}>
               <header><span className="privacy-heading-icon"><SafetyCertificateOutlined /></span><div><strong>{item.label}</strong><small>FedMIA 攻击</small></div></header>
               <div className="privacy-comparison-metrics">
                 <div><span>AUC</span><strong>{formatPercent(item.metrics?.auc)}</strong></div>
-                <div><span>TPR@1%FPR</span><strong>{formatPercent(item.metrics?.tprAt1Fpr)}</strong></div>
+                <div><span>TPR@FPR≤1%</span><strong>{formatPercent(item.metrics?.tprAt1Fpr)}</strong></div>
               </div>
               <div className={`privacy-comparison-prediction ${correct ? 'attack-correct' : 'attack-wrong'}`}>
                 <div><span>攻击预测结果</span><strong>{membershipStatus[item.prediction].label}</strong></div>

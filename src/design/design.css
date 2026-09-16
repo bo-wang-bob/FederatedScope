@@ -120,7 +120,7 @@ html:has(.design-console),body:has(.design-console),#root:has(.design-console){b
 .design-comparison-empty{height:clamp(310px,calc(100dvh - 380px),600px);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:22px;color:#a4b7ae}
 .design-comparison-empty>.anticon{font-size:38px;color:#83a392}
 .design-comparison-empty h2{font-size:14px}
-.privacy-lab-shell{--privacy-card:#152123;--privacy-border:#304541;--privacy-muted:#91a7a0;--privacy-panel-height:clamp(550px,calc(100dvh - 270px),600px);display:grid;gap:16px;max-width:1540px;margin:0 auto}
+.privacy-lab-shell{--privacy-card:#152123;--privacy-border:#304541;--privacy-muted:#91a7a0;--privacy-panel-height:clamp(400px,calc(100dvh - 310px),800px);display:grid;gap:16px;max-width:1540px;margin:0 auto}
 .privacy-control-bar{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding:16px 18px;border:1px solid var(--privacy-border);border-radius:12px;background:linear-gradient(135deg,#172426,#131e20);box-shadow:0 12px 32px rgba(0,0,0,.12)}
 .privacy-control-actions,.privacy-control-group,.privacy-client-select{display:flex;align-items:flex-end;gap:12px}
 .privacy-control-actions{gap:20px}
@@ -151,16 +151,16 @@ html:has(.design-console),body:has(.design-console),#root:has(.design-console){b
 .privacy-sample-list strong{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#dce7e2}
 .privacy-sample-list small{font-size:10px;color:#829993;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .privacy-result{height:var(--privacy-panel-height);padding:16px;display:flex;flex-direction:column;gap:11px;overflow:hidden}
-.privacy-card-heading{display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:10px}
+.privacy-card-heading{display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:10px;flex-shrink:0}
 .privacy-heading-icon{width:36px;height:36px;display:grid;place-items:center;border:1px solid #3b514d;border-radius:9px;background:#1d302d;color:#8bc3b2;font-size:16px}
 .privacy-card-heading h3{margin:0;color:#e2ece7;font-size:15px;line-height:1.3}
 .privacy-card-heading p{margin:4px 0 0;color:#829993;font-size:11px;line-height:1.3}
 .privacy-card-heading em{padding:5px 9px;border:1px solid #38504a;border-radius:14px;color:#a7beb7;background:#172725;font-size:10px;font-style:normal;white-space:nowrap}
 .privacy-distribution-card{height:var(--privacy-panel-height);padding:16px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
-.privacy-chart-legend{display:flex;justify-content:flex-end;gap:18px;margin-bottom:-7px;color:#98aca6;font-size:11px}
+.privacy-chart-legend{display:flex;justify-content:flex-end;gap:18px;margin-bottom:-7px;color:#98aca6;font-size:11px;flex-shrink:0}
 .privacy-chart-legend span{display:flex;align-items:center;gap:6px}
 .privacy-chart-legend i{width:9px;height:9px;border-radius:3px;background:#5ba9dc}.privacy-chart-legend i.nontraining{background:#63c5a8}
-.privacy-distribution-plots{min-height:0;display:grid;grid-template-columns:1fr;gap:9px;flex:1;align-items:stretch}
+.privacy-distribution-plots{min-height:0;display:grid;grid-template-columns:minmax(0,1fr);grid-auto-rows:max-content;gap:9px;flex:1;align-content:start}
 .privacy-distribution-plot{min-width:0;padding:9px;border:1px solid #2d4440;border-radius:10px;background:#111d1f;display:grid;grid-template-columns:minmax(0,1fr) 126px;grid-template-rows:auto 1fr;column-gap:9px;align-items:center}
 .privacy-distribution-plot.defense{border-color:#36534c;background:#13211f}
 .privacy-distribution-plot>header{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}
@@ -183,7 +183,7 @@ html:has(.design-console),body:has(.design-console),#root:has(.design-console){b
 .privacy-metric-grid strong{display:block;margin:6px 0 4px;color:#e2ece8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:21px;line-height:1.2}
 .privacy-metric-grid article:last-child strong{color:#79c8af}
 .privacy-metric-grid small{display:block;color:#718983;font-size:9px;white-space:nowrap}
-.privacy-selected-summary{display:grid;grid-template-columns:70px minmax(0,1fr);gap:12px;align-items:center;padding:11px;border:1px solid #2f4440;border-radius:10px;background:#111d1f}
+.privacy-selected-summary{display:grid;grid-template-columns:70px minmax(0,1fr);gap:12px;align-items:center;padding:11px;border:1px solid #2f4440;border-radius:10px;background:#111d1f;flex-shrink:0}
 .privacy-selected-summary img{width:70px;height:70px;border-radius:9px;object-fit:cover;background:#26302e;box-shadow:0 5px 14px rgba(0,0,0,.2)}
 .privacy-selected-summary .privacy-eyebrow{display:block;color:#829993;font-size:10px;margin-bottom:4px;letter-spacing:.06em;text-transform:uppercase}
 .privacy-selected-summary strong{display:block;font-size:15px;color:#e0ebe6;margin-bottom:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -197,7 +197,13 @@ html:has(.design-console),body:has(.design-console),#root:has(.design-console){b
 .privacy-single-result-card>div:last-child strong{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#f0b66a}
 .privacy-result-verdict{display:flex;align-items:center;gap:7px;margin-top:9px;padding:8px 10px;border-radius:7px;font-size:10px}.privacy-result-verdict.correct{color:#84cdb6;background:#1a302b}.privacy-result-verdict.wrong{color:#d79996;background:#352526}.privacy-result-verdict.wrong .anticon{transform:rotate(45deg)}
 .privacy-result-heading{flex:none}
-.privacy-comparison-list{min-height:0;display:grid;grid-template-columns:1fr;gap:9px;flex:1;align-items:start}
+.privacy-comparison-list{min-height:0;display:grid;grid-template-columns:minmax(0,1fr);grid-auto-rows:max-content;gap:9px;flex:1;align-content:start}
+.privacy-distribution-plots,.privacy-comparison-list{overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#57786e transparent;padding-right:5px;overscroll-behavior-y:contain}
+.privacy-distribution-plots:focus-visible,.privacy-comparison-list:focus-visible{outline:1px solid #86b7a7;outline-offset:2px;border-radius:8px}
+.privacy-result-title{display:flex;align-items:center;gap:7px}
+.privacy-info-button{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;padding:0;border:0;border-radius:5px;color:#91a7a0;background:transparent;cursor:pointer;font-size:14px}
+.privacy-info-button:hover,.privacy-info-button:focus-visible{color:#dce9e4;background:#29423d;outline:1px solid #57786e}
+.privacy-result-note{max-width:340px;margin:0;font-size:14px;line-height:1.7}
 .privacy-comparison-card{min-height:0;padding:10px;border:1px solid #3d4d4b;border-radius:10px;background:#111d1f;display:grid;grid-template-columns:1fr;gap:7px}
 .privacy-comparison-card.defense{border-color:#3e5d55;background:#13221f}
 .privacy-comparison-card>header{display:flex;align-items:center;gap:9px}
@@ -221,7 +227,7 @@ html:has(.design-console),body:has(.design-console),#root:has(.design-console){b
 body:has(.design-console) .ant-tag,body:has(.design-console) .ant-tooltip-inner{font-size:14px}
 @keyframes design-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 @media(min-width:1600px){.design-main{padding:34px 44px}.design-verification{grid-template-columns:292px minmax(400px,1fr) 288px}.design-gallery{padding:24px}.design-sample-grid img{height:116px}.design-hero-content{padding-left:50px}.design-home-modules{gap:26px;margin-top:26px}}
-@media(max-width:1380px){.privacy-lab{grid-template-columns:220px minmax(380px,.95fr) minmax(400px,1.05fr);gap:13px}.privacy-distribution-card,.privacy-result{padding:14px}.privacy-comparison-metrics strong,.privacy-comparison-prediction strong{font-size:14px}}
-@media(max-width:1120px){.privacy-control-bar{align-items:flex-start}.privacy-lab{grid-template-columns:250px minmax(0,1fr)}.privacy-result{grid-column:1/-1;height:auto;overflow:visible}.privacy-distribution-card{grid-column:2}}
+@media(max-width:1380px){.privacy-lab{grid-template-columns:200px minmax(0,.95fr) minmax(0,1.05fr);gap:13px}.privacy-distribution-card,.privacy-result{padding:14px}.privacy-comparison-metrics strong,.privacy-comparison-prediction strong{font-size:14px}}
+@media(max-width:1120px){.privacy-control-bar{align-items:flex-start}.privacy-lab{grid-template-columns:250px minmax(0,1fr)}.privacy-result{grid-column:1/-1;height:auto;overflow:visible}.privacy-result .privacy-comparison-list{flex:none;overflow:visible}.privacy-distribution-card{grid-column:2}}
 @media(max-width:780px){.privacy-control-bar{align-items:stretch;flex-direction:column}.privacy-control-group,.privacy-client-select{width:100%}.privacy-mode-tabs{display:grid;grid-template-columns:1fr 1fr;width:100%}.privacy-client-select .ant-select{width:100%}.privacy-lab{grid-template-columns:1fr}.privacy-picker{height:360px}.privacy-distribution-card,.privacy-result{grid-column:auto;height:auto;min-height:0;overflow:visible}.privacy-comparison-list{grid-template-columns:1fr}.privacy-distribution-plot{grid-template-columns:1fr}.privacy-distribution-plot>header,.privacy-distribution-card svg,.privacy-distribution-meta{grid-column:1}.privacy-distribution-meta{grid-template-columns:repeat(2,minmax(0,1fr));margin-top:7px}.privacy-chart-legend{justify-content:flex-start}.privacy-card-heading{grid-template-columns:32px minmax(0,1fr) auto}.privacy-heading-icon{width:32px;height:32px}}
 @media(prefers-reduced-motion:reduce){.design-console *, .design-console *::before,.design-console *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.design-module-card:hover,.design-module-card:hover img,.design-action:hover{transform:none}}
