@@ -1,7 +1,5 @@
-/* 后门研究: 挑图 + clean/triggered/defense 三连对比。沿用 research console 的深色面板语言。 */
+/* 后门研究: 挑图 + clean/triggered/defense 三连对比。逐样本对照在独立的 backdoorCompare 页面。 */
 .backdoor-lab{display:grid;gap:20px}
-.backdoor-summary{margin:0}
-.backdoor-summary .platform-stat strong small{font-size:14px;color:#9aafbd;font-weight:400}
 
 .backdoor-picker .ant-card-body{padding:20px 22px 22px}
 .backdoor-filters{display:flex;align-items:flex-end;gap:20px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--studio-line)}
@@ -20,9 +18,7 @@
 .backdoor-thumbnails button span{display:block;padding:5px 4px;font-size:11px;line-height:1.4;color:#9db3c2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .backdoor-thumbnails button.selected span{color:#cfe3ea;background:#1d2c36}
 
-.backdoor-submit{display:flex;align-items:center;justify-content:space-between;gap:20px;padding-top:18px;border-top:1px solid var(--studio-line)}
-.backdoor-submit .platform-muted{max-width:720px}
-.backdoor-submit b{color:#cfe3ea}
+.backdoor-submit{display:flex;align-items:center;justify-content:flex-end;gap:20px;padding-top:18px;border-top:1px solid var(--studio-line)}
 
 .backdoor-progress h3{font-size:16px;font-weight:500;color:#c8dbe2}
 .backdoor-progress p[role=alert]{color:#e0a49b;max-width:760px;text-align:center}
@@ -36,20 +32,11 @@
 .backdoor-figure.baseline .backdoor-figure-head{border-left:3px solid #7f97a3}
 .backdoor-figure-frame{display:grid;place-items:center;min-height:260px;background:#0d141a;padding:10px}
 .backdoor-figure-frame img{display:block;width:100%;height:auto}
-.backdoor-figure figcaption{display:grid;gap:7px;padding:14px 16px 16px;border-top:1px solid var(--studio-line)}
-.backdoor-figure figcaption>span{color:#93a9b6;font-size:12px}
-.backdoor-figure figcaption div{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
-.backdoor-figure figcaption i{font-style:normal;color:#a9bdca;font-size:13px}
-.backdoor-figure figcaption b{font-size:18px;font-weight:500;color:#d5e6ed;font-variant-numeric:tabular-nums}
-.backdoor-figure figcaption small{color:#8fa6b3;font-size:12px}
-.backdoor-emphasis.attack{color:#e59a8c}
-.backdoor-emphasis.defense{color:#9fc194}
+.backdoor-figure figcaption{padding:12px 16px 14px;border-top:1px solid var(--studio-line);color:#93a9b6;font-size:12px}
 
-.backdoor-verdict{display:grid;gap:10px;margin:22px 0 0;padding:16px 18px;border:1px solid var(--studio-line);border-radius:6px;background:#142028}
-.backdoor-verdict p{color:#b7cbd6;font-size:14px;line-height:1.8}
+.backdoor-compare-alert{margin-bottom:18px}
 
-.backdoor-table-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:26px 0 12px}
-.backdoor-table-head h3{font-size:16px}
+.backdoor-table-title{margin:22px 0 12px;font-size:16px}
 .backdoor-table{border:1px solid var(--studio-line);border-radius:6px;overflow:hidden}
 .backdoor-row{display:grid;grid-template-columns:1.5fr 1.2fr 1.2fr 1.6fr 1.2fr;gap:12px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--studio-line);font-size:13px}
 .backdoor-row:last-child{border-bottom:0}
@@ -60,7 +47,6 @@
 .backdoor-row .ok{color:#9fc194}
 .backdoor-row .warn{color:#d2b887}
 .backdoor-row .hit{color:#e59a8c}
-.backdoor-ids{margin-top:12px;overflow-wrap:anywhere}
 .backdoor-full-frame{display:grid;place-items:center;background:#0d141a;border-radius:6px;padding:8px}
 .backdoor-full-frame img{width:100%;height:auto}
 
