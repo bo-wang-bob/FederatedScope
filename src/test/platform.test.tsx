@@ -86,6 +86,12 @@ describe('three-step training workflow',()=>{
     const other={...catalog.groups[0],id:'different',methods:[{...catalog.groups[0].methods[0],defaults:{...defaults,group:'different',gpu:0,clientCount:16}}]};
     expect(initialDraft({...catalog,groups:[...catalog.groups,other]})).toMatchObject({group:'different',gpu:0,clientCount:16});
   });
+  it('normalizes saved architecture drafts to the presentation defaults',()=>{
+    const own={...defaults,method:'heterogeneous_solution',localEpochs:5,augmentationMode:'generate' as const,generatedPerSample:3,generatedPerPrototype:4,targetPerClass:60,covarianceScale:.5,augmentationSourceId:'',allowLegacyAugmentation:false};
+    const data={...catalog,groups:[{...catalog.groups[0],methods:[{id:own.method,label:'本架构',enabled:true,reason:null,defaults:own}]}]};
+    localStorage.setItem(DRAFT_KEY,JSON.stringify({version:2,request:own}));
+    expect(initialDraft(data)).toMatchObject({method:'heterogeneous_solution',localEpochs:1,generatedPerSample:20,generatedPerPrototype:20,targetPerClass:40,covarianceScale:.01});
+  });
 });
 
 describe('launch transaction safety',()=>{

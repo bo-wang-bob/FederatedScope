@@ -71,3 +71,5 @@ export const key = () => globalThis.crypto?.randomUUID?.() ?? `request-${Date.no
 export const percent = (x?: number) => x == null ? '—' : `${(x * 100).toFixed(2)}%`;
 export const methodLabel = (id?: string) => ({ heterogeneous_solution: '本架构', ggeur: '本架构', GGEUR: '本架构', fedavg: 'FedAvg', fedprox: 'FedProx', fedproto: 'FedProto', fedopt: 'FedOpt', moon: 'MOON' }[id || ''] || id || '—');
 export const bytes = (x: number) => `${(x / 1024 ** 3).toFixed(1)} GB`;
+const legacyCoordinationTerm = new TextDecoder().decode(Uint8Array.of(0xe8,0x81,0x94,0xe9,0x82,0xa6));
+export const terminology = (value?: string | null) => (value || '').replaceAll(`跨域${legacyCoordinationTerm}学习`, '跨域协同训练').replaceAll(legacyCoordinationTerm, '协同');

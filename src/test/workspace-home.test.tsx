@@ -32,7 +32,7 @@ const catalog: Catalog = { host: 'ct-2x4090-lziy', address: '10.112.81.135', pro
   { id: defaults.group, dataset: 'Office-Home', backbone: 'vit', cacheFound: true, cacheFiles: 8,
     cacheBytes: 10, domains: 4, partitionLocked: false, methods: [{ id: 'fedavg', label: 'FedAvg', enabled: true, reason: null, defaults }] },
 ] };
-const running: Job = { id: 'a'.repeat(32), action: 'train', status: 'running', stage: '联邦训练 第 3 轮',
+const running: Job = { id: 'a'.repeat(32), action: 'train', status: 'running', stage: '协同训练 第 3 轮',
   request: defaults, createdAt: '2026-09-10T04:00:00Z', updatedAt: '2026-09-10T04:03:00Z',
   error: null, cleanup: { ok: true, message: '' }, clients: {}, metrics: [], config: {}, provenance: {} };
 const completed: Job = { ...running, id: 'b'.repeat(32), status: 'completed', stage: '训练完成',
@@ -89,7 +89,7 @@ describe('desktop workspace navigation',()=>{
   });
   it('navigates home → model verification → experiment without any writes or resource requests',async()=>{
     const fetch=mockApi();render(<MemoryRouter><PlatformApp/><LocationProbe/></MemoryRouter>);
-    expect(screen.getByRole('heading',{level:1,name:'跨域联邦学习'})).toBeInTheDocument();
+    expect(screen.getByRole('heading',{level:1,name:'跨域协同训练'})).toBeInTheDocument();
     await screen.findByRole('link',{name:/当前任务/});
     fireEvent.click(within(screen.getByRole('region',{name:'功能导航'})).getByRole('link',{name:'模型验证'}));
     expect(await screen.findByRole('heading',{name:'单图验证工作区'})).toBeInTheDocument();
@@ -109,7 +109,7 @@ describe('desktop workspace navigation',()=>{
     await screen.findByRole('button',{name:/停止任务/});
     expect(fetch).toHaveBeenCalledWith('/api/platform/jobs/'+running.id,expect.anything());
     page.unmount();render(<MemoryRouter initialEntries={['/?view=missing&id=must-not-fetch']}><PlatformApp/></MemoryRouter>);
-    expect(screen.getByRole('heading',{level:1,name:'跨域联邦学习'})).toBeInTheDocument();
+    expect(screen.getByRole('heading',{level:1,name:'跨域协同训练'})).toBeInTheDocument();
     expect(fetch.mock.calls.some(([url])=>url.includes('must-not-fetch'))).toBe(false);
   });
   it('keeps drafts across module navigation, not only the training tabs',async()=>{

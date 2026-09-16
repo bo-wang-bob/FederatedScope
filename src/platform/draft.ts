@@ -1,5 +1,5 @@
 import type { Catalog, RequestConfig } from './api';
-export const DRAFT_KEY = 'federated-studio.draft.v4';
+export const DRAFT_KEY = 'federated-studio.draft.v5';
 export type Draft = Partial<RequestConfig>;
 
 export function withPresentationDefaults(draft: Draft): Draft {
@@ -61,7 +61,7 @@ export function initialDraft(catalog: Catalog, groupId?: string, storageKey = DR
         if (savedGroup?.methods.some(method => method.id === saved.request.method && method.enabled)) {
           const base = savedGroup.methods.find(m => m.id === saved.request.method)?.defaults || savedGroup.methods.find(m => m.enabled)?.defaults;
           const safe = Object.fromEntries(Object.entries(requestFromDraft(saved.request)).filter(([,value]) => ['string','number','boolean'].includes(typeof value)));
-          return { ...base, ...safe };
+          return withPresentationDefaults({ ...base, ...safe });
         }
       }
     } catch { /* Corrupt or unavailable storage does not block creating a new experiment. */ }

@@ -106,7 +106,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
         </section>}
       </>}
       {step === 2 && <><div className="wizard-title"><h2>{draft.name || '确认实验配置'}</h2></div>
-        <div className="review-identity"><span className="review-identity-icon"><ExperimentOutlined /></span><div><h3>{methodLabel(draft.method)}</h3><p>{group?.dataset} / {group?.backbone.toUpperCase()}</p></div><span className="review-identity-type">联邦训练</span></div>
+        <div className="review-identity"><span className="review-identity-icon"><ExperimentOutlined /></span><div><h3>{methodLabel(draft.method)}</h3><p>{group?.dataset} / {group?.backbone.toUpperCase()}</p></div><span className="review-identity-type">协同训练</span></div>
         <dl className="review-grid">{[['通信轮数',draft.rounds],['客户端',draft.clientCount],['每轮参与',draft.sampleClients || '全部'],['本地轮数',draft.localEpochs],['学习率',draft.learningRate],['批大小',draft.batchSize],...(ours ? [['每类目标样本',draft.targetPerClass]] : [])].map(([label,value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       </>}
       </div>

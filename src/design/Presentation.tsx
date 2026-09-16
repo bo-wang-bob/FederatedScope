@@ -16,7 +16,7 @@ export function ConsoleShell({ view, children, mode = 'preview', connected = fal
   return <div className={'studio-shell design-console' + (mode === 'live' ? ' live-console' : '')}>
     <a className="studio-skip" href="#design-main">跳到主要内容</a>
     <aside className="design-sidebar">
-      <Link to="/" className="design-brand" aria-label="跨域联邦学习 · 返回首页"><span className="studio-brand-mark" aria-hidden="true"><i /><i /><i /><i /></span><span>跨域联邦学习</span></Link>
+      <Link to="/" className="design-brand" aria-label="跨域协同训练 · 返回首页"><span className="studio-brand-mark" aria-hidden="true"><i /><i /><i /><i /></span><span>跨域协同训练</span></Link>
       <nav className="design-nav" aria-label="主要功能">{Object.entries(mainPages).map(([id, page]) =>
         <Link key={id} to={viewHref(id as PlatformView)} aria-label={page.label} aria-current={mainView(view) === id ? 'page' : undefined}>{page.icon}<span>{page.label}</span></Link>)}</nav>
       <nav className="design-nav design-secondary" aria-label="研究扩展">
@@ -46,7 +46,7 @@ export function ConsoleShell({ view, children, mode = 'preview', connected = fal
 export function PhotoHome({ showDatasetImages = true }: { showDatasetImages?: boolean }) {
   return <section className="design-home design-enter" aria-label="功能导航">
     <div className="design-hero"><img src={landscape} alt="纳米布沙漠卫星影像，作为科研仿真场景配图" fetchPriority="high" />
-      <div className="design-hero-content"><span className="design-hero-symbol" aria-hidden="true"><ExperimentOutlined /></span><h1>跨域联邦学习</h1>
+      <div className="design-hero-content"><span className="design-hero-symbol" aria-hidden="true"><ExperimentOutlined /></span><h1>跨域协同训练</h1>
         <Link className="design-action" to={viewHref('train')}>新建训练 <ArrowRightOutlined /></Link>
       </div>
     </div>

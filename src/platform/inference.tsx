@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Collapse, Empty, Modal, Pagination, Select, Space, Spin, Tag, Tooltip } from 'antd';
 import { ArrowLeftOutlined, ArrowRightOutlined, DownloadOutlined, ExpandOutlined, PictureOutlined, ScanOutlined } from '@ant-design/icons';
-import { api, methodLabel, percent, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
+import { api, methodLabel, percent, terminology, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
 import { modelHref } from './navigation';
 import './inference.css';
 
@@ -15,7 +15,7 @@ function SampleImage({ sample, large = false, onUnavailable, onReady }: { sample
 export function PredictionPanel({ job, open }: { job?: Job; open?: (id: string) => void }) {
   const result = job?.status === 'completed' ? job.result as Prediction : undefined;
   return <Card className="platform-panel experience-prediction" title={<span><ScanOutlined /> 预测结果</span>} extra={<Tag color={result ? result.correct ? 'success' : 'warning' : 'default'}>{result ? '实际推理结果' : job && !terminal(job.status) ? '正在推理' : '等待预测'}</Tag>}>
-    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{job.stage}</h3></> : <><ScanOutlined /><h3>{job?.error ? '推理未完成' : '尚未预测'}</h3>{job?.error && <p role="alert">{job.error}</p>}</>}</div> : <>
+    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{terminology(job.stage)}</h3></> : <><ScanOutlined /><h3>{job?.error ? '推理未完成' : '尚未预测'}</h3>{job?.error && <p role="alert">{terminology(job.error)}</p>}</>}</div> : <>
       <div className="experience-verdict"><span>预测类别</span><h2>{result.predictedName.replaceAll('_', ' ')}</h2><div><strong>{percent(result.confidence)}</strong><span>Softmax 分数</span></div></div>
       <div className={`experience-ground-truth ${result.correct ? 'matched' : 'mismatched'}`}><div><span>真实标签</span><b>{result.labelName.replaceAll('_', ' ')}</b></div><Tag color={result.correct ? 'success' : 'warning'}>{result.correct ? '预测一致' : '预测不一致'}</Tag></div>
       <div className="experience-ranks"><h3>TOP {result.topK.length}<span>分类分数</span></h3>{result.topK.map((item, index) => <div className="experience-rank" key={item.classIndex}><div><span><i>{String(index + 1).padStart(2, '0')}</i>{item.className.replaceAll('_', ' ')}</span><b>{percent(item.score)}</b></div><div className="experience-rank-track"><span style={{ width: `${item.score * 100}%` }} /></div></div>)}</div>

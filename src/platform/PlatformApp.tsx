@@ -42,7 +42,7 @@ function Workspace() {
   const {message}=AntApp.useApp(), pending=useRef(pendingRequests());
   const open=useCallback((id:string) => { setQuery({view:'jobs',id});setRefreshKey(value => value+1); },[setQuery]);
   const launch=useTrainingLaunch(open,restricted ? DEMO_LAUNCH_KEY : undefined);
-  useEffect(() => { document.title=page.label+' · 跨域联邦学习'; },[page.label]);
+  useEffect(() => { document.title=page.label+' · 跨域协同训练'; },[page.label]);
   useEffect(() => { window.scrollTo(0,0); },[view,selectedId]);
   useEffect(() => {
     let alive=true,busy=false;

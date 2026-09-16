@@ -58,7 +58,7 @@ it('connects the approved live screen to catalog, samples and prediction, not pr
 
 it('uses the live preflight/train controller from the redesigned training screen', async () => {
   const writes: { path: string; body: Record<string, unknown> }[] = [];
-  const running = { ...prediction, id: 'c'.repeat(32), action: 'train', result: undefined, status: 'running', stage: '联邦训练', request } as Job;
+  const running = { ...prediction, id: 'c'.repeat(32), action: 'train', result: undefined, status: 'running', stage: '协同训练', request } as Job;
   vi.stubGlobal('fetch', vi.fn(async (path: string, init: RequestInit) => {
     if (init.method === 'POST') {
       writes.push({ path, body: JSON.parse(init.body as string) });
