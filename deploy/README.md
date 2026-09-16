@@ -1,11 +1,11 @@
 # 部署准备（尚未构建镜像）
 
-当前范围：ViT 冻结特征 + MilitaryAircraft-3D + FedAvg / FedProx / 本架构；独立评测与选图验证仍使用特征包和分类头。不会重跑准确率提升门槛。前后端及资源目录见 [运行说明](../docs/PORTABLE_PLATFORM.md)。
+当前范围：ViT + MilitaryAircraft-3D / OfficeHome + FedAvg / FedProx / 本架构，以及隐私回放、后门原图攻防推理。训练模型的独立评测与选图验证仍使用特征包和分类头。不会重跑准确率提升门槛。前后端及资源目录见 [运行说明](../docs/PORTABLE_PLATFORM.md)。
 
 ## 已准备
 
-- `requirements-runtime.lock`：从现有 Python 3.9.23 / torch 2.5.1+cu121 环境提取的 53 个精确版本，含传递依赖；依赖声明已核验无冲突。`requirements-torch.txt` 先从 PyTorch 官方 cu121 源安装。旧 setup.py 不用于部署依赖解析，不需要 `pip install -e .`。
-- `Dockerfile`：前端在 Node 22 中按 lock 文件安装和构建；Python 3.9 运行后端，镜像仅放代码、静态页面及依赖，不放数据和旧实验。仅缓存链路不需要 torchaudio、open_clip 或 transformers；若其他人的更新引入原图特征提取，必须重新审查依赖，不能沿用本清单直接交付。
+- `requirements-runtime.lock`：现有 Python 3.9.23 / torch 2.5.1+cu121 环境的 65 个精确版本，含后门需要的 open-clip-torch、timm、safetensors、Hugging Face Hub 及传递依赖。`requirements-torch.txt` 先从 PyTorch 官方 cu121 源安装；不使用旧 setup.py 解析部署依赖，不需要 `pip install -e .`。当前固定 ViT 路线不使用 torchaudio 或 transformers。
+- `Dockerfile`：Node 22 按 package-lock.json 安装并构建前端；Python 3.9 运行后端，镜像包含代码、静态页面及依赖，数据、权重和历史实验外置挂载。构建阶段执行 pip check、锁定版本与依赖闭包检查，以及 open_clip / timm 等真实导入和 CPU 张量计算；构建不需要 GPU。运行时不会下载模型，必须提供 resources/models/ViT-B-16.pt。
 - `Dockerfile.dockerignore`：构建上下文白名单，排除 Git、资源、实验、node_modules 等。
 - `platform.sh`：本地镜像启动器，不构建、不下载、不安装宿主机软件。先断网执行 GPU 张量计算和资源预检，再启动同源页面与 API。资源只读、状态独立持久化、默认绑定本机端口，按本目录所有权标签停止容器，不清理其他进程或端口。
 - `check_platform_deployment.py`：临时状态中执行三方法真实预检、缓存来源/哈希和 750 张图片验证；没有训练、增强生成或正式状态变更。`--require-cache` 要求默认本架构可直接复用独立缓存包。
@@ -19,7 +19,7 @@
 
 补充检查已通过：前端 12 个运行文件完整且两次构建运行资源指纹一致；后端原有 30 项、部署检查 6 项、启动器 8 项测试通过。离线 worker 保护开启时三方法各 2 轮训练、225 样本独立评测、三次真实选图预测、20 行分类/分域 CSV、JSON 和模型下载通过；重启前后 6 个模型条目、3 个测试集保持一致。临时测试服务已关闭，正式状态目录没有变化。
 
-**没有构建镜像、导出镜像/资源包，也没有替换正式服务。** 本地 Docker 引擎未启动；干净 Linux 镜像依赖安装、`pip check`、无网络训练及目标 RTX 5880 验证仍要在合入后端更新后执行。Python 3.9 和旧算法依赖是兼容性冻结，不代表已完成安全更新审查。
+**本 Dockerfile 尚未在干净镜像中完成构建与验收，未导出镜像。** 干净 Linux 镜像依赖安装、`pip check`、断网训练/隐私/后门流程及目标 RTX 5880 验证仍待执行。Python 3.9 和旧算法依赖是兼容性冻结，不代表已完成安全更新审查；已有服务器环境检查不能替代容器验收。
 
 ## 合并后的交付待办
 
@@ -33,11 +33,13 @@
 
 Docker 和源码统一使用 backend/resources/fedmia_local；显式 FS_FEDMIA_LOCAL_ROOT 可以覆盖，FS_PLATFORM_RESOURCES 改变时源码的隐私默认根随之调整。资源未就绪时隐私页显示提示，军机训练与评测仍可使用。
 
-未来构建入口（当前不要执行）：在含 `backend/` 和 `frontend/` 的父目录运行：
+联网构建入口：在含 `backend/` 和 `frontend/` 的父目录运行：
 
 ```bash
 docker build --platform linux/amd64 -f backend/deploy/Dockerfile -t fs-aircraft:prototype .
 ```
+
+完成容器验收后，联网构建机执行 `docker save -o fs-aircraft-prototype.tar fs-aircraft:prototype`，把镜像 tar 与整个资源交付目录复制到 U 盘；离线目标机执行 `docker load -i fs-aircraft-prototype.tar`。离线目标机不执行 docker build 或 pip install；NVIDIA 驱动与 Container Toolkit 属于宿主机组件，不装进镜像。
 
 导入正式镜像并准备资源后，Ubuntu 目标机运行（不依赖 Compose）：
 

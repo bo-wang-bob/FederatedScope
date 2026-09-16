@@ -1,4 +1,5 @@
-# Preparation only: build/export requires the final resource package and acceptance.
+# ViT training/evaluation + privacy replay + backdoor image inference.
+# Build online, export with docker save, then load on the offline target.
 # Build context is the directory containing sibling backend/ and frontend/.
 FROM node:22-bookworm-slim AS frontend
 WORKDIR /build
@@ -16,12 +17,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1 WANDB_MODE=disabled \
     HOME=/tmp MPLCONFIGDIR=/tmp/matplotlib HF_HOME=/tmp/huggingface \
     OMP_NUM_THREADS=2 FS_FEDMIA_LOCAL_ROOT=resources/fedmia_local
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libstdc++6 \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libgomp1 libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 COPY backend/deploy/requirements* /tmp/dependencies/
 RUN python -m pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 \
     && python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 -r /tmp/dependencies/requirements-torch.txt \
-    && python -m pip install --no-cache-dir -r /tmp/dependencies/requirements-runtime.lock \
+    && python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu121 -r /tmp/dependencies/requirements-runtime.lock \
     && python -m pip check
 WORKDIR /opt/platform/backend
 COPY backend/federatedscope ./federatedscope

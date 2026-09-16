@@ -95,6 +95,10 @@ print(json.dumps(results))
         self.assertEqual(len(pins), len(rows))
         self.assertEqual(pins['torch'], '2.5.1+cu121')
         self.assertEqual(pins['numpy'], '1.22.4')
+        self.assertEqual(pins['open-clip-torch'], '3.2.0')
+        self.assertEqual(pins['timm'], '1.0.24')
+        for name in ('huggingface-hub', 'safetensors', 'ftfy', 'regex', 'requests'):
+            self.assertIn(name, pins)
 
     def test_container_recipe_has_only_existing_source_inputs(self):
         frontend = REPO.parent / 'frontend'
