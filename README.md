@@ -69,6 +69,10 @@ python scripts/platform_acceptance.py --url http://127.0.0.1:8002 --group milita
 python -m scripts.platform_prediction_acceptance --url http://127.0.0.1:8002 --group military_vit --state exp/platform
 ```
 
+`platform_acceptance.py` 还支持 `--name`、`--generated-per-sample`、`--generated-per-prototype`、`--target-per-class` 和 `--covariance-scale`。成功完成且实际生成增强特征的训练会自动进入 `/api/platform/catalog` 的 `augmentationSources`，供前端作为完整配置预设或严格缓存复用来源，不需要手工复制参数。
+
+固定种子 42、相同划分和其余训练参数下，已保存 100 轮本架构增强量实验：每类目标 10、20、40、60；样本与原型候选生成数均为 20，协方差缩放 0.01。独立评测用于核对保存模型可重新加载，结果只代表当前这组运行，不能单独证明稳定提升。
+
 25 项后端测试通过。三种方法各 2 轮真实验收结果：FedAvg 31.56%、FedProx 27.11%、本架构 60.44%；三者重新加载 final 模型后，225 张测试图的总体和分域准确率均与训练结果一致，任务进程已清理。本架构本次生成增强数据。此处只证明链路可运行，不能据短轮试跑声称稳定提升。
 
 独立评测与单图测试复用保存的冻结 ViT 特征，并验证原图、样本及模型哈希；尚不支持任意上传图片重新运行 ViT。前端负责隐藏其他配置，后端仍保留原有能力及数据。
