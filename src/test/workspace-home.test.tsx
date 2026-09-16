@@ -153,6 +153,7 @@ describe('desktop workspace navigation',()=>{
     const fetch=vi.fn().mockRejectedValue(new Error('server offline'));vi.stubGlobal('fetch',fetch);
     render(<MemoryRouter initialEntries={['/?view=privacy&id=must-not-fetch']}><PlatformApp/></MemoryRouter>);
     expect(await screen.findByText('成员推理结果读取失败')).toBeInTheDocument();
+    expect(screen.queryByLabelText('演示范围')).not.toBeInTheDocument();
     expect(fetch.mock.calls.some(([url])=>url.includes('privacy/membership?'))).toBe(true);
     expect(fetch.mock.calls.every(([url,init])=>init.method==='GET'&&!url.includes('must-not-fetch'))).toBe(true);
   });
