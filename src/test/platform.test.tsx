@@ -43,6 +43,9 @@ describe('three-step training workflow',()=>{
     const data={...catalog,groups:[{...catalog.groups[0],methods:[{id:own.method,label:'本架构',enabled:true,reason:null,augmentedCacheFound:false,defaults:own}]}]};
     const fetch=vi.fn().mockImplementation(async(path:string)=>response(path.endsWith('preflight')?preflight:training));vi.stubGlobal('fetch',fetch);
     render(<Workflow data={data}/>);next();
+    expect(screen.getByRole('spinbutton',{name:'本地轮数'})).toHaveValue('1');
+    expect(screen.getByText('全部')).toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton',{name:'每轮参与客户端'})).not.toBeInTheDocument();
     expect(screen.getByRole('spinbutton',{name:'每个样本生成数'})).toHaveValue('20');
     expect(screen.getByRole('spinbutton',{name:'每个原型生成数'})).toHaveValue('20');
     expect(screen.getByRole('spinbutton',{name:'每类目标样本数'})).toHaveValue('40');

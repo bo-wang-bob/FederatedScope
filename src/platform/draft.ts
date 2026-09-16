@@ -1,11 +1,12 @@
 import type { Catalog, RequestConfig } from './api';
-export const DRAFT_KEY = 'federated-studio.draft.v3';
+export const DRAFT_KEY = 'federated-studio.draft.v4';
 export type Draft = Partial<RequestConfig>;
 
 export function withPresentationDefaults(draft: Draft): Draft {
   if (draft.method !== 'heterogeneous_solution') return draft;
   return {
     ...draft,
+    localEpochs: 1,
     augmentationMode: 'generate',
     augmentationSourceId: '',
     allowLegacyAugmentation: false,
