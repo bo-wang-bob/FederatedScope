@@ -21,5 +21,5 @@ export default defineConfig(({ mode }) => ({
     },
   },
   preview: { port: 4173 },
-  build: { sourcemap: true, outDir: mode === 'design' ? 'dist-design' : 'dist' },
+  build: { manifest: true, sourcemap: true, outDir: mode === 'design' ? 'dist-design' : 'dist' },
 }));

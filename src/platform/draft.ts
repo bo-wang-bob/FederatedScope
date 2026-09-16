@@ -2,20 +2,6 @@ import type { Catalog, RequestConfig } from './api';
 export const DRAFT_KEY = 'federated-studio.draft.v5';
 export type Draft = Partial<RequestConfig>;
 
-export function withPresentationDefaults(draft: Draft): Draft {
-  if (draft.method !== 'heterogeneous_solution') return draft;
-  return {
-    ...draft,
-    localEpochs: 1,
-    augmentationMode: 'generate',
-    augmentationSourceId: '',
-    allowLegacyAugmentation: false,
-    generatedPerSample: 20,
-    generatedPerPrototype: 20,
-    targetPerClass: 40,
-    covarianceScale: 0.01,
-  };
-}
 const numeric: [keyof RequestConfig, string, number, number, boolean][] = [
   ['rounds','通信轮数',1,1000,true], ['localEpochs','本地轮数',1,100,true],
   ['learningRate','学习率',1e-8,1,false], ['batchSize','批大小',1,1024,true],
@@ -44,7 +30,7 @@ export function validateDraft(draft: Draft, catalog: Catalog): Record<string, st
       if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > max || field !== 'covarianceScale' && !Number.isInteger(value))
         errors[field] = '请输入 0–' + max + (field === 'covarianceScale' ? ' 的数值' : ' 的整数');
     }
-    if (!['generate','reuse'].includes(draft.augmentationMode || '')) errors.augmentationMode = '请选择增强方式';
+    if (!['generate','reuse','auto'].includes(draft.augmentationMode || '')) errors.augmentationMode = '请选择增强方式';
     if (draft.augmentationMode === 'reuse' && !draft.augmentationSourceId && !draft.allowLegacyAugmentation)
       errors.allowLegacyAugmentation = '历史生成结果需要确认来源限制';
   }
@@ -61,12 +47,12 @@ export function initialDraft(catalog: Catalog, groupId?: string, storageKey = DR
         if (savedGroup?.methods.some(method => method.id === saved.request.method && method.enabled)) {
           const base = savedGroup.methods.find(m => m.id === saved.request.method)?.defaults || savedGroup.methods.find(m => m.enabled)?.defaults;
           const safe = Object.fromEntries(Object.entries(requestFromDraft(saved.request)).filter(([,value]) => ['string','number','boolean'].includes(typeof value)));
-          return withPresentationDefaults({ ...base, ...safe });
+          return { ...base, ...safe };
         }
       }
     } catch { /* Corrupt or unavailable storage does not block creating a new experiment. */ }
   }
-  return withPresentationDefaults({ ...fallback });
+  return { ...fallback };
 }
 export function saveDraft(draft: Draft, storageKey = DRAFT_KEY): boolean {
   try { localStorage.setItem(storageKey, JSON.stringify({ version: 2, request: draft })); return true; } catch { return false; }

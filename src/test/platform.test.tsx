@@ -21,6 +21,21 @@ function Workflow({data=catalog,open=vi.fn()}:{data?:Catalog;open?:(id:string)=>
 function next(){fireEvent.click(screen.getByRole('button',{name:/下一步/}));}
 
 describe('three-step training workflow',()=>{
+  it('uses the selected methods API defaults without retaining another methods local steps',()=>{
+    const own={...defaults,method:'heterogeneous_solution',rounds:100,localEpochs:1,
+      augmentationMode:'auto' as const,generatedPerSample:20,generatedPerPrototype:20,
+      targetPerClass:40,covarianceScale:.01};
+    const data={...catalog,groups:[{...catalog.groups[0],methods:[
+      {...catalog.groups[0].methods[0],defaults:{...defaults,localEpochs:5,rounds:100}},
+      {id:own.method,label:'本架构',enabled:true,reason:null,defaults:own}]}]};
+    vi.stubGlobal('fetch',vi.fn());render(<Workflow data={data}/>);
+    fireEvent.click(screen.getByRole('radio',{name:/本架构/}));next();
+    expect(screen.getByRole('spinbutton',{name:'本地轮数'})).toHaveValue('1');
+    expect(screen.getByRole('spinbutton',{name:'通信轮数'})).toHaveValue('100');
+    fireEvent.click(screen.getByRole('button',{name:/上一步/}));
+    fireEvent.click(screen.getByRole('radio',{name:/FedAvg/}));next();
+    expect(screen.getByRole('spinbutton',{name:'本地轮数'})).toHaveValue('5');
+  });
   it('starts once, automatically checks the exact visible configuration and binds the preflight',async()=>{
     const fetch=vi.fn().mockImplementation(async(path:string)=>response(path.endsWith('preflight')?preflight:training));
     vi.stubGlobal('fetch',fetch);const open=vi.fn();render(<Workflow open={open}/>);
@@ -39,7 +54,7 @@ describe('three-step training workflow',()=>{
     expect(sessionStorage.getItem(LAUNCH_KEY)).toBeNull();
   });
   it('supports configured generation when generated data do not exist',async()=>{
-    const own={...defaults,method:'heterogeneous_solution',augmentationMode:'generate' as const,generatedPerSample:50,generatedPerPrototype:50,targetPerClass:50,covarianceScale:1,augmentationSourceId:'',allowLegacyAugmentation:false};
+    const own={...defaults,method:'heterogeneous_solution',augmentationMode:'auto' as const,generatedPerSample:20,generatedPerPrototype:20,targetPerClass:40,covarianceScale:.01,augmentationSourceId:'',allowLegacyAugmentation:false};
     const data={...catalog,groups:[{...catalog.groups[0],methods:[{id:own.method,label:'本架构',enabled:true,reason:null,augmentedCacheFound:false,defaults:own}]}]};
     const fetch=vi.fn().mockImplementation(async(path:string)=>response(path.endsWith('preflight')?preflight:training));vi.stubGlobal('fetch',fetch);
     render(<Workflow data={data}/>);next();
@@ -56,7 +71,7 @@ describe('three-step training workflow',()=>{
     fireEvent.change(screen.getByRole('spinbutton',{name:'每类目标样本数'}),{target:{value:'20'}});
     next();fireEvent.click(screen.getByRole('button',{name:/启动训练/}));
     await waitFor(()=>expect(fetch).toHaveBeenCalledTimes(2));
-    expect(JSON.parse(fetch.mock.calls[1][1].body)).toMatchObject({method:'heterogeneous_solution',augmentationMode:'generate',generatedPerSample:2,targetPerClass:20,allowLegacyAugmentation:false});
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toMatchObject({method:'heterogeneous_solution',augmentationMode:'auto',generatedPerSample:2,targetPerClass:20,allowLegacyAugmentation:false});
   });
   it('loads a completed augmentation run as a selectable generation preset',async()=>{
     const own={...defaults,method:'heterogeneous_solution',augmentationMode:'generate' as const,generatedPerSample:1,generatedPerPrototype:1,targetPerClass:1,covarianceScale:.01,augmentationSourceId:'',allowLegacyAugmentation:false};
@@ -86,11 +101,11 @@ describe('three-step training workflow',()=>{
     const other={...catalog.groups[0],id:'different',methods:[{...catalog.groups[0].methods[0],defaults:{...defaults,group:'different',gpu:0,clientCount:16}}]};
     expect(initialDraft({...catalog,groups:[...catalog.groups,other]})).toMatchObject({group:'different',gpu:0,clientCount:16});
   });
-  it('normalizes saved architecture drafts to the presentation defaults',()=>{
+  it('preserves edited architecture drafts instead of replacing server defaults',()=>{
     const own={...defaults,method:'heterogeneous_solution',localEpochs:5,augmentationMode:'generate' as const,generatedPerSample:3,generatedPerPrototype:4,targetPerClass:60,covarianceScale:.5,augmentationSourceId:'',allowLegacyAugmentation:false};
     const data={...catalog,groups:[{...catalog.groups[0],methods:[{id:own.method,label:'本架构',enabled:true,reason:null,defaults:own}]}]};
     localStorage.setItem(DRAFT_KEY,JSON.stringify({version:2,request:own}));
-    expect(initialDraft(data)).toMatchObject({method:'heterogeneous_solution',localEpochs:1,generatedPerSample:20,generatedPerPrototype:20,targetPerClass:40,covarianceScale:.01});
+    expect(initialDraft(data)).toMatchObject({method:'heterogeneous_solution',localEpochs:5,generatedPerSample:3,generatedPerPrototype:4,targetPerClass:60,covarianceScale:.5});
   });
 });
 

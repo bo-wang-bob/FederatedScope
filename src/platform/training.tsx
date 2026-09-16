@@ -2,11 +2,10 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Input, InputNumber, Select } from 'antd';
 import { ArrowLeftOutlined, ArrowRightOutlined, CheckOutlined, ExperimentOutlined } from '@ant-design/icons';
 import { api, methodLabel, type Catalog, type Job, type RequestConfig } from './api';
-import { initialDraft, requestFromDraft, saveDraft, validateDraft, withPresentationDefaults, type Draft } from './draft';
+import { initialDraft, requestFromDraft, saveDraft, validateDraft, type Draft } from './draft';
 import type { TrainingLaunch } from './launch';
 
 const coreFields = ['name','group','method'];
-const sharedFields: (keyof RequestConfig)[] = ['name','rounds','localEpochs','learningRate','batchSize','clientCount','sampleClients','samplesPerClient','seed','splitSeed','alpha','evaluationFrequency'];
 export function augmentationConfigLabel(source: { request: RequestConfig }) {
   const request = source.request;
   const target = request.targetPerClass ? `每类 ${request.targetPerClass}` : '不限制每类数量';
@@ -57,11 +56,11 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
   const chooseGroup = (id: string) => {
     const next = catalog.groups.find(g => g.id === id);
     const defaults = next?.methods.find(m => m.id === draft.method && m.enabled)?.defaults || next?.methods.find(m => m.enabled)?.defaults;
-    setPresetId(''); setDraft(withPresentationDefaults({ ...defaults, name: draft.name || '' })); setErrors({});
+    setPresetId(''); setDraft({ ...defaults, name: draft.name || '' }); setErrors({});
   };
   const chooseMethod = (id: string) => {
     const defaults = group?.methods.find(m => m.id === id)?.defaults;
-    setPresetId(''); setDraft(withPresentationDefaults({ ...defaults, ...Object.fromEntries(sharedFields.filter(k => draft[k] !== undefined).map(k => [k,draft[k]])) })); setErrors({});
+    setPresetId(''); setDraft({ ...defaults, name: draft.name || '' }); setErrors({});
   };
   const validate = (all = false) => {
     const next = validateDraft(draft, catalog);

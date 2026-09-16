@@ -1,4 +1,6 @@
-# 跨域联邦学习 · 前端原型
+# 跨域协同训练 · 前端原型
+
+2026-09-16：训练默认参数统一读取后端 catalog，不再在页面覆盖参数。切换方法使用该方法默认配置，重新打开草稿保留编辑值；支持后端 `auto` 增强缓存选择。军机本架构默认 100 轮、每类 40、样本/原型各 20、本地轮数 1。选图验证仍使用保存特征与分类头。前端 dist 放在 backend 的兄弟目录 frontend/dist 即可由可迁移后端提供页面。
 
 分支：`prototype/frontend`。对应后端：[prototype/backend](https://github.com/bo-wang-bob/FederatedScope/tree/prototype/backend)。
 

@@ -2,7 +2,7 @@ export interface RequestConfig {
   group: string; method: string; name: string; rounds: number; clientCount: number;
   sampleClients: number; batchSize: number; localEpochs: number; learningRate: number;
   seed: number; splitSeed: number; alpha: number; gpu: number; evaluationFrequency: number; samplesPerClient: number;
-  augmentationMode?: 'none' | 'generate' | 'reuse'; allowLegacyAugmentation?: boolean;
+  augmentationMode?: 'none' | 'generate' | 'reuse' | 'auto'; allowLegacyAugmentation?: boolean;
   augmentationSourceId?: string;
   generatedPerSample?: number; generatedPerPrototype?: number; targetPerClass?: number; covarianceScale?: number;
 }

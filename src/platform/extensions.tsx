@@ -203,8 +203,10 @@ function PrivacyMembershipPanel() {
   </section>;
 
   if (!payload.configured || !records.length) return <section className="privacy-lab-shell studio-page-enter">
-    <Alert type="warning" showIcon message={payload.message || '尚未放置成员推理展示包'}
-      description={payload.expectedPath ? `请把服务器导出的 membership_examples.json 和 images 目录放到：${payload.expectedPath}` : undefined} />
+    <Alert type="warning" showIcon message={payload.message || '隐私模块资源未就绪'}
+      description={payload.expectedPath ? <details><summary>资源配置</summary>
+        <p>需补充 FedMIA 脚本、攻防特征、配置和 OfficeHome 图片。</p><code>{payload.expectedPath}</code>
+      </details> : undefined} />
   </section>;
   if (!selected) return null;
   const groupLabel = group === 'member' ? '客户端训练样本' : '非训练样本';

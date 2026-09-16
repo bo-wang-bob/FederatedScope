@@ -62,7 +62,7 @@ describe('frontend design review — isolated from live execution', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: '通信轮数' }), { target: { value: '18' } });
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '每轮参与客户端' }));
     expect(screen.queryByText('61', { selector: '.ant-select-item-option-content' })).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByText('全部', { selector: '.ant-select-item-option-content' }));
+    fireEvent.click(await screen.findByTitle('3'));
     navigate('系统首页'); navigate('训练实验');
     expect(screen.getByLabelText(/实验名称/)).toHaveValue('前端配置验收');
     fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
