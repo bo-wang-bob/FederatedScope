@@ -83,8 +83,8 @@ describe('desktop workspace navigation',()=>{
     expect(screen.getByRole('complementary')).toBeInTheDocument();
     expect(screen.getByText('服务已连接')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button',{name:/当前任务/}));expect(openCurrent).toHaveBeenCalledOnce();
-    expect(await screen.findByRole('link',{name:/隐私研究/})).toHaveAttribute('href','/?view=privacy');
-    expect(screen.getByRole('link',{name:/后门研究/})).toHaveAttribute('href','/?view=backdoor');
+    expect(await screen.findByRole('link',{name:/隐私保护/})).toHaveAttribute('href','/?view=privacy');
+    expect(screen.getByRole('link',{name:/后门防御/})).toHaveAttribute('href','/?view=backdoor');
     expect(screen.queryByRole('link',{name:/地图仿真/})).not.toBeInTheDocument();
   });
   it('navigates home → model verification → experiment without any writes or resource requests',async()=>{
@@ -130,7 +130,7 @@ describe('desktop workspace navigation',()=>{
     await screen.findByText('server offline');
     expect(screen.getByRole('button',{name:/重连/})).toBeInTheDocument();
     expect(within(screen.getByRole('region',{name:'功能导航'})).getByRole('link',{name:'模型验证'})).toBeInTheDocument();
-    expect(within(screen.getByRole('navigation',{name:'研究扩展'})).getByRole('link',{name:/隐私研究/})).toHaveAttribute('href','/?view=privacy');
+    expect(within(screen.getByRole('navigation',{name:'研究扩展'})).getByRole('link',{name:/隐私保护/})).toHaveAttribute('href','/?view=privacy');
     expect(screen.queryByText(/GPU|资源占用|缓存配置/)).not.toBeInTheDocument();
   });
   it('keeps data-cache legacy bookmarks useful without exposing a cache page',async()=>{
@@ -143,8 +143,9 @@ describe('desktop workspace navigation',()=>{
   it('reports unavailable backdoor API without launching a task',async()=>{
     const fetch=vi.fn().mockRejectedValue(new Error('server offline'));vi.stubGlobal('fetch',fetch);
     render(<MemoryRouter initialEntries={['/?view=backdoor&id=must-not-fetch']}><PlatformApp/></MemoryRouter>);
-    await screen.findByText('后门研究接口不可用');
-    expect(screen.queryByRole('button',{name:'生成三连对比'})).not.toBeInTheDocument();
+    await screen.findByText('后门防御接口不可用');
+    expect(screen.queryByText('三连对比')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button',{name:'生成对比'})).not.toBeInTheDocument();
     expect(fetch.mock.calls.every(([url,init])=>init.method==='GET'&&!url.includes('must-not-fetch'))).toBe(true);
   });
   it('shows a membership loading failure without launching or fetching a task', async()=>{

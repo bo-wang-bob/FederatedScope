@@ -114,13 +114,13 @@ describe('frontend design review — isolated from live execution', () => {
     expect(screen.getByText('尚无可对比结果')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出结果' })).toBeDisabled();
     expect(screen.queryByRole('link', { name: /地图仿真/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('link', { name: /隐私研究/ }));
-    expect(screen.getByRole('heading', { level: 1, name: '隐私研究' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: /隐私保护/ }));
+    expect(screen.getByRole('heading', { level: 1, name: '隐私保护' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: '成员推理攻击结果' })).toBeInTheDocument();
     expect(screen.getByText('无防御')).toBeInTheDocument();
     expect(screen.getByText('有防御')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('link', { name: /后门研究/ }));
-    expect(screen.getByRole('heading', { level: 1, name: '后门研究' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: /后门防御/ }));
+    expect(screen.getByRole('heading', { level: 1, name: '后门防御' })).toBeInTheDocument();
     expect(screen.getAllByText('未接入')).toHaveLength(1);
   });
 });

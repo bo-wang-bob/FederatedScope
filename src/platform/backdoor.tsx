@@ -103,7 +103,7 @@ export function BackdoorLab() {
     finally { if (alive.current) setSubmitting(false); }
   };
 
-  if (loadError) return <Alert className="studio-connection-alert" type="error" showIcon title="后门研究接口不可用" description={loadError} action={<Button icon={<ReloadOutlined />} onClick={() => setRefresh(v => v + 1)}>重试</Button>} />;
+  if (loadError) return <Alert className="studio-connection-alert" type="error" showIcon title="后门防御接口不可用" description={loadError} action={<Button icon={<ReloadOutlined />} onClick={() => setRefresh(v => v + 1)}>重试</Button>} />;
   if (!testset) return <div className="studio-loading"><Spin size="large" /></div>;
   if (!testset.exported) return <div className="studio-empty-state"><SafetyCertificateOutlined /><h2>测试集尚未导出</h2><p>{testset.message || '后端未找到测试集图片目录'}</p><p className="platform-muted">先在服务器执行一次绘图脚本，导出测试集图片后再回到本页。</p></div>;
 
@@ -123,7 +123,7 @@ export function BackdoorLab() {
       </div>
       <div className="backdoor-submit">
         {job && !terminal(job.status) && <Button disabled={job.status==='stopping'} onClick={() => void api<BackdoorJob>('backdoor/jobs/'+job.id+'/stop',{}).then(next => { if(alive.current) setJob(next); }).catch(e=>setError(String(e.message)))}>停止生成</Button>}
-        <Button type="primary" size="large" icon={<ThunderboltOutlined />} disabled={busy || !ids.length} loading={busy} onClick={() => void generate()}>{busy ? '正在生成对比' : '生成三连对比'}</Button>
+        <Button type="primary" size="large" icon={<ThunderboltOutlined />} disabled={busy || !ids.length} loading={busy} onClick={() => void generate()}>{busy ? '正在生成对比' : '生成对比'}</Button>
       </div>
       {error && <Alert type="error" showIcon title={error} />}
     </Card>

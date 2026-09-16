@@ -19,8 +19,8 @@ export function ConsoleShell({ view, children, mode = 'preview', connected = fal
       <nav className="design-nav" aria-label="主要功能">{Object.entries(mainPages).map(([id, page]) =>
         <Link key={id} to={viewHref(id as PlatformView)} aria-label={page.label} aria-current={mainView(view) === id ? 'page' : undefined}>{page.icon}<span>{page.label}</span></Link>)}</nav>
       <nav className="design-nav design-secondary" aria-label="研究扩展">
-        <Link to={viewHref('privacy')} aria-current={view === 'privacy' ? 'page' : undefined}><LockOutlined /><span>隐私研究</span></Link>
-        <Link to={viewHref('backdoor')} aria-current={mainView(view) === 'backdoor' ? 'page' : undefined}><SecurityScanOutlined /><span>后门研究</span></Link>
+        <Link to={viewHref('privacy')} aria-current={view === 'privacy' ? 'page' : undefined}><LockOutlined /><span>隐私保护</span></Link>
+        <Link to={viewHref('backdoor')} aria-current={mainView(view) === 'backdoor' ? 'page' : undefined}><SecurityScanOutlined /><span>后门防御</span></Link>
       </nav>
       <div className="design-sidebar-end" aria-hidden="true"><span /><i /><span /></div>
     </aside>

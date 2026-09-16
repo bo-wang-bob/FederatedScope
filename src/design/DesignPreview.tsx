@@ -158,7 +158,7 @@ function PrivacyResearch() {
   };
 
   return <section className="design-enter">
-    <PageHeading title="隐私研究">
+    <PageHeading title="隐私保护">
       <Segmented aria-label="成员状态" value={group} onChange={value => changeGroup(value as 'member' | 'nonmember')}
         options={[{ label: '成员样本', value: 'member' }, { label: '非成员样本', value: 'nonmember' }]} />
     </PageHeading>

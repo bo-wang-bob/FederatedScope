@@ -135,7 +135,7 @@ it('connects backdoor selection and comparison without invoking training or priv
   }));
   render(<MemoryRouter initialEntries={['/?view=backdoor']}><PlatformApp /></MemoryRouter>);
   await screen.findByRole('button',{name:'样本 Art_00001 · Laptop'});
-  fireEvent.click(screen.getByRole('button',{name:/生成三连对比/}));
+  fireEvent.click(screen.getByRole('button',{name:/生成对比/}));
   const link=await screen.findByRole('link',{name:/查看逐样本对照/});
   expect(writes.map(w=>w.path)).toEqual(['/api/platform/backdoor/pick','/api/platform/backdoor/jobs']);
   expect(writes[1].body.ids).toEqual(['Art_00001']);

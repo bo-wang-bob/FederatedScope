@@ -61,7 +61,7 @@ export function BackdoorCompare() {
       {error && <Alert className="backdoor-compare-alert" type="error" showIcon title={error}
         action={<Button icon={<ReloadOutlined />} onClick={() => setRefresh(value => value + 1)}>重试</Button>} />}
       {loading && !job && <div className="backdoor-loading"><Spin /></div>}
-      {!loading && !jobs.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span>还没有对比任务，先到<Link to={viewHref('backdoor')}>后门研究</Link>生成三连对比。</span>} />}
+      {!loading && !jobs.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span>还没有对比任务，先到<Link to={viewHref('backdoor')}>后门防御</Link>生成对比。</span>} />}
       {job && <>
         {job.status !== 'completed' ? <div className="backdoor-progress">{terminal(job.status) ? <><h3>{job.stage}</h3>{job.error && <p role="alert">{job.error}</p>}</> : <><Spin size="large" /><h3>{job.stage}</h3><p className="platform-muted">正在计算 {job.ids.length} 张图片的攻防预测</p></>}</div> : result && <>
           <h3 className="backdoor-table-title">逐样本预测对照</h3>

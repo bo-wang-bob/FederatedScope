@@ -102,7 +102,7 @@ function Workspace() {
   const jobIdFromQuery = query.get('job');
   const routeTabs: { view: PlatformView; label: string; href?: string }[] = area === 'train' ? [{view:'train',label:'新建训练'},{view:'jobs',label:'实验记录'}] :
     area === 'experience' ? [{view:'experience',label:'单图验证'},{view:'evaluate',label:'独立评测'}] :
-    area === 'backdoor' ? [{view:'backdoor',label:'三连对比'}, ...(jobIdFromQuery ? [{view:'backdoorCompare' as PlatformView,label:'逐样本对照',href:backdoorCompareHref(jobIdFromQuery)}] : [])] : [];
+    area === 'backdoor' && jobIdFromQuery ? [{view:'backdoorCompare',label:'逐样本对照',href:backdoorCompareHref(jobIdFromQuery)}] : [];
   return <StudioShell view={view} connected={!!catalog && !error} running={!!running} openCurrent={() => running && open(running.id)} showDatasetImages={!restricted}>
     {error && <Alert className="studio-connection-alert" type="error" showIcon title="连接中断，正在重试" description={error} action={<Button icon={<ReloadOutlined />} onClick={() => setRefreshKey(v => v+1)}>重连</Button>} />}
     {launch.intent && <div className={'launch-banner '+launch.intent.phase} role="status"><span className="launch-symbol">{launch.busy ? <i className="live-dot" /> : '!'}</span><div><strong>{launch.intent.phase === 'checking' ? launch.intent.cancelRequested ? '正在取消启动…' : '正在检查数据与配置…' : launch.intent.phase === 'starting' ? '正在启动训练…' : launch.intent.phase === 'blocked' ? '本次启动未通过检查' : '需要确认上次启动状态'}</strong><span>{launch.intent.error || launch.intent.request.name}</span></div>
