@@ -1,4 +1,5 @@
-import { ArrowRightOutlined, LockOutlined, SecurityScanOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, BarChartOutlined, CheckCircleFilled, ExperimentOutlined,
+  LockOutlined, SafetyCertificateOutlined, SecurityScanOutlined } from '@ant-design/icons';
 import { Alert, Select, Skeleton, Tag } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -62,8 +63,6 @@ type MembershipPayload = {
   };
   items: MembershipRecord[];
 };
-type DefenseMode = 'noDefense' | 'defense';
-
 const membershipStatus = {
   member: { label: '成员', tone: 'member' },
   nonmember: { label: '非成员', tone: 'nonmember' },
@@ -71,70 +70,85 @@ const membershipStatus = {
 const formatScore = (value?: number) => Number.isFinite(value) ? value!.toFixed(4) : '—';
 const formatPercent = (value?: number) => Number.isFinite(value) ? `${(value! * 100).toFixed(2)}%` : '—';
 
-function PrivacyDistributionChart({ distribution, title }: { distribution?: MembershipDistribution; title: string }) {
-  if (!distribution || distribution.member.length === 0 || distribution.nonmember.length === 0) return <section className="privacy-distribution-card">
-    <div className="privacy-block-title"><h3>当前客户端分数分布</h3><span>{title}</span></div>
-    <div className="privacy-chart-empty">暂无分布数据</div>
-  </section>;
-  const width = 360;
-  const height = 230;
-  const left = 34;
+function PrivacyDistributionPlot({ distribution, label, mode }: {
+  distribution?: MembershipDistribution;
+  label: string;
+  mode: 'noDefense' | 'defense';
+}) {
+  if (!distribution || distribution.member.length === 0 || distribution.nonmember.length === 0) {
+    return <article className={`privacy-distribution-plot ${mode}`}>
+      <header><strong>{label}</strong><span>暂无分布数据</span></header>
+      <div className="privacy-chart-empty">暂无分布数据</div>
+    </article>;
+  }
+  const width = 340;
+  const height = 190;
+  const left = 36;
   const right = 12;
-  const top = 18;
-  const bottom = 32;
+  const top = 17;
+  const bottom = 34;
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
   const count = Math.min(distribution.member.length, distribution.nonmember.length);
   const maxY = Math.max(...distribution.member, ...distribution.nonmember, 0.01);
   const barWidth = plotWidth / Math.max(count, 1);
-  const bars = Array.from({ length: count }, (_, index) => {
-    const x = left + index * barWidth;
-    const memberHeight = distribution.member[index] / maxY * plotHeight;
-    const nonmemberHeight = distribution.nonmember[index] / maxY * plotHeight;
-    return <g key={index}>
-      <rect x={x} y={top + plotHeight - memberHeight} width={barWidth * 0.9}
-        height={memberHeight} fill="#5bb7e5" opacity="0.64" />
-      <rect x={x} y={top + plotHeight - nonmemberHeight} width={barWidth * 0.9}
-        height={nonmemberHeight} fill="#65c8ae" opacity="0.64" />
-    </g>;
-  });
-  return <section className="privacy-distribution-card">
-    <div className="privacy-block-title"><h3>当前客户端分数分布</h3><span>{title}</span></div>
-    <svg viewBox={`0 0 ${width} ${height}`} aria-label="当前客户端训练样本与非训练样本分数分布">
-      <rect x="0" y="0" width={width} height={height} rx="8" fill="#e9eaf2" />
+  const id = mode === 'defense' ? 'defense' : 'plain';
+  return <article className={`privacy-distribution-plot ${mode}`}>
+    <header><strong>{label}</strong><span>分数分布对照</span></header>
+    <svg viewBox={`0 0 ${width} ${height}`} aria-label={`${label}训练样本与非训练样本分数分布`}>
+      <defs>
+        <linearGradient id={`privacy-chart-bg-${id}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#142425" /><stop offset="1" stopColor="#0d181a" /></linearGradient>
+        <linearGradient id={`privacy-member-bar-${id}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#67b9ed" /><stop offset="1" stopColor="#438ec0" /></linearGradient>
+        <linearGradient id={`privacy-nonmember-bar-${id}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#73d5b7" /><stop offset="1" stopColor="#419c83" /></linearGradient>
+      </defs>
+      <rect width={width} height={height} rx="10" fill={`url(#privacy-chart-bg-${id})`} />
       {[0, 0.5, 1].map(tick => {
         const x = left + tick * plotWidth;
         return <g key={`x-${tick}`}>
-          <line x1={x} y1={top} x2={x} y2={top + plotHeight} stroke="#fff" />
-          <text x={x} y={height - 11} textAnchor="middle">{tick.toFixed(1)}</text>
+          <line x1={x} y1={top} x2={x} y2={top + plotHeight} stroke="#29413f" strokeDasharray="3 5" />
+          <text x={x} y={height - 14} textAnchor="middle">{tick.toFixed(1)}</text>
         </g>;
       })}
       {[0, 0.5, 1].map(tick => {
         const y = top + plotHeight - tick * plotHeight;
-        return <g key={`y-${tick}`}>
-          <line x1={left} y1={y} x2={left + plotWidth} y2={y} stroke="#fff" />
-          <text x={left - 6} y={y + 4} textAnchor="end">{tick === 1 ? 'max' : tick.toFixed(1)}</text>
+        return <line key={`y-${tick}`} x1={left} y1={y} x2={left + plotWidth} y2={y} stroke="#29413f" strokeDasharray="3 5" />;
+      })}
+      {Array.from({ length: count }, (_, index) => {
+        const x = left + index * barWidth;
+        const memberHeight = distribution.member[index] / maxY * plotHeight;
+        const nonmemberHeight = distribution.nonmember[index] / maxY * plotHeight;
+        return <g key={index}>
+          <rect x={x} y={top + plotHeight - memberHeight} width={barWidth * 0.9} height={memberHeight}
+            fill={`url(#privacy-member-bar-${id})`} opacity="0.72" />
+          <rect x={x} y={top + plotHeight - nonmemberHeight} width={barWidth * 0.9} height={nonmemberHeight}
+            fill={`url(#privacy-nonmember-bar-${id})`} opacity="0.64" />
         </g>;
       })}
-      {bars}
-      <line x1={left} y1={top + plotHeight} x2={left + plotWidth} y2={top + plotHeight} stroke="#26313a" />
-      <line x1={left} y1={top} x2={left} y2={top + plotHeight} stroke="#26313a" />
-      <rect x={width - 112} y={18} width="14" height="8" fill="#5bb7e5" opacity="0.76" />
-      <text x={width - 92} y={26}>训练样本</text>
-      <rect x={width - 112} y={36} width="14" height="8" fill="#65c8ae" opacity="0.76" />
-      <text x={width - 92} y={44}>非训练样本</text>
-      <text x={left + plotWidth - 2} y={top + plotHeight - 7} textAnchor="end">攻击分数</text>
+      <line x1={left} y1={top + plotHeight} x2={left + plotWidth} y2={top + plotHeight} stroke="#56706b" />
+      <line x1={left} y1={top} x2={left} y2={top + plotHeight} stroke="#56706b" />
+      <text x={left + plotWidth} y={height - 3} textAnchor="end" className="axis-title">攻击分数</text>
     </svg>
     <div className="privacy-distribution-meta">
-      <span>μ训练 - μ非训练</span>
-      <strong>{formatScore(distribution.meanGap)}</strong>
+      <div><span>训练样本均值</span><strong>{formatScore(distribution.memberMean)}</strong></div>
+      <div><span>非训练样本均值</span><strong>{formatScore(distribution.nonmemberMean)}</strong></div>
+      <div className="gap"><span>均值差值</span><strong>{formatScore(distribution.meanGap)}</strong><small>越大越容易区分</small></div>
+    </div>
+  </article>;
+}
+
+function PrivacyDistributionChart({ distributions }: { distributions?: MembershipPayload['distributions'] }) {
+  return <section className="privacy-distribution-card">
+    <div className="privacy-card-heading"><span className="privacy-heading-icon"><BarChartOutlined /></span><div><h3>攻击分数分布</h3><p>防御前后分数可分性对照</p></div><em>Client 对照</em></div>
+    <div className="privacy-chart-legend"><span><i className="training" />训练样本</span><span><i className="nontraining" />非训练样本</span></div>
+    <div className="privacy-distribution-plots">
+      <PrivacyDistributionPlot distribution={distributions?.noDefense} label="无防御" mode="noDefense" />
+      <PrivacyDistributionPlot distribution={distributions?.defense} label="有防御" mode="defense" />
     </div>
   </section>;
 }
 
 function PrivacyMembershipPanel() {
   const [group, setGroup] = useState<'member' | 'nonmember'>('member');
-  const [defenseMode, setDefenseMode] = useState<DefenseMode>('noDefense');
   const [clientId, setClientId] = useState<number>();
   const [payload, setPayload] = useState<MembershipPayload>();
   const [error, setError] = useState('');
@@ -193,74 +207,69 @@ function PrivacyMembershipPanel() {
       description={payload.expectedPath ? `请把服务器导出的 membership_examples.json 和 images 目录放到：${payload.expectedPath}` : undefined} />
   </section>;
   if (!selected) return null;
-  const isDefenseMode = defenseMode === 'defense';
-  const attackLabel = isDefenseMode ? '有防御攻击' : '无防御攻击';
-  const selectedPrediction = isDefenseMode ? selected.defensePrediction : selected.noDefensePrediction;
-  const selectedScore = isDefenseMode ? selected.defenseScore : selected.noDefenseScore;
-  const selectedMetrics = isDefenseMode ? payload.metrics?.defense : payload.metrics?.noDefense;
-  const selectedDistribution = isDefenseMode ? payload.distributions?.defense : payload.distributions?.noDefense;
-  const selectedCorrect = selectedPrediction === selected.truth;
+  const groupLabel = group === 'member' ? '客户端训练样本' : '非训练样本';
+  const comparisons = [
+    { key: 'noDefense', label: '无防御', metrics: payload.metrics?.noDefense,
+      prediction: selected.noDefensePrediction, score: selected.noDefenseScore },
+    { key: 'defense', label: '有防御', metrics: payload.metrics?.defense,
+      prediction: selected.defensePrediction, score: selected.defenseScore },
+  ] as const;
 
   return <section className="privacy-lab-shell studio-page-enter">
     <div className="privacy-control-bar">
-      <div className="privacy-mode-tabs" role="tablist" aria-label="成员状态">
-        <button className={group === 'member' ? 'active' : ''} onClick={() => changeGroup('member')}>客户端训练样本</button>
-        <button className={group === 'nonmember' ? 'active' : ''} onClick={() => changeGroup('nonmember')}>非训练样本</button>
-      </div>
-      <div className="privacy-control-actions">
-        <div className="privacy-mode-tabs" role="tablist" aria-label="防御状态">
-          <button className={defenseMode === 'noDefense' ? 'active' : ''} onClick={() => setDefenseMode('noDefense')}>无防御</button>
-          <button className={defenseMode === 'defense' ? 'active' : ''} onClick={() => setDefenseMode('defense')}>有防御</button>
+      <div className="privacy-control-group">
+        <span className="privacy-control-label">样本集合</span>
+        <div className="privacy-mode-tabs" role="tablist" aria-label="成员状态">
+          <button className={group === 'member' ? 'active' : ''} onClick={() => changeGroup('member')}>客户端训练样本</button>
+          <button className={group === 'nonmember' ? 'active' : ''} onClick={() => changeGroup('nonmember')}>非训练样本</button>
         </div>
-        <label>
-          <span>目标客户端</span>
-          <Select value={payload.clientId} onChange={value => setClientId(value)}
-            options={(payload.clients || []).map(id => ({ value: id, label: `Client ${id}` }))} />
-        </label>
       </div>
+      <label className="privacy-client-select">
+        <span className="privacy-control-label">目标客户端</span>
+        <Select value={payload.clientId} onChange={value => setClientId(value)}
+          options={(payload.clients || []).map(id => ({ value: id, label: `Client ${id}` }))} />
+      </label>
     </div>
     <div className="privacy-lab">
       <section className="privacy-picker" aria-label="成员推理样本">
-        <div className="privacy-section-title"><h2>样本选择</h2><span>Office-Home</span></div>
+        <div className="privacy-section-title"><div><h2>样本选择</h2><p>{groupLabel}</p></div><span>{records.length} 个</span></div>
         <div className="privacy-sample-list">
           {records.map(record => <button key={record.id} className={record.id === selected.id ? 'selected' : ''}
             onClick={() => setSelectedId(record.id)} aria-pressed={record.id === selected.id}>
             <img src={record.imageUrl} alt={`${record.className || record.filename} ${membershipStatus[record.truth].label}`} />
-            <span>{record.className || record.filename || record.id}</span>
+            <span><strong>{record.className || record.filename || record.id}</strong><small>{record.domain || 'Office-Home'}</small></span>
           </button>)}
         </div>
       </section>
-      <PrivacyDistributionChart distribution={selectedDistribution} title={attackLabel} />
+      <PrivacyDistributionChart distributions={payload.distributions} />
       <section className="privacy-result" aria-label="成员推理攻击结果">
-        <div className="privacy-client-metrics">
-          <div className="privacy-result-header"><h2>客户端整体攻击指标</h2><span>Client {payload.clientId}</span></div>
-          <article className={isDefenseMode ? 'defense' : ''}>
-            <span>{attackLabel}</span>
-            <strong>AUC {formatPercent(selectedMetrics?.auc)}</strong>
-            <b>TPR@1%FPR {formatPercent(selectedMetrics?.tprAt1Fpr)}</b>
-          </article>
-        </div>
+        <div className="privacy-card-heading privacy-result-heading"><span className="privacy-heading-icon"><ExperimentOutlined /></span><div><h3>攻击结果对照</h3><p>整体指标与当前样本预测</p></div><em>Client {payload.clientId}</em></div>
         <div className="privacy-selected-summary">
           <img src={selected.imageUrl} alt={selected.className || selected.filename} />
           <div>
-            <span>当前样本</span>
+            <span className="privacy-eyebrow">当前样本</span>
             <strong>{selected.className || selected.filename || selected.id}</strong>
-            <p>真实状态：<b className={membershipStatus[selected.truth].tone}>{membershipStatus[selected.truth].label}</b></p>
-            <p>样本域：{selected.domain || '—'}</p>
+            <p><b className={membershipStatus[selected.truth].tone}>{selected.truth === 'member' ? '客户端训练样本' : '非训练样本'}</b><i>{selected.domain || 'Office-Home'}</i></p>
           </div>
         </div>
-        <div className="privacy-panel-block">
-          <div className="privacy-block-title"><h3>当前样本攻击结果</h3><span>{attackLabel}</span></div>
-          <article className={`privacy-single-result-card ${selectedCorrect ? 'attack-correct' : 'attack-wrong'} ${isDefenseMode ? 'defense' : ''}`}>
-            <div>
-              <span>攻击预测结果</span>
-              <strong>{membershipStatus[selectedPrediction].label}</strong>
-            </div>
-            <div>
-              <span>攻击分数</span>
-              <strong>{formatScore(selectedScore)}</strong>
-            </div>
-          </article>
+        <div className="privacy-comparison-list">
+          {comparisons.map(item => {
+            const correct = item.prediction === selected.truth;
+            return <article className={`privacy-comparison-card ${item.key}`} key={item.key}>
+              <header><span className="privacy-heading-icon"><SafetyCertificateOutlined /></span><div><strong>{item.label}</strong><small>FedMIA 攻击</small></div></header>
+              <div className="privacy-comparison-metrics">
+                <div><span>AUC</span><strong>{formatPercent(item.metrics?.auc)}</strong></div>
+                <div><span>TPR@1%FPR</span><strong>{formatPercent(item.metrics?.tprAt1Fpr)}</strong></div>
+              </div>
+              <div className={`privacy-comparison-prediction ${correct ? 'attack-correct' : 'attack-wrong'}`}>
+                <div><span>攻击预测结果</span><strong>{membershipStatus[item.prediction].label}</strong></div>
+                <div><span>攻击分数</span><strong>{formatScore(item.score)}</strong></div>
+              </div>
+              <div className={`privacy-result-verdict ${correct ? 'correct' : 'wrong'}`}>
+                <CheckCircleFilled /><span>{correct ? '攻击判断与真实状态一致' : '攻击判断与真实状态不一致'}</span>
+              </div>
+            </article>;
+          })}
         </div>
       </section>
     </div>
