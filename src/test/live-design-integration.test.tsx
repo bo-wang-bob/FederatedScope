@@ -81,3 +81,37 @@ it('uses the live preflight/train controller from the redesigned training screen
   expect(writes[0].body.idempotencyKey).not.toBe(writes[1].body.idempotencyKey);
   expect(await screen.findByRole('button', { name: /停止任务/ })).toBeInTheDocument();
 });
+
+it.each(['fedavg', 'fedprox', 'heterogeneous_solution'])('launches OfficeHome ViT %s with its own defaults', async method => {
+  const officeRequest = {...request, group:'officehome_vit', method, clientCount:60, sampleClients:0,
+    learningRate:method==='fedprox' ? .0002 : .0001, samplesPerClient:0,
+    augmentationMode:method==='heterogeneous_solution' ? 'generate' : 'none',
+    generatedPerSample:50, generatedPerPrototype:50, targetPerClass:50, covarianceScale:1} as RequestConfig;
+  const officeGroup = {...catalog.groups[0], id:'officehome_vit', dataset:'Office-Home', domains:4,
+    methods:['fedavg','fedprox','heterogeneous_solution','fedopt'].map(id=>({id,label:id,enabled:true,reason:null,
+      defaults:{...officeRequest,method:id,learningRate:id==='fedprox' ? .0002 : .0001,
+        augmentationMode:id==='heterogeneous_solution' ? 'generate' : 'none'} as RequestConfig}))};
+  const writes: {path:string;body:Record<string,unknown>}[]=[];
+  const running={...prediction,id:'e'.repeat(32),action:'train',status:'running',request:officeRequest,result:undefined} as Job;
+  vi.stubGlobal('fetch',vi.fn(async(path:string,init:RequestInit)=>{
+    if(init.method==='POST') {
+      writes.push({path,body:JSON.parse(init.body as string)});
+      return {ok:true,json:async()=>({data:path.endsWith('/preflight') ? {...running,id:'f'.repeat(32),action:'inspect',status:'completed'} : running})};
+    }
+    return {ok:true,json:async()=>({data:path.endsWith('/catalog') ? {...catalog,groups:[...catalog.groups,officeGroup]} : path.endsWith('/library') ? library : path.includes('/jobs/') ? running : []})};
+  }));
+  render(<MemoryRouter initialEntries={['/?view=train']}><PlatformApp /></MemoryRouter>);
+  const dataset=await screen.findByRole('combobox',{name:'数据集'});
+  fireEvent.mouseDown(dataset);
+  fireEvent.click(await screen.findByText('Office-Home / VIT'));
+  expect(screen.getAllByRole('radio')).toHaveLength(3);
+  fireEvent.click(screen.getByRole('radio',{name:method==='heterogeneous_solution' ? /本架构/ : method==='fedprox' ? /FedProx/ : /FedAvg/}));
+  fireEvent.click(screen.getByRole('button',{name:/下一步/}));
+  expect(screen.getByRole('spinbutton',{name:'客户端数量'})).toHaveValue('60');
+  if(method==='heterogeneous_solution') expect(screen.getByRole('spinbutton',{name:'每类目标样本数'})).toHaveValue('50');
+  fireEvent.click(screen.getByRole('button',{name:/下一步/}));
+  fireEvent.click(screen.getByRole('button',{name:/启动训练/}));
+  await waitFor(()=>expect(writes).toHaveLength(2));
+  for(const write of writes) expect(write.body).toEqual(expect.objectContaining({group:'officehome_vit',method,clientCount:60,gpu:0,learningRate:officeRequest.learningRate}));
+  expect(writes[1].body.preflightId).toBe('f'.repeat(32));
+});

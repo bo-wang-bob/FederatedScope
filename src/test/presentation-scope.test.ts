@@ -7,7 +7,8 @@ beforeEach(() => { vi.stubEnv('VITE_DEMO_SCOPE', 'aircraft'); localStorage.clear
 const request = { group: 'military_vit', method: 'fedavg', name: '军机训练' } as RequestConfig;
 const group = { id: 'military_vit', dataset: 'MilitaryAircraft-3D', backbone: 'vit', cacheFound: true,
   methods: ['fedavg','fedprox','heterogeneous_solution','fedopt'].map(id => ({id, label:id, enabled:true, reason:null, defaults:{...request,method:id}})) } as Group;
-const catalog = { groups: [group, {...group,id:'military_cnn',backbone:'cnn'}, {...group,id:'officehome_vit',dataset:'Office-Home'}] } as Catalog;
+const office = {...group,id:'officehome_vit',dataset:'Office-Home', methods: group.methods.map(method => ({...method,defaults:{...method.defaults,group:'officehome_vit'}}))};
+const catalog = { groups: [group, {...group,id:'military_cnn',backbone:'cnn'}, office, {...office,id:'officehome_cnn',backbone:'cnn'}] } as Catalog;
 const model = { id:'plane-final',jobId:'plane',name:'军机模型',group:'military_vit',method:'fedavg',featureSpace:'plane' };
 const library = {models:[model,{...model,id:'other',group:'officehome_vit'}, {...model,id:'fedopt',method:'fedopt'}],
   testsets:[{...model,id:'plane'},{...model,id:'office',group:'officehome_vit'}]} as Library;
@@ -20,25 +21,30 @@ it('defaults to the aircraft demo and permits an explicit full-catalog build', (
   expect(presentationCatalog(catalog)).toBe(catalog);
   expect(presentationLibrary(library,catalog)).toBe(library);
 });
-it('keeps only the actual MilitaryAircraft-3D ViT group and three methods without mutation', () => {
+it('keeps military and OfficeHome ViT with three methods without mutation', () => {
   const filtered=presentationCatalog(catalog);
-  expect(filtered.groups.map(g=>g.id)).toEqual(['military_vit']);
-  expect(filtered.groups[0].methods.map(m=>m.id)).toEqual(['fedavg','fedprox','heterogeneous_solution']);
-  expect(catalog.groups).toHaveLength(3);
+  expect(filtered.groups.map(g=>g.id)).toEqual(['military_vit','officehome_vit']);
+  for (const entry of filtered.groups) {
+    expect(entry.methods.map(m=>m.id)).toEqual(['fedavg','fedprox','heterogeneous_solution']);
+    expect(entry.methods.every(m=>m.defaults.group===entry.id)).toBe(true);
+  }
+  expect(catalog.groups).toHaveLength(4);
   expect(catalog.groups[0].methods).toHaveLength(4);
 });
 it('never relabels or substitutes another dataset when the military group is missing', () => {
   const missing={...catalog,groups:catalog.groups.filter(g=>g.id!=='military_vit')};
-  expect(presentationCatalog(missing).groups).toEqual([]);
-  expect(presentationLibrary(library,missing)).toEqual({models:[],testsets:[]});
+  expect(presentationCatalog(missing).groups.map(g=>g.id)).toEqual(['officehome_vit']);
+  expect(presentationLibrary(library,missing).models.map(m=>m.id)).toEqual(['other']);
+  expect(presentationCatalog({...catalog,groups:catalog.groups.filter(g=>g.backbone==='cnn')}).groups).toEqual([]);
   expect(presentationLibrary(library)).toEqual({models:[],testsets:[]});
 });
 it('filters model and testset inventories and history with the same allowlist', () => {
-  expect(presentationLibrary(library,catalog).models.map(m=>m.id)).toEqual(['plane-final']);
-  expect(presentationLibrary(library,catalog).testsets.map(t=>t.id)).toEqual(['plane']);
+  expect(presentationLibrary(library,catalog).models.map(m=>m.id)).toEqual(['plane-final','other']);
+  expect(presentationLibrary(library,catalog).testsets.map(t=>t.id)).toEqual(['plane','office']);
   const jobs=[{id:'plane',request},{id:'office',request:{...request,group:'officehome_vit'}}, {id:'hidden-method',request:{...request,method:'fedopt'}}] as Job[];
-  expect(presentationJobs(jobs,catalog).map(j=>j.id)).toEqual(['plane']);
-  expect(requestInPresentation(jobs[1].request,catalog)).toBe(false);
+  expect(presentationJobs(jobs,catalog).map(j=>j.id)).toEqual(['plane','office']);
+  expect(requestInPresentation(jobs[1].request,catalog)).toBe(true);
+  expect(requestInPresentation({group:'officehome_vit',method:'fedopt'},catalog)).toBe(false);
 });
 it('does not restore a hidden method from the demo draft or overwrite the full-view draft', () => {
   const original=JSON.stringify({version:2,request:{...request,group:'officehome_vit',name:'保留草稿'}});

@@ -10,16 +10,19 @@ const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '
 export function isAircraftVit(group: Group) {
   return normalize(group.dataset) === 'militaryaircraft3d' && normalize(group.backbone) === 'vit';
 }
+export function isPresentationGroup(group: Group) {
+  return isAircraftVit(group) || (normalize(group.dataset) === 'officehome' && normalize(group.backbone) === 'vit');
+}
 export function presentationCatalog(catalog: Catalog, restricted = aircraftDemoEnabled()): Catalog {
   if (!restricted) return catalog;
-  return { ...catalog, groups: catalog.groups.filter(isAircraftVit).map(group => ({
+  return { ...catalog, groups: catalog.groups.filter(isPresentationGroup).map(group => ({
     ...group, methods: group.methods.filter(method => DEMO_METHODS.some(id => id === method.id)),
     augmentationSources: group.augmentationSources?.filter(source =>
       source.request.group === group.id && DEMO_METHODS.some(id => id === source.request.method)),
   })) };
 }
 export function requestInPresentation(request: Pick<RequestConfig, 'group' | 'method'>, catalog?: Catalog, restricted = aircraftDemoEnabled()) {
-  return !restricted || !!catalog?.groups.some(group => isAircraftVit(group) && group.id === request.group &&
+  return !restricted || !!catalog?.groups.some(group => isPresentationGroup(group) && group.id === request.group &&
     DEMO_METHODS.some(id => id === request.method) && group.methods.some(method => method.id === request.method));
 }
 export function presentationLibrary(library: Library, catalog?: Catalog, restricted = aircraftDemoEnabled()): Library {
