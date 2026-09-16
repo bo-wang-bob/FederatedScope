@@ -22,6 +22,29 @@ const previewTheme = { ...researchTheme, token: { ...researchTheme.token, fontSi
 const domainOptions = [{ value: 'all', label: '全部域' }, { value: 'Art', label: 'Art' }, { value: 'Real_World', label: 'Real World' }];
 const classOptions = [{ value: 'all', label: '全部类别' }, ...Array.from(new Set(samples.map(s => s.category))).map(category => ({ value: category, label: category }))];
 type Notice = { title: string; detail: string };
+type MembershipRecord = {
+  id: string;
+  sample: DesignSample;
+  truth: 'member' | 'nonmember';
+  noDefenseScore: number;
+  defenseScore: number;
+};
+
+const membershipRecords: MembershipRecord[] = [
+  { id: 'mia-01', sample: samples[1], truth: 'member', noDefenseScore: 0.91, defenseScore: 0.54 },
+  { id: 'mia-02', sample: samples[2], truth: 'member', noDefenseScore: 0.86, defenseScore: 0.49 },
+  { id: 'mia-03', sample: samples[0], truth: 'nonmember', noDefenseScore: 0.23, defenseScore: 0.47 },
+  { id: 'mia-04', sample: samples[3], truth: 'nonmember', noDefenseScore: 0.31, defenseScore: 0.51 },
+];
+
+const membershipStatus = {
+  member: { label: '成员', tone: 'member' },
+  nonmember: { label: '非成员', tone: 'nonmember' },
+} as const;
+
+function membershipPrediction(score: number) {
+  return score >= 0.5 ? 'member' : 'nonmember';
+}
 
 function PageHeading({ title, children }: PropsWithChildren<{ title: string }>) {
   return <div className="design-heading"><h1>{title}</h1>{children}</div>;
@@ -119,6 +142,65 @@ function Comparison() {
   </section>;
 }
 
+function PrivacyResearch() {
+  const [group, setGroup] = useState<'member' | 'nonmember'>('member');
+  const filtered = membershipRecords.filter(record => record.truth === group);
+  const [selectedId, setSelectedId] = useState(filtered[0].id);
+  const selected = filtered.find(record => record.id === selectedId) || filtered[0] || membershipRecords[0];
+  const noDefensePrediction = membershipPrediction(selected.noDefenseScore);
+  const defensePrediction = membershipPrediction(selected.defenseScore);
+  const noDefenseCorrect = noDefensePrediction === selected.truth;
+  const defenseCorrect = defensePrediction === selected.truth;
+
+  const changeGroup = (nextGroup: 'member' | 'nonmember') => {
+    setGroup(nextGroup);
+    setSelectedId(membershipRecords.find(record => record.truth === nextGroup)?.id || membershipRecords[0].id);
+  };
+
+  return <section className="design-enter">
+    <PageHeading title="隐私研究">
+      <Segmented aria-label="成员状态" value={group} onChange={value => changeGroup(value as 'member' | 'nonmember')}
+        options={[{ label: '成员样本', value: 'member' }, { label: '非成员样本', value: 'nonmember' }]} />
+    </PageHeading>
+    <div className="privacy-lab">
+      <section className="privacy-picker" aria-label="成员推理样本">
+        <div className="privacy-section-title"><h2>样本选择</h2><span>Office-Home</span></div>
+        <div className="privacy-sample-list">
+          {filtered.map(record => <button key={record.id} className={record.id === selected.id ? 'selected' : ''}
+            onClick={() => setSelectedId(record.id)} aria-pressed={record.id === selected.id}>
+            <SampleImage sample={record.sample} />
+            <span>{record.sample.label}</span>
+            <i className={membershipStatus[record.truth].tone}>{membershipStatus[record.truth].label}</i>
+          </button>)}
+        </div>
+      </section>
+      <section className="privacy-focus" aria-label="当前样本">
+        <div className="privacy-image-card">
+          <SampleImage key={selected.id} sample={selected.sample} />
+        </div>
+        <div className="privacy-meta">
+          <div><span>真实状态</span><strong className={membershipStatus[selected.truth].tone}>{membershipStatus[selected.truth].label}</strong></div>
+          <div><span>样本域</span><strong>{selected.sample.domain.replace('_', ' ')}</strong></div>
+          <div><span>类别</span><strong>{selected.sample.label}</strong></div>
+        </div>
+      </section>
+      <section className="privacy-result" aria-label="成员推理攻击结果">
+        <div className="privacy-result-header"><h2>攻击预测</h2><span>FedMIA 特征</span></div>
+        <div className="privacy-attack-cards">
+          <article className={noDefenseCorrect ? 'attack-correct' : 'attack-wrong'}>
+            <span>无防御</span>
+            <p>攻击预测结果：<b>{membershipStatus[noDefensePrediction].label}</b></p>
+          </article>
+          <article className={defenseCorrect ? 'attack-correct defense' : 'attack-wrong defense'}>
+            <span>有防御</span>
+            <p>攻击预测结果：<b>{membershipStatus[defensePrediction].label}</b></p>
+          </article>
+        </div>
+      </section>
+    </div>
+  </section>;
+}
+
 function Reserved({ view }: { view: 'privacy' | 'backdoor' }) {
   return <section className="design-enter"><PageHeading title={pages[view].label} /><div className="design-reserved">
     {view === 'privacy' ? <LockOutlined /> : <SecurityScanOutlined />}<h2>未接入</h2>
@@ -138,7 +220,8 @@ export default function DesignPreview() {
       {view === 'train' && <Training draft={draft} onDraft={setDraft} notify={setNotice} />}
       {(view === 'experience' || view === 'evaluate') && <Verification evaluate={view === 'evaluate'} notify={setNotice} />}
       {view === 'compare' && <Comparison />}
-      {(view === 'privacy' || view === 'backdoor') && <Reserved view={view} />}
+      {view === 'privacy' && <PrivacyResearch />}
+      {view === 'backdoor' && <Reserved view={view} />}
     </DesignShell>
     <Modal open={!!notice} title={notice?.title} onCancel={() => setNotice(undefined)} className="design-modal"
       footer={<Button type="primary" onClick={() => setNotice(undefined)}>确定</Button>}><p>{notice?.detail}</p></Modal>
