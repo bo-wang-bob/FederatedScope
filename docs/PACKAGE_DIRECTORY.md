@@ -19,6 +19,7 @@ FederatedScope-delivery/
     │   ├── exp/distributed_feature_cache/officehome_vit/  # 四域训练及测试缓存
     │   ├── caches/military_vit_default/   # 独立 40/20/20 增强缓存
     │   ├── models/ViT-B-16.pt
+    │   ├── backdoor/exp/               # 后门模型、触发器、测试图和缓存
     │   └── fedmia_local/
     │       ├── show_fedmia_examples.py
     │       ├── runs/{no_defense,defense}/
@@ -49,6 +50,7 @@ python backend/scripts/prepare_platform_directory.py \
   --features /来源/military_aircraft_vit_fixedsplit_v2 \
   --officehome-dataset /来源/OfficeHomeDataset_10072016 \
   --officehome-features /来源/officehome_vit \
+  --backdoor /来源/backdoor \
   --weights /来源/ViT-B-16.pt \
   --privacy /来源/fedmia_local \
   --state /来源/exp/platform \
@@ -66,6 +68,10 @@ python backend/scripts/platform_offline_smoke.py --group officehome_vit --report
 ```
 
 ## 复制或换目录后检查
+
+后门默认读取 `backend/resources/backdoor/exp/sabre`，复用隐私的 `resources/fedmia_local/datasets/OfficeHomeDataset_10072016`，ViT 权重读取 `resources/models/ViT-B-16.pt`。可用 `FS_BACKDOOR_BASE`、`FS_BACKDOOR_DATA_ROOT`、`FS_BACKDOOR_VIT_WEIGHTS` 覆盖，相对值按 backend 根解析。不修改归档配置中的原始路径证据；缺少本地权重时明确报错，不联网下载。后门运行记录保存在 `exp/platform/backdoor`，打包时同样禁止运行中任务。
+
+后门页面执行已保存模型的真实原图推理，不重新训练；沿用来源分支的各实验模型及各自触发器。选中样本的对照不代表整个测试集的攻防指标。ASR 分母排除目标类别样本。
 
 文件校验只需 Python；完整检查需配套依赖，仅在临时目录写评测/推理结果，不训练、不重新生成特征：
 

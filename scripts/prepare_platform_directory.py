@@ -72,7 +72,10 @@ def copy_checked(source, destination):
 def state_snapshot(root):
     root = Path(root)
     snapshot = {}
-    for path in files(root / 'jobs'):
+    state_files = list(files(root / 'jobs'))
+    if (root / 'backdoor').exists():
+        state_files.extend(files(root / 'backdoor'))
+    for path in state_files:
         if path.name == 'job.json':
             job = json.loads(path.read_text(encoding='utf-8'))
             if (job['status'] not in TERMINAL or not job.get('cleanup', {}).get('ok', True)):
@@ -127,6 +130,9 @@ def prepare(args):
     sources = [REPO, args.frontend, args.dataset, args.features, args.weights, args.privacy, args.state]
     officehome = officehome_inputs(args)
     sources.extend(officehome.values())
+    backdoor = getattr(args, 'backdoor', None)
+    if backdoor:
+        sources.append(backdoor)
     # Lexical existence also catches a dangling destination link.
     if os.path.lexists(output):
         raise ValueError('output already exists; choose a NEW directory: ' + str(output))
@@ -142,7 +148,7 @@ def prepare(args):
     (output / 'PREPARATION_INCOMPLETE').write_text('Do not deploy until preparation succeeds.\n')
     backend, frontend = output / 'backend', output / 'frontend'
     for name in ('federatedscope', 'scripts', 'deploy', 'docs', 'tests',
-                 'run.py', 'setup.py', 'README.md', 'LICENSE', '.gitignore'):
+                 'run.py', 'setup.py', 'README.md', 'BACKDOOR_RUNBOOK.md', 'LICENSE', '.gitignore'):
         copy_checked(REPO / name, backend / name)
     for name in ('src', 'resource', 'tests', 'package.json', 'package-lock.json',
                  'index.html', 'vite.config.ts', 'vitest.config.ts', 'playwright.config.ts',
@@ -158,6 +164,8 @@ def prepare(args):
     copy_checked(args.weights, resources / 'models/ViT-B-16.pt')
     for relative, source in officehome.items():
         copy_checked(source, resources / relative)
+    if backdoor:
+        copy_checked(backdoor, resources / 'backdoor')
     privacy = resources / 'fedmia_local'
     for name in ('show_fedmia_examples.py', 'datasets/OfficeHomeDataset_10072016',
                  'runs/no_defense/config.yaml', 'runs/no_defense/ggeur_fedmia_features',
@@ -205,6 +213,7 @@ def main():
     parser.add_argument('--source-label', default='working copy (see file hashes)')
     parser.add_argument('--officehome-dataset', type=Path)
     parser.add_argument('--officehome-features', type=Path)
+    parser.add_argument('--backdoor', type=Path, help='Backdoor resource root containing exp/sabre')
     prepare(parser.parse_args())
 
 

@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 import zipfile
 
 from .app import ApiHandler
+from .platform_backdoor import BackdoorService
 from .platform_config import PlatformError, sha256
 from .platform_service import PlatformService
 from .paths import env_path, project_path
@@ -574,6 +575,47 @@ class PlatformHandler(ApiHandler):
                        mimetypes.guess_type(image.name)[0] or
                        'application/octet-stream', inline=True)
 
+    def _backdoor(self, write, path, backdoor):
+        """后门研究: 测试集浏览、随机挑图、clean/triggered/defense 三连图生成。"""
+        if not write:
+            if path == '/api/platform/backdoor/testset':
+                self._data(backdoor.testset())
+                return
+            image = re.fullmatch(r'/api/platform/backdoor/testset/([A-Za-z][A-Za-z0-9_]*_\d{5})/image', path)
+            if image:
+                file = backdoor.image_path(image.group(1))
+                self._download(file, file.name, mimetypes.guess_type(file.name)[0] or 'image/jpeg', inline=True)
+                return
+            if path == '/api/platform/backdoor/jobs':
+                self._data(backdoor.list())
+                return
+            job = re.fullmatch(r'/api/platform/backdoor/jobs/([a-f0-9]{32})(?:/(image/clean|image/triggered|image/defense|image/defenseClean|logs))?', path)
+            if job:
+                job_id, action = job.groups()
+                if action is None:
+                    self._data(backdoor.get(job_id))
+                elif action == 'logs':
+                    self._data(backdoor.logs(job_id))
+                else:
+                    name = action.split('/')[1]
+                    file = backdoor.artifact(job_id, name)
+                    self._download(file, f'{job_id}-{name}{file.suffix.lower()}',
+                                   mimetypes.guess_type(file.name)[0] or 'image/png', inline=True)
+                return
+        else:
+            if path == '/api/platform/backdoor/pick':
+                self._data(backdoor.pick(self._body()))
+                return
+            if path == '/api/platform/backdoor/jobs':
+                self._data(backdoor.create(self._body()), 202)
+                return
+            stop = re.fullmatch(r'/api/platform/backdoor/jobs/([a-f0-9]{32})/stop', path)
+            if stop:
+                self._body()
+                self._data(backdoor.stop(stop.group(1)))
+                return
+        raise PlatformError('接口不存在', 404)
+
     def _route(self, write):
         path = urlparse(self.path).path.rstrip('/') or '/'
         service = self.context.platform
@@ -607,6 +649,9 @@ class PlatformHandler(ApiHandler):
         if not write and membership:
             query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             self._data(self._fedmia_membership(query))
+            return
+        if path.startswith('/api/platform/backdoor'):
+            self._backdoor(write, path, self.context.backdoor)
             return
         if write and path in {'/api/platform/preflight', '/api/platform/train', '/api/platform/evaluate', '/api/platform/predict'}:
             action = {'preflight': 'inspect', 'train': 'train', 'evaluate': 'evaluate', 'predict': 'predict'}[path.split('/')[-1]]
@@ -665,8 +710,10 @@ class PlatformHandler(ApiHandler):
 
 def create_server(host='127.0.0.1', port=8001, state=None):
     repo = Path(__file__).resolve().parents[2]
-    service = PlatformService(repo, state or 'exp/platform')
-    context = type('PlatformContext', (), {'platform': service,
+    root = resolve_path(repo, state or 'exp/platform')
+    service = PlatformService(repo, root)
+    backdoor = BackdoorService(repo, root)
+    context = type('PlatformContext', (), {'platform': service, 'backdoor': backdoor,
         'fedmia_cache': {}, 'fedmia_cache_lock': threading.RLock(),
         'frontend_dist': resolve_path(repo, os.environ.get('FEDERATEDSCOPE_FRONTEND_DIST', '../frontend/dist'))})()
     handler = type('BoundPlatformHandler', (PlatformHandler,), {'context': context})
@@ -674,6 +721,7 @@ def create_server(host='127.0.0.1', port=8001, state=None):
         server = ThreadingHTTPServer((host, port), handler)
     except Exception:
         service.close()
+        backdoor.close()
         raise
     return server
 
@@ -693,6 +741,7 @@ def main():
     try:
         server.serve_forever()
     finally:
+        server.RequestHandlerClass.context.backdoor.close()
         server.RequestHandlerClass.context.platform.close()
         server.server_close()
 

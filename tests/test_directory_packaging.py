@@ -62,6 +62,18 @@ class DirectoryPackagingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 check.verify_files(moved)
 
+    def test_backdoor_jobs_are_included_and_active_jobs_block_packaging(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'jobs').mkdir()
+            path = root / 'backdoor/example/job.json'
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(dict(id='example',status='running')))
+            with self.assertRaises(ValueError):
+                prepare.state_snapshot(root)
+            path.write_text(json.dumps(dict(id='example',status='completed')))
+            self.assertEqual(set(prepare.state_snapshot(root)), {'backdoor/example/job.json'})
+
     def test_partial_or_escaping_inventory_fails(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
