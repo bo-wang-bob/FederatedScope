@@ -1,4 +1,7 @@
 /* Approved photo-led design, with real platform controllers and result surfaces. */
+.demo-scope-strip{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:20px;padding:12px 16px;border:1px solid #334341;border-radius:6px;background:#192225;font-size:14px;color:#b7c8c2}
+.demo-scope-strip strong{font-size:14px;font-weight:500;color:#d7e4dc}
+.demo-module-symbol{display:flex;align-items:center;justify-content:center;min-height:170px;height:100%;background:radial-gradient(ellipse at center,#30443e 0,#192225 70%);color:#97b4a5;font-size:64px}
 .live-console .design-mode.connected::before{background:#a1bca9;border-color:#a1bca9}
 .live-console .design-mode.disconnected{color:#d3b39e}
 .live-console .design-mode.disconnected::before{border-color:#d3b39e}
@@ -20,15 +23,14 @@
 .live-console .experience-thumbnails{grid-template-columns:1fr 1fr;grid-auto-rows:max-content;gap:12px}
 .live-console .experience-thumbnails>button{padding:0 0 7px;border-color:#3c4b47;background:#202e2e;border-radius:4px}
 .live-console .experience-thumbnails>button.selected{border-color:#afc7b6;background:#30433d;box-shadow:0 0 0 1px #afc7b6}
-.live-console .experience-thumbnails>button>img{height:92px;object-fit:cover;border-radius:0}
+.live-console .experience-thumbnails>button>img{height:92px;object-fit:contain;border-radius:0;background:#121a1c}
 .live-console .experience-thumbnails>button>span{font-size:14px;color:#cedbd4;padding:0 7px}
 .live-console .experience-sample-library .ant-pagination{margin-top:14px!important}
 .live-console .experience-stage{height:100%;min-height:0;border:0;border-radius:0;display:flex;flex-direction:column;background:#121a1c}
 .live-console .experience-stage-head{height:55px;flex:none;padding:0 18px;border-color:#293835}
 .live-console .experience-stage-head>span:first-child{font-size:14px;color:#c3d1cb}
-.live-console .experience-image{height:auto;min-height:0;flex:1;padding:20px;background:#121a1c;overflow:hidden}
-.live-console .experience-image>img{width:100%;height:100%;max-height:100%;object-fit:contain}
-.live-console .experience-image.experience-digit>img{width:160px;height:160px}
+.live-console .experience-image{height:auto;min-width:0;min-height:0;flex:1 1 0;padding:0;background:#121a1c;overflow:hidden}
+.live-console .experience-image-frame{inset:20px}
 .live-console .experience-caption{min-height:62px;flex:none;padding:10px 18px;border-color:#293835}
 .live-console .experience-caption>div>span,.live-console .experience-caption strong{font-size:14px;margin:0}
 .live-console .experience-caption>div>span{color:#a3b7ac}

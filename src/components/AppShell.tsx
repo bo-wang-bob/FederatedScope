@@ -54,13 +54,13 @@ export function AppShell({ children, platform }: PropsWithChildren<{ platform?: 
   const navigation = <>
     <Brand onHome={platform ? () => selectPage('home') : undefined} />
     <nav className={platform ? 'platform-nav-body' : undefined} aria-label="系统功能导航">
-    <div className="system-label">{platform ? '训练与模型验证平台' : '全域联邦学习实验平台'}</div>
+          <div className="system-label">{platform ? '训练与模型验证平台' : '全域协同训练实验平台'}</div>
     <Menu mode="inline" selectedKeys={[selectedKey]} items={menuItems} onClick={({ key }) => selectPage(key)} className="side-menu" />
     </nav>
     <div className="sidebar-status">
       <div className="sidebar-status-head"><span>{platform ? '4090lziy' : '统一实验引擎'}</span><Badge status={platform ? platform.connected ? 'success' : 'error' : 'processing'} /></div>
       {platform && <div className="platform-host-address">10.112.81.135 <span>{platform.connected ? '已连接' : '未连接'}</span></div>}
-      <div className="engine-row"><span>执行方式</span><Tag color="cyan">{platform ? '单机联邦' : 'API'}</Tag></div>
+          <div className="engine-row"><span>执行方式</span><Tag color="cyan">{platform ? '单机协同' : 'API'}</Tag></div>
       {platform ? <div className="engine-row platform-experiment-context"><span>当前 / 最近训练</span><span>{platform.clientCount ?? '—'} 客户端 · {platform.domainCount ?? '—'} 域</span></div> : <>
         <div className="engine-row"><span>逻辑客户端</span><strong>60</strong></div>
         <div className="engine-row"><span>数据域</span><strong>4</strong></div>
@@ -77,7 +77,7 @@ export function AppShell({ children, platform }: PropsWithChildren<{ platform?: 
         {!immersive && <Header className="app-header"><div className="header-context">
           {platform ? <><Button className="platform-mobile-menu" type="text" icon={<MenuOutlined />} aria-label="打开功能导航" aria-expanded={navigationOpen} onClick={() => setNavigationOpen(true)} />
             <nav className="platform-breadcrumb" aria-label="当前位置"><button onClick={() => selectPage('home')}>系统首页</button>{platform.selectedKey !== 'home' && <><span aria-hidden="true">/</span><span className="platform-breadcrumb-section">{platform.sectionLabel}</span><span className="platform-breadcrumb-section" aria-hidden="true">/</span><strong aria-current="page">{platform.pageLabel}</strong></>}</nav>
-          </> : <><span className="context-dot" /><span className="context-name">跨域联邦学习统一实验平台</span><Tag bordered={false} color="cyan">真实任务控制</Tag></>}
+          </> : <><span className="context-dot" /><span className="context-name">跨域协同训练统一实验平台</span><Tag bordered={false} color="cyan">真实任务控制</Tag></>}
         </div>{platform?.openCurrent ? <Button className="platform-current-task" type="link" onClick={platform.openCurrent}><Badge status={platform.connected ? 'processing' : 'default'} /> 查看当前任务</Button> : !platform && activeExperimentId && <Button type="link" onClick={() => navigate(monitorPath)}>打开当前实验</Button>}</Header>}
         <Content className={`app-content ${immersive ? 'immersive-content' : ''}`}>{children}</Content>
       </Layout>

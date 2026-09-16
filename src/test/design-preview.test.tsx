@@ -112,11 +112,11 @@ describe('frontend design review — isolated from live execution', () => {
     expect(await screen.findByText(/未提交任务或生成指标/)).toBeInTheDocument();
   });
 
-  it('preserves comparison, map and research extensions without fake operational status', async () => {
+  it('preserves comparison and research extensions without the removed map', async () => {
     mount('/?view=compare');
     expect(screen.getByText('尚无可对比结果')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出结果' })).toBeDisabled();
-    expect(screen.getByRole('link', { name: /地图仿真/ })).toHaveAttribute('href', '/demo');
+    expect(screen.queryByRole('link', { name: /地图仿真/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('link', { name: /隐私研究/ }));
     expect(screen.getByRole('heading', { level: 1, name: '隐私研究' })).toBeInTheDocument();
     expect(screen.getAllByText('未接入')).toHaveLength(1);

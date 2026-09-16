@@ -1,6 +1,21 @@
 import type { Catalog, RequestConfig } from './api';
-export const DRAFT_KEY = 'federated-studio.draft.v2';
+export const DRAFT_KEY = 'federated-studio.draft.v5';
 export type Draft = Partial<RequestConfig>;
+
+export function withPresentationDefaults(draft: Draft): Draft {
+  if (draft.method !== 'heterogeneous_solution') return draft;
+  return {
+    ...draft,
+    localEpochs: 1,
+    augmentationMode: 'generate',
+    augmentationSourceId: '',
+    allowLegacyAugmentation: false,
+    generatedPerSample: 20,
+    generatedPerPrototype: 20,
+    targetPerClass: 40,
+    covarianceScale: 0.01,
+  };
+}
 const numeric: [keyof RequestConfig, string, number, number, boolean][] = [
   ['rounds','通信轮数',1,1000,true], ['localEpochs','本地轮数',1,100,true],
   ['learningRate','学习率',1e-8,1,false], ['batchSize','批大小',1,1024,true],
@@ -35,26 +50,26 @@ export function validateDraft(draft: Draft, catalog: Catalog): Record<string, st
   }
   return errors;
 }
-export function initialDraft(catalog: Catalog, groupId?: string): Draft {
+export function initialDraft(catalog: Catalog, groupId?: string, storageKey = DRAFT_KEY): Draft {
   const group = catalog.groups.find(g => g.id === groupId) || catalog.groups.find(g => g.cacheFound) || catalog.groups[0];
   const fallback = group?.methods.find(m => m.enabled)?.defaults;
   if (!groupId) {
     try {
-      const saved = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
+      const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
       if (saved?.version === 2) {
         const savedGroup = catalog.groups.find(g => g.id === saved.request?.group);
-        if (savedGroup) {
+        if (savedGroup?.methods.some(method => method.id === saved.request.method && method.enabled)) {
           const base = savedGroup.methods.find(m => m.id === saved.request.method)?.defaults || savedGroup.methods.find(m => m.enabled)?.defaults;
           const safe = Object.fromEntries(Object.entries(requestFromDraft(saved.request)).filter(([,value]) => ['string','number','boolean'].includes(typeof value)));
-          return { ...base, ...safe };
+          return withPresentationDefaults({ ...base, ...safe });
         }
       }
     } catch { /* Corrupt or unavailable storage does not block creating a new experiment. */ }
   }
-  return { ...fallback };
+  return withPresentationDefaults({ ...fallback });
 }
-export function saveDraft(draft: Draft): boolean {
-  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 2, request: draft })); return true; } catch { return false; }
+export function saveDraft(draft: Draft, storageKey = DRAFT_KEY): boolean {
+  try { localStorage.setItem(storageKey, JSON.stringify({ version: 2, request: draft })); return true; } catch { return false; }
 }
 export function requestFromDraft(draft: Draft): RequestConfig {
   const fields = ['group','method','name','rounds','localEpochs','learningRate','batchSize','clientCount','sampleClients','samplesPerClient','seed','splitSeed','alpha','gpu','evaluationFrequency','augmentationMode','augmentationSourceId','allowLegacyAugmentation','generatedPerSample','generatedPerPrototype','targetPerClass','covarianceScale'];

@@ -7,19 +7,19 @@ export interface LaunchIntent {
   phase: 'checking' | 'starting' | 'recover' | 'blocked'; error?: string;
   trainRequested?: boolean; cancelRequested?: boolean;
 }
-function restore(): LaunchIntent | undefined {
+function restore(storageKey: string): LaunchIntent | undefined {
   try {
-    const value = JSON.parse(sessionStorage.getItem(LAUNCH_KEY) || 'null');
+    const value = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
     if (value?.request?.group && value?.request?.method && typeof value.preflightKey === 'string' && typeof value.trainKey === 'string')
       return { ...value, phase: value.phase === 'blocked' ? 'blocked' : 'recover', error: value.error || '上次启动尚未确认完成' };
   } catch { /* Private or corrupt storage does not block the in-memory workflow. */ }
 }
-export function useTrainingLaunch(open: (id: string) => void) {
-  const [intent, setIntent] = useState<LaunchIntent | undefined>(restore);
+export function useTrainingLaunch(open: (id: string) => void, storageKey = LAUNCH_KEY) {
+  const [intent, setIntent] = useState<LaunchIntent | undefined>(() => restore(storageKey));
   const current = useRef(intent), alive = useRef(true), active = useRef(false);
   const save = (next?: LaunchIntent) => {
     current.current = next;
-    try { if (next) sessionStorage.setItem(LAUNCH_KEY, JSON.stringify(next)); else sessionStorage.removeItem(LAUNCH_KEY); } catch { /* Keep the same keys in memory. */ }
+    try { if (next) sessionStorage.setItem(storageKey, JSON.stringify(next)); else sessionStorage.removeItem(storageKey); } catch { /* Keep the same keys in memory. */ }
     if (alive.current) setIntent(next);
   };
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);

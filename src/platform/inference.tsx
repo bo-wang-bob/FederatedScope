@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Collapse, Empty, Modal, Pagination, Select, Space, Spin, Tag, Tooltip } from 'antd';
 import { ArrowLeftOutlined, ArrowRightOutlined, DownloadOutlined, ExpandOutlined, PictureOutlined, ScanOutlined } from '@ant-design/icons';
-import { api, methodLabel, percent, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
+import { api, methodLabel, percent, terminology, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
 import { modelHref } from './navigation';
 import './inference.css';
 
@@ -15,7 +15,7 @@ function SampleImage({ sample, large = false, onUnavailable, onReady }: { sample
 export function PredictionPanel({ job, open }: { job?: Job; open?: (id: string) => void }) {
   const result = job?.status === 'completed' ? job.result as Prediction : undefined;
   return <Card className="platform-panel experience-prediction" title={<span><ScanOutlined /> 预测结果</span>} extra={<Tag color={result ? result.correct ? 'success' : 'warning' : 'default'}>{result ? '实际推理结果' : job && !terminal(job.status) ? '正在推理' : '等待预测'}</Tag>}>
-    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{job.stage}</h3></> : <><ScanOutlined /><h3>{job?.error ? '推理未完成' : '尚未预测'}</h3>{job?.error && <p role="alert">{job.error}</p>}</>}</div> : <>
+    {!result ? <div className="experience-prediction-empty">{job && !terminal(job.status) ? <><Spin size="large" /><h3>{terminology(job.stage)}</h3></> : <><ScanOutlined /><h3>{job?.error ? '推理未完成' : '尚未预测'}</h3>{job?.error && <p role="alert">{terminology(job.error)}</p>}</>}</div> : <>
       <div className="experience-verdict"><span>预测类别</span><h2>{result.predictedName.replaceAll('_', ' ')}</h2><div><strong>{percent(result.confidence)}</strong><span>Softmax 分数</span></div></div>
       <div className={`experience-ground-truth ${result.correct ? 'matched' : 'mismatched'}`}><div><span>真实标签</span><b>{result.labelName.replaceAll('_', ' ')}</b></div><Tag color={result.correct ? 'success' : 'warning'}>{result.correct ? '预测一致' : '预测不一致'}</Tag></div>
       <div className="experience-ranks"><h3>TOP {result.topK.length}<span>分类分数</span></h3>{result.topK.map((item, index) => <div className="experience-rank" key={item.classIndex}><div><span><i>{String(index + 1).padStart(2, '0')}</i>{item.className.replaceAll('_', ' ')}</span><b>{percent(item.score)}</b></div><div className="experience-rank-track"><span style={{ width: `${item.score * 100}%` }} /></div></div>)}</div>
@@ -26,10 +26,11 @@ export function PredictionPanel({ job, open }: { job?: Job; open?: (id: string) 
   </Card>;
 }
 
-export function ModelExperience({ library, initialModel, initialTestset, onSelectionChange, disabled, create, open }: {
+export function ModelExperience({ library, initialModel, initialTestset, onSelectionChange, disabled, create, open, imageGroups }: {
   library: Library; initialModel?: string; initialTestset?: string; onSelectionChange?: (model:string,testset?:string)=>void; disabled: boolean; create: (action: string, payload: object) => Promise<Job>; open: (id: string) => void;
+  imageGroups?: string[];
 }) {
-  const models = library.models.filter(m => /^(officehome|digit3|domainnet)_/.test(m.group));
+  const models = library.models.filter(m => imageGroups ? imageGroups.includes(m.group) : /^(officehome|digit3|domainnet)_/.test(m.group));
   const [modelId, setModelId] = useState<string>(initialModel || '');
   const [testsetId, setTestsetId] = useState<string>();
   const [domain, setDomain] = useState<string>();
@@ -116,7 +117,7 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
         <Pagination simple size="small" current={page} pageSize={12} total={samples?.total || 0} showSizeChanger={false} disabled={frozen || loading} onChange={setPage} />
       </section>
       <section className="experience-stage"><div className="experience-stage-head"><span>{selected?.domain || '测试原图'}</span><Tooltip title="查看原图"><Button type="text" aria-label="查看原图" icon={<ExpandOutlined />} disabled={!imageReady} onClick={() => setExpanded(true)} /></Tooltip></div>
-        <div className={'experience-image '+(model?.group.startsWith('digit3') ? 'experience-digit' : '')}>{loading ? <Spin size="large" /> : selected ? <SampleImage key={imageKey} sample={selected} large onReady={() => setLoadedImage(imageKey)} onUnavailable={() => setImageFailed(true)} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择左侧样本" />}</div>
+        <div className={'experience-image '+(model?.group.startsWith('digit3') ? 'experience-digit' : '')}><div className="experience-image-frame">{loading ? <Spin size="large" /> : selected ? <SampleImage key={imageKey} sample={selected} large onReady={() => setLoadedImage(imageKey)} onUnavailable={() => setImageFailed(true)} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择左侧样本" />}</div></div>
         <div className="experience-caption"><div><span>真实标签</span><strong>{selected?.className.replaceAll('_',' ') || '—'}</strong></div><Space>{[-1,1].map(direction => {
           const index = samples?.items.findIndex(item => item.id === selected?.id) ?? -1;
           const next = index >= 0 ? samples?.items[index + direction] : undefined;
@@ -130,7 +131,7 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
     </div>
     <div className="experience-protocol"><Collapse ghost size="small" items={[{key:'contract',label:'推理口径与来源限制',children:<><p>展示测试原图；实际推理使用关联的冻结特征与已保存分类器，不会重新提取特征。</p><p>旧数据按划分与标签顺序关联，缺少内嵌原始样本 ID；当前图片哈希不能证明历史特征由此图片生成。单图判断不代表整体准确率。</p></>}]} />{model && <Button type="link" onClick={() => open(model.jobId)}>查看训练记录 <ArrowRightOutlined /></Button>}</div>
     <Modal open={expanded} title={selected?.className.replaceAll('_',' ')} onCancel={() => setExpanded(false)} footer={null} width={900} className="design-modal">
-      {expanded && selected && <img className="design-full-image" src={selected.imageUrl} alt={'完整测试原图 '+selected.filename} />}
+      {expanded && selected && <div className="experience-full-image-frame"><img src={selected.imageUrl} alt={'完整测试原图 '+selected.filename} /></div>}
     </Modal>
   </div>;
 }

@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 const Chart = lazy(() => import('../components/ChartPanel').then(module => ({default:module.Chart})));
 import { Empty } from 'antd';
-import type { Client, Job, Point, Resource } from './api';
+import { terminology, type Client, type Job, type Point, type Resource } from './api';
 const colors = ['#8abfc7', '#a5b88e', '#859fcd', '#cfb380', '#b399c5', '#cc9898'];
 const axisStyle = { axisLine: { lineStyle: { color: '#435a68' } }, axisTick: { lineStyle: { color: '#435a68' } },
   axisLabel: { color: '#a6becd', fontSize: 12, hideOverlap: true }, nameTextStyle: { color: '#a6becd', fontSize: 12 },
@@ -36,7 +36,7 @@ export function LossChart({ points }: { points: Point[] }) {
 export function Topology({ clients }: { clients: Client[] }) {
   if (!clients.length) return <Empty description="等待客户端数据" />;
   const domains = [...new Set(clients.map(c => c.domain))];
-  const nodes: object[] = [{ id: 'server', name: '联邦\n聚合', x: 350, y: 190, symbolSize: 80,
+const nodes: object[] = [{ id: 'server', name: '协同\n聚合', x: 350, y: 190, symbolSize: 80,
     itemStyle: { color: '#263e4b', borderWidth: 2, borderColor: '#87b5c3' }, label: { show: true, color: '#c1e1ea', fontSize: 14 } }];
   const links: object[] = [];
   for (const [i, domain] of domains.entries()) {
@@ -49,7 +49,7 @@ export function Topology({ clients }: { clients: Client[] }) {
     group.forEach((c, j) => {
       const angle = Math.PI * 2 * j / group.length;
       const id = `client-${c.id}`;
-      nodes.push({ id, name: `客户端 ${c.id} · ${c.domain}\n${c.samples} 样本 · ${c.stage}`,
+      nodes.push({ id, name: `客户端 ${c.id} · ${c.domain}\n${c.samples} 样本 · ${terminology(c.stage)}`,
         x: center.x + Math.cos(angle) * 70, y: center.y + Math.sin(angle) * 50,
         symbolSize: c.stage === '本地训练' ? 15 : 7, itemStyle: { color: colors[i % colors.length] } });
       links.push({ source: domain, target: id, lineStyle: { opacity: .2 } });
