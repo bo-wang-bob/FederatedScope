@@ -44,14 +44,12 @@ describe('frontend design review — isolated from live execution', () => {
     expect(samples.every(sample => !sample.src.includes('/api/') && /^[a-f0-9]{64}$/.test(sample.sha256))).toBe(true);
   });
 
-  it('keeps source attribution and limitations available on demand', async () => {
+  it('omits the removed image-source entry and modal from the console', () => {
     mount();
+    expect(screen.queryByRole('button', { name: '图片来源' })).not.toBeInTheDocument();
     expect(screen.queryByText(/Joshua Stevens/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '图片来源' }));
-    const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText(/Joshua Stevens/)).toBeInTheDocument();
-    expect(within(dialog).getByText(/历史特征与图像的逐样本关联仍有来源限制/)).toBeInTheDocument();
-    expect(within(dialog).getByRole('link')).toHaveAttribute('href', 'https://science.nasa.gov/earth/earth-observatory/where-the-dunes-end-146064/');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('设计预览');
   });
 
   it('validates training parameters, retains a preview draft and never overwrites a live draft', async () => {

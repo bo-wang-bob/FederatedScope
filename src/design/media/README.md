@@ -20,4 +20,4 @@ The `Art` domain label is preserved even when the source file itself is a photog
 
 Historical feature-to-image correspondence remains source-limited (`legacy-split-seed-ordered-labels; no embedded sample IDs`). Exact image identity does not prove the source of historical feature generation. No inference is performed by this preview. Copies remain subject to the original dataset/image rights; no new license or public redistribution permission is asserted.
 
-Attribution and scope limitations are available from the preview's **图片来源** button, not repeated as persistent page microcopy.
+Attribution and scope limitations are retained in this document and `../assets.ts`; the console no longer exposes an image-source button or modal.

@@ -1,18 +1,17 @@
-import { useState, type PropsWithChildren } from 'react';
+import type { PropsWithChildren } from 'react';
 import { Link } from 'react-router-dom';
-import { Button, Modal, Tooltip } from 'antd';
-import { ArrowRightOutlined, ExperimentOutlined, InfoCircleOutlined, LineChartOutlined, LockOutlined, ScanOutlined, SecurityScanOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
+import { ArrowRightOutlined, ExperimentOutlined, LineChartOutlined, LockOutlined, ScanOutlined, SecurityScanOutlined } from '@ant-design/icons';
 import { mainPages, mainView, pages, viewHref, type PlatformView } from '../platform/navigation';
-import { imageSource, landscape, samples } from './assets';
+import { landscape, samples } from './assets';
 import '../platform/studio.css';
 import './design.css';
 
 // Shared approved presentation; live data/commands stay in the platform controllers.
-export function ConsoleShell({ view, children, mode = 'preview', connected = false, running = false, openCurrent, showDatasetImages = true }: PropsWithChildren<{
+export function ConsoleShell({ view, children, mode = 'preview', connected = false, running = false, openCurrent }: PropsWithChildren<{
   view: PlatformView; mode?: 'preview' | 'live'; connected?: boolean; running?: boolean; openCurrent?: () => void;
   showDatasetImages?: boolean;
 }>) {
-  const [sourcesOpen, setSourcesOpen] = useState(false);
   return <div className={'studio-shell design-console' + (mode === 'live' ? ' live-console' : '')}>
     <a className="studio-skip" href="#design-main">跳到主要内容</a>
     <aside className="design-sidebar">
@@ -29,17 +28,9 @@ export function ConsoleShell({ view, children, mode = 'preview', connected = fal
       <header className="design-topbar"><span>{pages[view].label}</span><div className="design-topbar-actions">
         {mode === 'live' && running && <Button type="text" onClick={openCurrent}>当前任务 <ArrowRightOutlined /></Button>}
         <span className={'design-mode' + (mode === 'live' ? connected ? ' connected' : ' disconnected' : '')} role="status">{mode === 'preview' ? '设计预览' : connected ? '服务已连接' : '服务未连接'}</span>
-        <Tooltip title="图片来源"><Button type="text" icon={<InfoCircleOutlined />} aria-label="图片来源" onClick={() => setSourcesOpen(true)} /></Tooltip>
       </div></header>
       <main className="design-main" id="design-main">{children}</main>
     </div>
-    <Modal open={sourcesOpen} title="图片来源" onCancel={() => setSourcesOpen(false)} footer={null} className="design-modal">
-      <div className="design-source-list"><section><h3>场景影像</h3><p>NASA Earth Observatory，Joshua Stevens；Landsat 数据来自 USGS。仅作场景配图，不代表训练数据或实验结果。</p>
-        <a href={imageSource} target="_blank" rel="noreferrer">Where the Dunes End <ArrowRightOutlined /></a></section>
-        <section><h3>测试样本</h3><p>{showDatasetImages ? '首页素材来自现有 Office-Home 测试集。' : '场景影像不是军机测试样本。'}模型验证页展示所选测试集的原始图像；历史特征与图像的逐样本关联仍有来源限制。</p></section>
-        {mode === 'preview' && <section><h3>预览范围</h3><p>配置选项为界面设计样例，未读取后端库存、未加载模型，不产生预测或评测结果。</p></section>}
-      </div>
-    </Modal>
   </div>;
 }
 

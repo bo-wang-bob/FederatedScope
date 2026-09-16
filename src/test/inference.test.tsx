@@ -23,6 +23,20 @@ const prediction = { id: 'b'.repeat(32), action: 'predict', status: 'completed',
 } } as unknown as Job;
 
 describe('single-image model experience', () => {
+  it.each([2, 100])('keeps core controls without the removed notices for a %i-round model', async trainingRounds => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: page }) }));
+    const open = vi.fn();
+    render(<ModelExperience library={{ ...library, models: [{ ...model, trainingRounds }] }} disabled={false} create={vi.fn()} open={open} />);
+    await screen.findByAltText('测试原图 0.jpg');
+    expect(screen.queryByText('冻结特征推理')).not.toBeInTheDocument();
+    expect(screen.queryByText('样本关联受限')).not.toBeInTheDocument();
+    expect(screen.queryByText('推理口径与来源限制')).not.toBeInTheDocument();
+    expect(screen.queryByText(/旧数据按划分与标签顺序关联/)).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /下载模型/ })).toHaveAttribute('href', '/api/platform/jobs/' + model.jobId + '/model-final');
+    fireEvent.click(screen.getByRole('button', { name: /查看训练记录/ }));
+    expect(open).toHaveBeenCalledWith(model.jobId);
+  }, 30000);
+
   it('sends the selected real sample and version, renders actual wrong predictions, and clears stale results', async () => {
     const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: page }) });
     vi.stubGlobal('fetch', fetch);
@@ -30,7 +44,7 @@ describe('single-image model experience', () => {
     render(<ModelExperience library={library} disabled={false} create={create} open={vi.fn()} />);
     fireEvent.click(await screen.findByRole('button', { name: '选择样本 Class B · 1.jpg · Art' }));
     expect(screen.getByAltText('测试原图 1.jpg')).toHaveAttribute('src', '/fixture/1.jpg');
-    expect(screen.getByText('样本关联受限')).toBeVisible();
+    expect(screen.queryByText('样本关联受限')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /运行单图预测/ })).toBeDisabled();
     fireEvent.load(screen.getByAltText('测试原图 1.jpg'));
     fireEvent.click(screen.getByRole('button', { name: /运行单图预测/ }));

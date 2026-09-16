@@ -15,7 +15,6 @@
 .live-console .experience-model-meta>span{display:none}
 .live-console .experience-context{padding:10px 2px 12px;gap:16px;flex-wrap:wrap;font-size:14px}
 .live-console .experience-context>span:first-child{display:none}
-.live-console .experience-context>span:nth-child(2){color:#c8b892}
 .live-console .experience-workspace{display:grid;grid-template-columns:242px minmax(270px,1fr) 278px;gap:0;align-items:stretch;height:clamp(390px,calc(100dvh - 330px),750px);border:1px solid #334341;border-radius:8px;overflow:hidden;background:#192225}
 .live-console .experience-sample-library{height:auto;border:0;border-right:1px solid #334341;border-radius:0;background:#192225;padding:20px 16px;overflow:hidden}
 .live-console .experience-gallery-head h3{color:#d0dfd8;font-size:16px;margin-bottom:18px}

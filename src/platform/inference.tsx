@@ -51,7 +51,6 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
   const model = models.find(m => m.id === modelId);
   const testsets = library.testsets.filter(t => t.featureSpace === model?.featureSpace);
   const test = testsets.find(t => t.id === testsetId);
-  const sourceLimited = Object.values(samples?.provenance || {}).some(value => /legacy|no embedded sample IDs/i.test(value));
   const busy = submitting || !!job && !terminal(job.status);
   const frozen = disabled || busy;
   useEffect(() => { if (!modelId && models.length) setModelId((models.find(m => m.kind === 'final') || models[0]).id); }, [modelId, models]);
@@ -106,7 +105,7 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
       <div className="experience-model-meta"><span>{methodLabel(model?.method)} <i>·</i> {model?.kind || '—'}</span>{model && <a href={modelHref(model.id,true,testsetId)}>整集评测 <ArrowRightOutlined /></a>}</div>
     </div>
     {initialModel && !model && <Alert type="warning" title="指定模型不可用，请重新选择。" />}
-    {model && <div className="experience-context"><span>{model.classes.length} 个类别<i>·</i>训练 {model.trainingRounds ?? '—'} 轮</span><span>{model.trainingRounds != null && model.trainingRounds < 5 ? '短轮试跑模型，不代表目标准确率' : '冻结特征推理'}{model.kind === 'best' ? ' · best 按训练期测试集择优' : ''}</span>{sourceLimited && <Tag color="warning">样本关联受限</Tag>}<a href={'/api/platform/jobs/'+model.jobId+'/model-'+model.kind}><DownloadOutlined /> 下载模型</a></div>}
+    {model && <div className="experience-context"><span>{model.classes.length} 个类别<i>·</i>训练 {model.trainingRounds ?? '—'} 轮</span><a href={'/api/platform/jobs/'+model.jobId+'/model-'+model.kind}><DownloadOutlined /> 下载模型</a></div>}
     {model?.augmentationWarning && <Alert type="warning" title={model.augmentationWarning} />}
     {error && <Alert type="error" showIcon title={error} action={<Button onClick={() => setRefresh(x => x+1)} disabled={busy}>重新读取</Button>} />}
     <div className="experience-workspace">
@@ -129,7 +128,7 @@ export function ModelExperience({ library, initialModel, initialTestset, onSelec
         <Button className="experience-run" aria-label="运行单图预测" type="primary" size="large" icon={<ScanOutlined />} disabled={frozen || !imageReady || !selected?.imageAvailable || !selected.imageSha256 || loading || !test || !model} loading={busy} onClick={() => void predict()}>预测</Button>
       </div>
     </div>
-    <div className="experience-protocol"><Collapse ghost size="small" items={[{key:'contract',label:'推理口径与来源限制',children:<><p>展示测试原图；实际推理使用关联的冻结特征与已保存分类器，不会重新提取特征。</p><p>旧数据按划分与标签顺序关联，缺少内嵌原始样本 ID；当前图片哈希不能证明历史特征由此图片生成。单图判断不代表整体准确率。</p></>}]} />{model && <Button type="link" onClick={() => open(model.jobId)}>查看训练记录 <ArrowRightOutlined /></Button>}</div>
+    {model && <div className="experience-protocol"><Button type="link" onClick={() => open(model.jobId)}>查看训练记录 <ArrowRightOutlined /></Button></div>}
     <Modal open={expanded} title={selected?.className.replaceAll('_',' ')} onCancel={() => setExpanded(false)} footer={null} width={900} className="design-modal">
       {expanded && selected && <div className="experience-full-image-frame"><img src={selected.imageUrl} alt={'完整测试原图 '+selected.filename} /></div>}
     </Modal>
