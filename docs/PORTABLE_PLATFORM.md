@@ -53,4 +53,4 @@ python backend/scripts/export_platform_cache.py --job <任务ID>
 
 本次已在 4090 环境完成上述真实短流程和独立缓存包+空状态目录运行。Docker 镜像制作及 RTX 5880 现场验收另行完成；本次没有替换正在运行的服务。
 
-后续部署准备文件见 [deploy/README.md](../deploy/README.md)。最新远端隐私模块已在独立 integrated 工作树合入；外置 FedMIA 资源待打包时提供，详见 [合入记录](UPSTREAM_INTEGRATION.md)。尚未构建或导出交付包。
+后续部署准备文件见 [deploy/README.md](../deploy/README.md)。隐私模块已合入，外置 FedMIA 资源已部署并完成历史回放验证；打包时需要包含只读脚本补丁，详见 [隐私回放部署](PRIVACY_REPLAY.md) 与 [合入记录](UPSTREAM_INTEGRATION.md)。尚未构建或导出交付包。

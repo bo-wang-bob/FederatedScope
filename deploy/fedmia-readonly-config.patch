@@ -1,0 +1,8 @@
+--- a/show_fedmia_examples.py
++++ b/show_fedmia_examples.py
+@@ -233,3 +233,4 @@
+         cfg.attack.mode = requested_mode
+-    cfg.freeze()
++    # Loading historical results must not rewrite the original run configuration.
++    cfg.freeze(save=False, inform=False)
+     return cfg

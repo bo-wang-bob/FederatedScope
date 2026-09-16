@@ -25,6 +25,7 @@ from .platform_service import PlatformService
 from .paths import env_path, project_path
 from .schemas import ValidationError
 from .platform_paths import resolve_path
+from .privacy_replay import align_indexed_replay
 
 
 class PlatformHandler(ApiHandler):
@@ -148,7 +149,11 @@ class PlatformHandler(ApiHandler):
         pos_rank_sum = ranks[:len(pos)].sum()
         auc = (pos_rank_sum - len(pos) * (len(pos) + 1) / 2.0) / \
             (len(pos) * len(neg))
-        threshold = float(module.np.quantile(neg, 0.99))
+        # Use an attainable empirical operating point with FPR <= 1%,
+        # including ties. A 99th percentile exceeds 1% on small sample sets.
+        allowed_false_positives = int(math.floor(0.01 * len(neg)))
+        cutoff = module.np.sort(neg)[::-1][allowed_false_positives]
+        threshold = float(module.np.nextafter(cutoff, module.np.inf))
         tpr = float(module.np.mean(pos >= threshold))
         fpr = float(module.np.mean(neg >= threshold))
         return {
@@ -252,6 +257,37 @@ class PlatformHandler(ApiHandler):
                 defense_result.scores_member, dtype=module.np.float64)
             defense_nonmember_scores = module.np.asarray(
                 defense_result.scores_nonmember, dtype=module.np.float64)
+            alignment = None
+            arrays = (no_member_scores, no_nonmember_scores,
+                      defense_member_scores, defense_nonmember_scores)
+            if any(scores.ndim != 1 or not len(scores)
+                   or not module.np.isfinite(scores).all() for scores in arrays):
+                raise PlatformError('成员推理分数与样本数量不一致或含无效值', 409)
+            if (len(member_items) != len(no_member_scores)
+                    or len(member_items) != len(defense_member_scores)
+                    or len(nonmember_items) != len(no_nonmember_scores)
+                    or len(nonmember_items) != len(defense_nonmember_scores)):
+                # This is not a generic min-length fallback. Require the
+                # historical algorithm's explicit metadata, matching replay
+                # partitions and labels for every saved round first.
+                if not all(getattr(result, 'metadata', None)
+                           for result in (no_result, defense_result)):
+                    raise PlatformError('成员推理分数与样本数量不一致或含无效值', 409)
+                defense_items = module.load_image_items(
+                    defense_dir, defense_cfg, client_id)
+                if tuple(defense_items) != tuple(image_items[client_id]):
+                    raise PlatformError('两组历史实验的数据划分不一致', 409)
+                common, alignment = align_indexed_replay(
+                    module,
+                    ((no_cfg, no_features[client_id], no_result),
+                     (defense_cfg, defense_features[client_id], defense_result)),
+                    (member_items, nonmember_items))
+                member_items = member_items[:common[0]]
+                nonmember_items = nonmember_items[:common[1]]
+                no_member_scores = no_member_scores[:common[0]]
+                defense_member_scores = defense_member_scores[:common[0]]
+                no_nonmember_scores = no_nonmember_scores[:common[1]]
+                defense_nonmember_scores = defense_nonmember_scores[:common[1]]
             for items, before, after in (
                     (member_items, no_member_scores, defense_member_scores),
                     (nonmember_items, no_nonmember_scores, defense_nonmember_scores)):
@@ -283,6 +319,7 @@ class PlatformHandler(ApiHandler):
                         defense_member_scores, defense_nonmember_scores, module),
                 },
                 'payloads': {},
+                'alignment': alignment,
             }
             cache[client_id] = bundle
             return bundle
@@ -360,6 +397,7 @@ class PlatformHandler(ApiHandler):
             'distributions': bundle['distributions'],
             'items': items,
             'source': str(self._fedmia_root()),
+            'alignment': bundle.get('alignment'),
         }
         if cache_lock is not None:
             with cache_lock:
