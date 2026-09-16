@@ -140,13 +140,20 @@ describe('desktop workspace navigation',()=>{
     expect(screen.queryByRole('link',{name:'数据缓存'})).not.toBeInTheDocument();
     expect(fetch.mock.calls.every(([,init])=>init.method==='GET')).toBe(true);
   });
-  it.each([['privacy','隐私研究'],['backdoor','后门研究']])('reserves %s without real task controls, even offline',async(view,label)=>{
+  it.each([['backdoor','后门研究']])('reserves %s without real task controls, even offline',async(view,label)=>{
     const fetch=vi.fn().mockRejectedValue(new Error('server offline'));vi.stubGlobal('fetch',fetch);
     render(<MemoryRouter initialEntries={['/?view='+view+'&id=must-not-fetch']}><PlatformApp/></MemoryRouter>);
     const module=screen.getByRole('region',{name:label+'规划说明'});
     expect(within(module).getAllByText('未接入')).toHaveLength(1);
     expect(within(module).queryByRole('button')).not.toBeInTheDocument();
     await screen.findByText('server offline');
+    expect(fetch.mock.calls.every(([url,init])=>init.method==='GET'&&!url.includes('must-not-fetch'))).toBe(true);
+  });
+  it('shows a membership loading failure without launching or fetching a task', async()=>{
+    const fetch=vi.fn().mockRejectedValue(new Error('server offline'));vi.stubGlobal('fetch',fetch);
+    render(<MemoryRouter initialEntries={['/?view=privacy&id=must-not-fetch']}><PlatformApp/></MemoryRouter>);
+    expect(await screen.findByText('成员推理结果读取失败')).toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url])=>url.includes('privacy/membership?'))).toBe(true);
     expect(fetch.mock.calls.every(([url,init])=>init.method==='GET'&&!url.includes('must-not-fetch'))).toBe(true);
   });
 });

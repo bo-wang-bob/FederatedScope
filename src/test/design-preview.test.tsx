@@ -60,10 +60,9 @@ describe('frontend design review — isolated from live execution', () => {
     fireEvent.change(screen.getByLabelText(/实验名称/), { target: { value: '前端配置验收' } });
     fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
     fireEvent.change(screen.getByRole('spinbutton', { name: '通信轮数' }), { target: { value: '18' } });
-    fireEvent.change(screen.getByRole('spinbutton', { name: '每轮参与客户端' }), { target: { value: '61' } });
-    fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
-    expect(screen.getAllByText('不能超过客户端总数').length).toBeGreaterThan(0);
-    fireEvent.change(screen.getByRole('spinbutton', { name: '每轮参与客户端' }), { target: { value: '60' } });
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: '每轮参与客户端' }));
+    expect(screen.queryByText('61', { selector: '.ant-select-item-option-content' })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByText('全部', { selector: '.ant-select-item-option-content' }));
     navigate('系统首页'); navigate('训练实验');
     expect(screen.getByLabelText(/实验名称/)).toHaveValue('前端配置验收');
     fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
@@ -119,7 +118,9 @@ describe('frontend design review — isolated from live execution', () => {
     expect(screen.queryByRole('link', { name: /地图仿真/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('link', { name: /隐私研究/ }));
     expect(screen.getByRole('heading', { level: 1, name: '隐私研究' })).toBeInTheDocument();
-    expect(screen.getAllByText('未接入')).toHaveLength(1);
+    expect(screen.getByRole('region', { name: '成员推理攻击结果' })).toBeInTheDocument();
+    expect(screen.getByText('无防御')).toBeInTheDocument();
+    expect(screen.getByText('有防御')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('link', { name: /后门研究/ }));
     expect(screen.getByRole('heading', { level: 1, name: '后门研究' })).toBeInTheDocument();
     expect(screen.getAllByText('未接入')).toHaveLength(1);
