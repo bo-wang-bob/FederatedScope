@@ -4,10 +4,12 @@ import { App as AntApp, Alert, Button, ConfigProvider, Input, Select, Skeleton, 
 import { ArrowLeftOutlined, ArrowRightOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { api, key, methodLabel, terminal, type Catalog, type Job, type Library } from './api';
+import { BackdoorLab } from './backdoor';
+import { BackdoorCompare } from './backdoorCompare';
 import { ComparisonPanel, EvaluationPanel } from './evaluation';
 import { ModelExperience } from './inference';
 import { SystemHome } from './home';
-import { mainView, modelHref, pages, resolveView, viewHref, type PlatformView } from './navigation';
+import { mainView, modelHref, pages, resolveView, viewHref, backdoorCompareHref, type PlatformView } from './navigation';
 import { isPlannedView, PlannedModule } from './extensions';
 import { StudioShell } from './StudioShell';
 import { TrainingForm } from './training';
@@ -97,8 +99,10 @@ function Workspace() {
   const running=jobs.find(job => !terminal(job.status));
   const visibleJobs=scopedJobs.filter(job => (jobFilter === 'all' ? job.action !== 'inspect' : job.action === jobFilter) && (statusFilter === 'all' || job.status === statusFilter) &&
     (job.request.name+' '+job.request.group+' '+methodLabel(job.request.method)+' '+job.id).toLowerCase().includes(search.toLowerCase()));
-  const routeTabs = area === 'train' ? [{view:'train',label:'新建训练'},{view:'jobs',label:'实验记录'}] :
-    area === 'experience' ? [{view:'experience',label:'单图验证'},{view:'evaluate',label:'独立评测'}] : [];
+  const jobIdFromQuery = query.get('job');
+  const routeTabs: { view: PlatformView; label: string; href?: string }[] = area === 'train' ? [{view:'train',label:'新建训练'},{view:'jobs',label:'实验记录'}] :
+    area === 'experience' ? [{view:'experience',label:'单图验证'},{view:'evaluate',label:'独立评测'}] :
+    area === 'backdoor' ? [{view:'backdoor',label:'三连对比'}, ...(jobIdFromQuery ? [{view:'backdoorCompare' as PlatformView,label:'逐样本对照',href:backdoorCompareHref(jobIdFromQuery)}] : [])] : [];
   return <StudioShell view={view} connected={!!catalog && !error} running={!!running} openCurrent={() => running && open(running.id)} showDatasetImages={!restricted}>
     {error && <Alert className="studio-connection-alert" type="error" showIcon title="连接中断，正在重试" description={error} action={<Button icon={<ReloadOutlined />} onClick={() => setRefreshKey(v => v+1)}>重连</Button>} />}
     {launch.intent && <div className={'launch-banner '+launch.intent.phase} role="status"><span className="launch-symbol">{launch.busy ? <i className="live-dot" /> : '!'}</span><div><strong>{launch.intent.phase === 'checking' ? launch.intent.cancelRequested ? '正在取消启动…' : '正在检查数据与配置…' : launch.intent.phase === 'starting' ? '正在启动训练…' : launch.intent.phase === 'blocked' ? '本次启动未通过检查' : '需要确认上次启动状态'}</strong><span>{launch.intent.error || launch.intent.request.name}</span></div>
@@ -108,9 +112,9 @@ function Workspace() {
       {view !== 'train' && <Link to="/?view=train">查看配置 <ArrowRightOutlined /></Link>}
     </div>}
     {view !== 'home' && <div className="studio-page-heading"><div><h1>{selectedId ? '实验详情' : area === 'experience' ? '模型验证' : page.label}</h1></div>
-      <div>{routeTabs.length > 0 && <nav className="studio-route-tabs" aria-label="模块功能">{routeTabs.map(tab => <Link aria-current={view === tab.view ? 'page' : undefined} className={view === tab.view ? 'active' : ''} key={tab.view} to={modelId && area === 'experience' ? modelHref(modelId,tab.view === 'evaluate',testsetId) : viewHref(tab.view as PlatformView)}>{tab.label}</Link>)}</nav>}
+      <div>{routeTabs.length > 0 && <nav className="studio-route-tabs" aria-label="模块功能">{routeTabs.map(tab => <Link aria-current={view === tab.view ? 'page' : undefined} className={view === tab.view ? 'active' : ''} key={tab.view} to={tab.href ?? (modelId && area === 'experience' ? modelHref(modelId,tab.view === 'evaluate',testsetId) : viewHref(tab.view))}>{tab.label}</Link>)}</nav>}
       </div></div>}
-    {view === 'home' ? <SystemHome jobs={scopedJobs} loading={!catalog} showDatasetImages={!restricted} /> : isPlannedView(view) ? <PlannedModule moduleId={view} /> : !catalog ? <div className="studio-loading"><Skeleton active paragraph={{rows:8}} /></div> : <>
+    {view === 'home' ? <SystemHome jobs={scopedJobs} loading={!catalog} showDatasetImages={!restricted} /> : isPlannedView(view) ? <PlannedModule moduleId={view} /> : view === 'backdoor' || view === 'backdoorCompare' ? <div className="studio-page-enter">{view === 'backdoor' ? <BackdoorLab /> : <BackdoorCompare />}</div> : !catalog ? <div className="studio-loading"><Skeleton active paragraph={{rows:8}} /></div> : <>
       {view === 'train' && (catalog.groups.length ? <TrainingForm key={(query.get('group') || '')+':'+(query.get('source') || '')} catalog={catalog} draftKey={restricted ? DEMO_DRAFT_KEY : undefined} initialGroup={query.get('group') || undefined} sourceId={query.get('source') || undefined} running={running} disconnected={!!error} launch={launch} open={open} /> : <div className="studio-empty-state"><h2>训练配置尚未接入</h2></div>)}
       {view === 'jobs' && <div className="studio-page-enter">{selectedId ? <><Button className="studio-back" type="text" icon={<ArrowLeftOutlined />} onClick={() => setQuery({view:'jobs'})}>返回实验记录</Button>{detailError && <Alert type="error" title={detailError} action={<Button onClick={() => setRefreshKey(x => x+1)}>重试</Button>} />}{selected ? requestInPresentation(selected.request,allCatalog) || !terminal(selected.status) ? <JobDetail key={selected.id} job={selected} library={library} stop={stop} rerun={() => setQuery({view:'train',source:selected.id,group:selected.request.group})} /> : <Alert type="info" title="该记录不在当前演示范围" /> : !detailError && <Skeleton active />}</> :
         <section className="studio-surface jobs-collection"><div className="collection-toolbar"><Input aria-label="搜索实验" prefix={<SearchOutlined />} placeholder="搜索实验名称或算法" allowClear value={search} onChange={event => setSearch(event.target.value)} /><Space>

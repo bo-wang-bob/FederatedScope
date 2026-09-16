@@ -140,13 +140,11 @@ describe('desktop workspace navigation',()=>{
     expect(screen.queryByRole('link',{name:'数据缓存'})).not.toBeInTheDocument();
     expect(fetch.mock.calls.every(([,init])=>init.method==='GET')).toBe(true);
   });
-  it.each([['backdoor','后门研究']])('reserves %s without real task controls, even offline',async(view,label)=>{
+  it('reports unavailable backdoor API without launching a task',async()=>{
     const fetch=vi.fn().mockRejectedValue(new Error('server offline'));vi.stubGlobal('fetch',fetch);
-    render(<MemoryRouter initialEntries={['/?view='+view+'&id=must-not-fetch']}><PlatformApp/></MemoryRouter>);
-    const module=screen.getByRole('region',{name:label+'规划说明'});
-    expect(within(module).getAllByText('未接入')).toHaveLength(1);
-    expect(within(module).queryByRole('button')).not.toBeInTheDocument();
-    await screen.findByText('server offline');
+    render(<MemoryRouter initialEntries={['/?view=backdoor&id=must-not-fetch']}><PlatformApp/></MemoryRouter>);
+    await screen.findByText('后门研究接口不可用');
+    expect(screen.queryByRole('button',{name:'生成三连对比'})).not.toBeInTheDocument();
     expect(fetch.mock.calls.every(([url,init])=>init.method==='GET'&&!url.includes('must-not-fetch'))).toBe(true);
   });
   it('shows a membership loading failure without launching or fetching a task', async()=>{

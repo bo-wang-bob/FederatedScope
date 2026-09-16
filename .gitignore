@@ -14,3 +14,4 @@ resource/*.zip
 .DS_Store
 .idea/
 .vscode/
+.workbuddy/

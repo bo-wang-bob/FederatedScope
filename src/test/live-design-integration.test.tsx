@@ -115,3 +115,31 @@ it.each(['fedavg', 'fedprox', 'heterogeneous_solution'])('launches OfficeHome Vi
   for(const write of writes) expect(write.body).toEqual(expect.objectContaining({group:'officehome_vit',method,clientCount:60,gpu:0,learningRate:officeRequest.learningRate}));
   expect(writes[1].body.preflightId).toBe('f'.repeat(32));
 });
+
+it('connects backdoor selection and comparison without invoking training or privacy writes', async () => {
+  const writes: {path:string;body:Record<string,unknown>}[]=[];
+  const backdoorJob={id:'b'.repeat(32),status:'completed',stage:'已完成',ids:['Art_00001'],
+    name:'接口测试',result:{classNames:['Alarm_Clock','Laptop'],images:[{id:'Art_00001',label:1,labelName:'Laptop',
+      clean:{label:1,name:'Laptop'},triggered:{label:0,name:'Alarm_Clock',hit:true},defense:{label:1,name:'Laptop',hit:false}}]},
+    images:{clean:'/clean.png',triggered:'/triggered.png',defense:'/defense.png'}};
+  vi.stubGlobal('fetch',vi.fn(async(path:string,init:RequestInit)=>{
+    if(init.method==='POST') {
+      writes.push({path,body:JSON.parse(init.body as string)});
+      return {ok:true,json:async()=>({data:path.endsWith('/pick') ? {ids:['Art_00001'],labels:[1]} : backdoorJob})};
+    }
+    const data=path.endsWith('/backdoor/testset') ? {exported:true,total:1,classNames:['Alarm_Clock','Laptop'],
+      domains:[{name:'Art',count:1}],labels:[{index:1,name:'Laptop',count:1}]} :
+      path.includes('/backdoor/jobs/') ? backdoorJob : path.endsWith('/backdoor/jobs') ? [backdoorJob] :
+      path.endsWith('/catalog') ? catalog : path.endsWith('/library') ? library : [];
+    return {ok:true,json:async()=>({data})};
+  }));
+  render(<MemoryRouter initialEntries={['/?view=backdoor']}><PlatformApp /></MemoryRouter>);
+  await screen.findByRole('button',{name:'样本 Art_00001 · Laptop'});
+  fireEvent.click(screen.getByRole('button',{name:/生成三连对比/}));
+  const link=await screen.findByRole('link',{name:/查看逐样本对照/});
+  expect(writes.map(w=>w.path)).toEqual(['/api/platform/backdoor/pick','/api/platform/backdoor/jobs']);
+  expect(writes[1].body.ids).toEqual(['Art_00001']);
+  fireEvent.click(link);
+  await screen.findByText('逐样本预测对照');
+  expect(screen.getByText('Alarm Clock')).toBeInTheDocument();
+});

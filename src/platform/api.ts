@@ -54,6 +54,32 @@ export interface Prediction {
   imageSha256: string; manifestSha256: string; testProvenance: string; inferenceContract: string;
 }
 export interface Library { models: LibraryItem[]; testsets: LibraryItem[] }
+export interface BackdoorTestset {
+  exported: boolean; total: number; maxIds: number; base: string; message?: string;
+  classNames: string[];
+  domains: { name: string; count: number }[];
+  labels: { index: number; name: string; count: number }[];
+  runs: { attack: string | null; defense: string | null };
+}
+export interface BackdoorPick { ids: string[]; labels: number[]; total: number; count: number; seed?: number }
+export interface BackdoorStat { correct: number; total: number; accuracy: number; asr: number; asrEligible?: number; asrRate: number | null }
+export interface BackdoorResult {
+  ids: string[]; classNames: string[]; targetLabel: number; targetName: string; attackName: string;
+  runs: Record<string, { name: string; display: string }>;
+  images: { id: string; label: number; labelName: string;
+    clean: { label: number; name: string };
+    triggered: { label: number; name: string; hit: boolean };
+    defense?: { label: number; name: string; hit: boolean } }[];
+  stats: Record<string, BackdoorStat>;
+  paths: Record<string, string>;
+}
+export interface BackdoorJob {
+  id: string; action: string; ids: string[]; name: string; base: string; device: string;
+  runs: Record<string, string>; status: string; stage: string; error: string | null;
+  createdAt: string; updatedAt: string; endedAt?: string;
+  images?: Record<string, string>; result?: BackdoorResult;
+}
+export const backdoorImageUrl = (id: string) => `/api/platform/backdoor/testset/${id}/image`;
 export const terminal = (status: string) => ['completed', 'failed', 'stopped', 'interrupted'].includes(status);
 export const statusText: Record<string, string> = { queued: '排队中', running: '运行中', stopping: '正在停止', completed: '已完成', failed: '失败', stopped: '已停止', interrupted: '重启中断' };
 export class PlatformApiError extends Error {
