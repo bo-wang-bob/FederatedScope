@@ -32,7 +32,8 @@ class PlatformHandler(ApiHandler):
     server_version = 'FederatedScopeSingleHost/1.0'
 
     def _fedmia_root(self) -> Path:
-        return env_path('FS_FEDMIA_LOCAL_ROOT', '../fedmia_local')
+        resources = env_path('FS_PLATFORM_RESOURCES', 'resources')
+        return env_path('FS_FEDMIA_LOCAL_ROOT', resources / 'fedmia_local')
 
     def _fedmia_clients(self) -> list[int]:
         return sorted(set(self._fedmia_available_clients(

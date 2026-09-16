@@ -23,7 +23,9 @@ class PortablePathsTests(unittest.TestCase):
                 self.assertEqual(configs.resources, REPO_ROOT / 'resources')
                 self.assertEqual(configs.datasets, REPO_ROOT / 'resources/datasets')
                 handler = object.__new__(PlatformHandler)
-                self.assertEqual(handler._fedmia_root(), REPO_ROOT.parent / 'fedmia_local')
+                self.assertEqual(handler._fedmia_root(), REPO_ROOT / 'resources/fedmia_local')
+                with patch.dict(os.environ, {'FS_PLATFORM_RESOURCES': 'shared'}):
+                    self.assertEqual(handler._fedmia_root(), REPO_ROOT / 'shared/fedmia_local')
                 with patch.dict(os.environ, {'FS_FEDMIA_LOCAL_ROOT': 'private/features'}):
                     self.assertEqual(handler._fedmia_root(), REPO_ROOT / 'private/features')
                 with patch.dict(os.environ, {'FS_PLATFORM_DATASETS': directory}):

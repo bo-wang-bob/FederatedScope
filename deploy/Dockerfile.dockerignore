@@ -18,6 +18,8 @@
 !frontend/vite.config.ts
 !frontend/src
 !frontend/src/**
+!frontend/resource
+!frontend/resource/**
 !frontend/public
 !frontend/public/**
 **/__pycache__

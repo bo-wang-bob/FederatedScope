@@ -141,6 +141,7 @@ dmypy.json
 /data/
 /datasets/
 /fedmia_local/
+/resources/
 /membership_examples.json
 
 exp/

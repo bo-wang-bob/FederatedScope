@@ -1,4 +1,4 @@
-# 部署准备（尚未打包）
+# 部署准备（尚未构建镜像）
 
 当前范围：ViT 冻结特征 + MilitaryAircraft-3D + FedAvg / FedProx / 本架构；独立评测与选图验证仍使用特征包和分类头。不会重跑准确率提升门槛。前后端及资源目录见 [运行说明](../docs/PORTABLE_PLATFORM.md)。
 
@@ -23,15 +23,15 @@
 
 ## 合并后的交付待办
 
-1. 最新隐私更新已在独立 integrated 工作树合入；40/20/20、本地 1 轮及模型验证口径已保留并回归。打包时补充可信的 fedmia_local 资源，核验外置脚本依赖；新增依赖必须更新锁文件。
+1. 隐私真实资源已验证；40/20/20、本地 1 轮及模型验证口径保留。使用 [目录准备脚本](../docs/PACKAGE_DIRECTORY.md) 复制资源、独立增强包和历史模型；外置脚本适配只发生在副本，未知版本拒绝处理。
 2. 重新运行前端 `npm ci && npm run build && npm test`；在 Linux 容器中再验证一次，不能用 Windows 构建替代。
 3. 核定发布版本和预置模型记录，整理 `backend/resources`、独立增强缓存及完整选定任务目录。模型库必须有任务登记、特征包及清单，不能只复制分类头文件。
 4. 获得打包指令后才构建镜像、做完整断网短流程、停止/失败/重启/移动路径检查，导出归档和逐文件哈希。三方法准确率门槛按用户指示暂不重验。
 5. 目标机确认 NVIDIA Container Toolkit、Docker 权限和磁盘；首次导入后再做 RTX 5880 容器 GPU 与短流程验收。
 
-2026-09-16 已合入后端 `970fa95`、前端 `87b6a96`，合并版本前端 72 项、后端 39 项测试及军机真实短流程通过，详见 [合入记录](../docs/UPSTREAM_INTEGRATION.md)。隐私模块只做了测试桩接口与页面回归，尚无真实资源验证；现有部署预检仍只覆盖军机链路，不能据此认定隐私模块已可离线交付。
+2026-09-16 合入回归和后续真实隐私 60 客户端验证见 [合入记录](../docs/UPSTREAM_INTEGRATION.md) 和 [隐私验证](../docs/PRIVACY_REPLAY.md)。check_platform_deployment.py 主要检查军机默认配置；新增 check_platform_directory.py 检查已存模型与隐私资源。两者都不等于真实断网容器验收。
 
-Docker 模板使用 `FS_FEDMIA_LOCAL_ROOT=resources/fedmia_local`；后续将可信脚本、两套配置/特征、OfficeHome 图片放入 backend/resources/fedmia_local，沿用只读资源挂载。源码直接运行保持上游默认 ../fedmia_local，也可用该变量指定相对 backend 的目录。资源未就绪时隐私页显示提示，军机训练与评测仍可使用。
+Docker 和源码统一使用 backend/resources/fedmia_local；显式 FS_FEDMIA_LOCAL_ROOT 可以覆盖，FS_PLATFORM_RESOURCES 改变时源码的隐私默认根随之调整。资源未就绪时隐私页显示提示，军机训练与评测仍可使用。
 
 未来构建入口（当前不要执行）：在含 `backend/` 和 `frontend/` 的父目录运行：
 

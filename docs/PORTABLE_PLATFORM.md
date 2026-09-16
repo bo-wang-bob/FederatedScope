@@ -24,6 +24,7 @@ release/
         augmentation.json
         client_000001.pt ... client_000015.pt
       models/ViT-B-16.pt                    # 保留主干资源；缓存训练不加载它
+      fedmia_local/                        # 隐私脚本、两组特征、OfficeHome 图片
     exp/platform/                          # 实验、模型、测试特征、日志
 ```
 
@@ -53,4 +54,4 @@ python backend/scripts/export_platform_cache.py --job <任务ID>
 
 本次已在 4090 环境完成上述真实短流程和独立缓存包+空状态目录运行。Docker 镜像制作及 RTX 5880 现场验收另行完成；本次没有替换正在运行的服务。
 
-后续部署准备文件见 [deploy/README.md](../deploy/README.md)。隐私模块已合入，外置 FedMIA 资源已部署并完成历史回放验证；打包时需要包含只读脚本补丁，详见 [隐私回放部署](PRIVACY_REPLAY.md) 与 [合入记录](UPSTREAM_INTEGRATION.md)。尚未构建或导出交付包。
+目录准备和迁移检查见 [项目交付目录](PACKAGE_DIRECTORY.md)。隐私默认路径统一为 resources/fedmia_local，并随 FS_PLATFORM_RESOURCES 解析；显式 FS_FEDMIA_LOCAL_ROOT 仍优先。旧 ../fedmia_local 布局须显式设置变量或复制到新目录。来源限制见 [隐私回放部署](PRIVACY_REPLAY.md)。目录整理不代表已构建或导出 Docker 镜像。

@@ -6,6 +6,7 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/index.html frontend/tsconfig*.json frontend/vite.config.ts ./
 COPY frontend/src ./src
+COPY frontend/resource ./resource
 RUN npm run build
 
 FROM python:3.9.23-slim-bookworm AS runtime
