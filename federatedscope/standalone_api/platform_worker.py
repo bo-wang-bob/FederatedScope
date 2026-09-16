@@ -435,7 +435,7 @@ def train(spec):
             return result
 
     update_logger(cfg, clear_before_add=True)
-    emit('stage', stage='单机联邦训练')
+    emit('stage', stage='单机协同训练')
     runner = get_runner(server_class=CachedServer, client_class=CachedClient,
                         config=cfg, data=data)
     runner.run()
