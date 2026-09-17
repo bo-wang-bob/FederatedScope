@@ -69,6 +69,19 @@ it('renders API errors without fallback demo metrics', async () => {
   expect(screen.queryByText('AUC')).not.toBeInTheDocument();
 });
 
+it('uses the selected dataset label and preserves mix metric interpretation', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ data: {
+    ...payload(), dataset: 'MilitaryAircraft3D',
+    alignment: { memberSamples: 7, nonmemberSamples: 7, metricsMode: 'mix',
+      message: '整体指标使用 mix 校准样本，逐图预测使用真实图片分数。' },
+  } }) })));
+  render(<PlannedModule moduleId="privacy" />);
+  expect(await screen.findByText('MilitaryAircraft3D · 1 个')).toBeInTheDocument();
+  expect(screen.getByText('整体指标与当前样本预测')).toBeInTheDocument();
+  expect(screen.queryByText('共同样本指标与当前样本预测')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '查看结果口径' })).toBeInTheDocument();
+});
+
 it('removes the warning banner and exposes the interpretation limit on demand', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ data: {
     ...payload(), alignment: { memberSamples: 27, nonmemberSamples: 27,

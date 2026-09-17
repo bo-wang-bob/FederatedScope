@@ -46,13 +46,14 @@ type MembershipDistribution = {
 };
 type MembershipPayload = {
   configured: boolean;
+  dataset?: string;
   clientId?: number;
   clients?: number[];
   group?: 'member' | 'nonmember';
   source: string | null;
   message?: string;
   expectedPath?: string;
-  alignment?: { message: string; memberSamples: number; nonmemberSamples: number } | null;
+  alignment?: { message: string; memberSamples: number; nonmemberSamples: number; metricsMode?: string } | null;
   metrics?: {
     noDefense: MembershipMetrics;
     defense: MembershipMetrics;
@@ -205,7 +206,7 @@ function PrivacyMembershipPanel() {
   if (!payload.configured || !records.length) return <section className="privacy-lab-shell studio-page-enter">
     <Alert type="warning" showIcon message={payload.message || '隐私模块资源未就绪'}
       description={payload.expectedPath ? <details><summary>资源配置</summary>
-        <p>需补充 FedMIA 脚本、攻防特征、配置和 OfficeHome 图片。</p><code>{payload.expectedPath}</code>
+        <p>需补充 FedMIA 脚本、攻防特征、配置和对应数据集图片。</p><code>{payload.expectedPath}</code>
       </details> : undefined} />
   </section>;
   if (!selected) return null;
@@ -234,24 +235,24 @@ function PrivacyMembershipPanel() {
     </div>
     <div className="privacy-lab">
       <section className="privacy-picker" aria-label="成员推理样本">
-        <div className="privacy-section-title"><div><h2>样本选择</h2><p>{groupLabel}</p></div><span>{records.length} 个</span></div>
+        <div className="privacy-section-title"><div><h2>样本选择</h2><p>{groupLabel}</p></div><span>{payload.dataset || 'Office-Home'} · {records.length} 个</span></div>
         <div className="privacy-sample-list">
           {records.map(record => <button key={record.id} className={record.id === selected.id ? 'selected' : ''}
             onClick={() => setSelectedId(record.id)} aria-pressed={record.id === selected.id}>
             <img src={record.imageUrl} alt={`${record.className || record.filename} ${membershipStatus[record.truth].label}`} />
-            <span><strong>{record.className || record.filename || record.id}</strong><small>{record.domain || 'Office-Home'}</small></span>
+            <span><strong>{record.className || record.filename || record.id}</strong><small>{record.domain || payload.dataset || 'Office-Home'}</small></span>
           </button>)}
         </div>
       </section>
       <PrivacyDistributionChart distributions={payload.distributions} />
       <section className="privacy-result" aria-label="成员推理攻击结果">
-        <div className="privacy-card-heading privacy-result-heading"><span className="privacy-heading-icon"><ExperimentOutlined /></span><div><h3 className="privacy-result-title">攻击结果对照{payload.alignment && <Popover title="结果口径" content={<p className="privacy-result-note">{payload.alignment.message}</p>} trigger="click"><button className="privacy-info-button" type="button" aria-label="查看结果口径"><InfoCircleOutlined /></button></Popover>}</h3><p>{payload.alignment ? '共同样本指标与当前样本预测' : '整体指标与当前样本预测'}</p></div><em>Client {payload.clientId}</em></div>
+        <div className="privacy-card-heading privacy-result-heading"><span className="privacy-heading-icon"><ExperimentOutlined /></span><div><h3 className="privacy-result-title">攻击结果对照{payload.alignment && <Popover title="结果口径" content={<p className="privacy-result-note">{payload.alignment.message}</p>} trigger="click"><button className="privacy-info-button" type="button" aria-label="查看结果口径"><InfoCircleOutlined /></button></Popover>}</h3><p>{payload.alignment?.metricsMode === 'mix' ? '整体指标与当前样本预测' : payload.alignment ? '共同样本指标与当前样本预测' : '整体指标与当前样本预测'}</p></div><em>Client {payload.clientId}</em></div>
         <div className="privacy-selected-summary">
           <img src={selected.imageUrl} alt={selected.className || selected.filename} />
           <div>
             <span className="privacy-eyebrow">当前样本</span>
             <strong>{selected.className || selected.filename || selected.id}</strong>
-            <p><b className={membershipStatus[selected.truth].tone}>{selected.truth === 'member' ? '客户端训练样本' : '非训练样本'}</b><i>{selected.domain || 'Office-Home'}</i></p>
+            <p><b className={membershipStatus[selected.truth].tone}>{selected.truth === 'member' ? '客户端训练样本' : '非训练样本'}</b><i>{selected.domain || payload.dataset || 'Office-Home'}</i></p>
           </div>
         </div>
         <div className="privacy-comparison-list" role="region" aria-label="攻防指标对照" tabIndex={0}>
