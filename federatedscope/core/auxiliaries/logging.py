@@ -12,6 +12,18 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def machine_label():
+    """Logging must not require working DNS, especially in offline containers."""
+    import socket
+    hostname = socket.gethostname()
+    if os.environ.get('FS_PLATFORM_OFFLINE') == '1':
+        return hostname
+    try:
+        return socket.gethostbyname(hostname)
+    except OSError:
+        return hostname
+
+
 class CustomFormatter(logging.Formatter):
     """Logging colored formatter, adapted from
     https://stackoverflow.com/a/56944256/3638629"""
@@ -146,9 +158,7 @@ def update_logger(cfg, clear_before_add=False):
     for handler in root_logger.handlers:
         handler.addFilter(precision_filter)
 
-    import socket
-    root_logger.info(f"the current machine is at"
-                     f" {socket.gethostbyname(socket.gethostname())}")
+    root_logger.info(f"the current machine is at {machine_label()}")
     root_logger.info(f"the current dir is {os.getcwd()}")
     root_logger.info(f"the output dir is {cfg.outdir}")
     if alias_log_file:
