@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Empty, Select, Space, Spin, Tag } from 'antd';
+import { Alert, Button, Card, Empty, Space, Spin, Tag } from 'antd';
 import { ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons';
-import { api, backdoorImageUrl, statusText, terminal, type BackdoorJob } from './api';
+import { api, backdoorImageUrl, terminal, type BackdoorJob } from './api';
 import { readable } from './backdoorShared';
 import { viewHref } from './navigation';
 import './backdoor.css';
@@ -11,7 +11,7 @@ const statusColor = (status: string) => status === 'completed' ? 'success' : sta
 
 // 逐样本对照：从后门研究页面迁出，任务可复查、可分享（URL 带 job 编号）。
 export function BackdoorCompare() {
-  const [query, setQuery] = useSearchParams();
+  const [query] = useSearchParams();
   const requested = query.get('job');
   const [jobs, setJobs] = useState<BackdoorJob[]>([]);
   const [job, setJob] = useState<BackdoorJob>();
@@ -53,10 +53,7 @@ export function BackdoorCompare() {
   return <div className="backdoor-lab">
     <Card className="platform-panel backdoor-compare" title={<span><UnorderedListOutlined /> 逐样本对照</span>}
       extra={<Space>{job && <Tag color={statusColor(job.status)}>{job.stage}</Tag>}
-        <Select aria-label="对比任务" placeholder="选择对比任务" style={{ minWidth: 260 }} value={selected} disabled={!jobs.length}
-          onChange={(value: string) => setQuery({ view: 'backdoorCompare', job: value })}
-          options={jobs.map(item => ({ value: item.id, label: `${item.name || '后门对比'} · ${item.ids.length} 张 · ${statusText[item.status] || item.status}` }))} />
-        <Button icon={<ReloadOutlined />} onClick={() => setRefresh(value => value + 1)}>刷新</Button>
+        {job?.name && <span className="platform-muted">{job.name}</span>}
       </Space>}>
       {error && <Alert className="backdoor-compare-alert" type="error" showIcon title={error}
         action={<Button icon={<ReloadOutlined />} onClick={() => setRefresh(value => value + 1)}>重试</Button>} />}
