@@ -98,6 +98,10 @@ python -m scripts.platform_prediction_acceptance --url http://127.0.0.1:8002 --g
 
 `FS_FEDMIA_LOCAL_ROOT` 可覆盖展示包目录。后端按客户端缓存攻击分数、样本映射、AUC 和分布；切换图片或防御状态不会重新训练。运行环境需要 torch、torchvision、numpy、scipy、yacs、pyyaml、pillow 以及项目已有依赖。
 
+支持将其他数据集放在 `fedmia_local/` 的独立子目录。可在 `fedmia_local/active_package.json` 中设置 `{"path":"militaryaircraft3d"}`，后端便读取该子目录的脚本、`runs/` 和 `datasets/`，原 OfficeHome 文件仍保留。默认保留离线部署的 `resources/fedmia_local` 目录规则；`FS_FEDMIA_LOCAL_ROOT` 可指定现有展示包目录。默认资源目录不存在时，也兼容带有 `active_package.json` 的旧同级 `../fedmia_local`。切换展示包会自动清理后端分数缓存并更新图片地址版本，切换后刷新前端页面；代码更新后需重启后端。
+
+军机展示包包含 `image_index.json`，记录相对数据集目录、类别名及每个客户端训练/测试图片的原始顺序，后端不重复加载数据集划分。特征在本地计算 FedMIA 预测：使用该实验的 `indexed` 模式和 mix 分数分别校准攻防阈值（经验 FPR≤1%），真实图片分数用于逐图预测，AUC、TPR 和分布使用 mix 校准样本。可随展示包提供去除注册装饰器的 `attack_fedmia_i.py`、`attack_fedmia_ii.py`，保留实验原评分与抽样实现，不替换训练系统中注册的攻击。数据量较小时 1% FPR 下指标离散，页面指标与真实图片预测可能不同。
+
 本地路径变量（资源、数据集、基础缓存、测试缓存、模型权重、前端构建目录、展示包）均支持绝对路径；相对路径以本后端根目录为基准。增强缓存沿用相对于 `FS_PLATFORM_RESOURCES` 的约定。程序内部解析成绝对路径是为了保证子进程和下载路径校验一致，不再写死盘符或个人服务器目录。历史训练日志中的路径不自动重写。
 
 旧三机入口仍保留环境变量覆盖：远程 `FEDERATEDSCOPE_CLIENT_REPO` / `SUBSERVER_REPO` 及相应 `*_PYTHON`、`*_RESOURCE_REPO` 路径在目标 SSH 主机解析，默认使用登录目录下的 `FederatedScope-prototype-backend` 和其中的 `.venv`。现有三机部署应显式保留原环境路径；本地根节点默认使用当前后端及当前 Python 环境。systemd 模板用 `%h` 表示服务用户主目录；部署时按实际安装目录和 Python 环境设置，不能给 `WorkingDirectory` 填普通相对路径。

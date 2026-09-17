@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import importlib.util
 import inspect
 from http.server import ThreadingHTTPServer
@@ -26,7 +27,7 @@ from .platform_service import PlatformService
 from .paths import env_path, project_path
 from .schemas import ValidationError
 from .platform_paths import resolve_path
-from .privacy_replay import align_indexed_replay
+from .privacy_replay import align_indexed_replay, align_image_index_replay
 
 
 class PlatformHandler(ApiHandler):
@@ -34,7 +35,27 @@ class PlatformHandler(ApiHandler):
 
     def _fedmia_root(self) -> Path:
         resources = env_path('FS_PLATFORM_RESOURCES', 'resources')
-        return env_path('FS_FEDMIA_LOCAL_ROOT', resources / 'fedmia_local')
+        root = env_path('FS_FEDMIA_LOCAL_ROOT', resources / 'fedmia_local')
+        # Prefer the current deployment layout; recognize an explicitly
+        # selected legacy sibling package only when that layout is absent.
+        if not os.environ.get('FS_FEDMIA_LOCAL_ROOT') and not root.exists():
+            legacy = env_path('FS_FEDMIA_LOCAL_ROOT', '../fedmia_local')
+            if (legacy / 'active_package.json').is_file():
+                root = legacy
+        selection = root / 'active_package.json'
+        if selection.is_file():
+            relative = json.loads(selection.read_text(encoding='utf-8'))['path']
+            selected = (root / relative).resolve()
+            try:
+                selected.relative_to(root.resolve())
+            except ValueError as error:
+                raise PlatformError('成员推理展示包路径非法', 500) from error
+            return selected
+        return root
+
+    def _fedmia_image_index(self):
+        path = self._fedmia_root() / 'image_index.json'
+        return json.loads(path.read_text(encoding='utf-8')) if path.is_file() else None
 
     def _fedmia_clients(self) -> list[int]:
         return sorted(set(self._fedmia_available_clients(
@@ -50,19 +71,25 @@ class PlatformHandler(ApiHandler):
             group = query.get('group', ['member'])[0]
             limit = int(query.get('limit', ['20'])[0])
             seed = int(query.get('seed', ['2026'])[0])
-            threshold = float(query.get('threshold', ['0.5'])[0])
+            threshold = float(query['threshold'][0]) if 'threshold' in query else None
         except (ValueError, TypeError) as error:
             raise PlatformError('成员推理查询参数类型错误') from error
         if (group not in {'member', 'nonmember'} or not 1 <= limit <= 200
                 or not 0 <= seed < 2 ** 32 or (client is not None and client < 1)
-                or not math.isfinite(threshold) or not 0 <= threshold <= 1):
+                or (threshold is not None and
+                    (not math.isfinite(threshold) or not 0 <= threshold <= 1))):
             raise PlatformError('成员推理查询参数超出范围')
         root = self._fedmia_root()
         files = ['show_fedmia_examples.py', 'runs/no_defense/config.yaml',
                  'runs/defense/config.yaml']
+        index = self._fedmia_image_index()
+        dataset = index['datasetRoot'] if index else 'datasets/OfficeHomeDataset_10072016'
+        try:
+            (root / dataset).resolve().relative_to(root.resolve())
+        except ValueError as error:
+            raise PlatformError('数据集目录非法', 500) from error
         directories = ['runs/no_defense/ggeur_fedmia_features',
-                       'runs/defense/ggeur_fedmia_features',
-                       'datasets/OfficeHomeDataset_10072016']
+                       'runs/defense/ggeur_fedmia_features', dataset]
         missing = [p for p in files if not (root / p).is_file()]
         missing += [p for p in directories if not (root / p).is_dir()]
         clients = self._fedmia_clients() if not missing else []
@@ -94,6 +121,17 @@ class PlatformHandler(ApiHandler):
                 f'本地 FedMIA 推断缺少 Python 依赖：{missing}。'
                 '请在启动后端的 Python 环境安装 torch、torchvision、scipy、yacs、pyyaml、pillow。',
                 500) from error
+        # A display package can carry its original scoring implementation.
+        # Keep these classes private rather than replacing registered attacks.
+        for variant in ('i', 'ii'):
+            saved = self._fedmia_root() / f'attack_fedmia_{variant}.py'
+            if saved.is_file():
+                name = f'federatedscope.contrib.attack.plugins.saved_membership_{variant}'
+                saved_spec = importlib.util.spec_from_file_location(name, saved)
+                saved_module = importlib.util.module_from_spec(saved_spec)
+                saved_spec.loader.exec_module(saved_module)
+                attribute = 'FedMIAIPlugin' if variant == 'i' else 'FedMIAIIPlugin'
+                setattr(module, attribute, getattr(saved_module, attribute))
         self.context.fedmia_examples_module = module
         return module
 
@@ -107,13 +145,21 @@ class PlatformHandler(ApiHandler):
         return run
 
     def _fedmia_dataset_root(self) -> Path:
-        root = self._fedmia_root() / 'datasets' / 'OfficeHomeDataset_10072016'
+        package = self._fedmia_root().resolve()
+        index = self._fedmia_image_index()
+        relative = index['datasetRoot'] if index else 'datasets/OfficeHomeDataset_10072016'
+        root = (package / relative).resolve()
+        try:
+            root.relative_to(package)
+        except ValueError as error:
+            raise PlatformError('数据集目录非法', 500) from error
         if not root.is_dir():
-            raise PlatformError(f'缺少 OfficeHome 数据集目录：{root}', 500)
+            raise PlatformError(f'缺少成员推理数据集目录：{root}', 500)
         return root
 
     def _fedmia_cfg(self, run_dir: Path, module):
-        cfg = module.load_cfg(run_dir, 'fedmia_ii', 'test')
+        cfg = module.load_cfg(run_dir, 'fedmia_ii',
+                              None if hasattr(module, 'real_image_scores') else 'test')
         cfg.defrost()
         cfg.data.root = str(self._fedmia_dataset_root())
         # FederatedScope CN.freeze saves config.yaml by default; inference must
@@ -132,7 +178,7 @@ class PlatformHandler(ApiHandler):
         return sorted(clients)
 
     def _fedmia_attack_metrics(self, member_scores, nonmember_scores,
-                               module) -> dict[str, float]:
+                               module, point=None) -> dict[str, float]:
         pos = module.np.asarray(member_scores, dtype=module.np.float64)
         neg = module.np.asarray(nonmember_scores, dtype=module.np.float64)
         if len(pos) == 0 or len(neg) == 0:
@@ -153,9 +199,12 @@ class PlatformHandler(ApiHandler):
             (len(pos) * len(neg))
         # Use an attainable empirical operating point with FPR <= 1%,
         # including ties. A 99th percentile exceeds 1% on small sample sets.
-        allowed_false_positives = int(math.floor(0.01 * len(neg)))
-        cutoff = module.np.sort(neg)[::-1][allowed_false_positives]
-        threshold = float(module.np.nextafter(cutoff, module.np.inf))
+        if point is None:
+            allowed_false_positives = int(math.floor(0.01 * len(neg)))
+            cutoff = module.np.sort(neg)[::-1][allowed_false_positives]
+            threshold = float(module.np.nextafter(cutoff, module.np.inf))
+        else:
+            threshold = float(point['threshold'])
         tpr = float(module.np.mean(pos >= threshold))
         fpr = float(module.np.mean(neg >= threshold))
         return {
@@ -197,6 +246,24 @@ class PlatformHandler(ApiHandler):
             lock = threading.RLock()
             self.context.fedmia_cache_lock = lock
         with lock:
+            root = self._fedmia_root().resolve()
+            watched = [root / name for name in (
+                'show_fedmia_examples.py', 'image_index.json',
+                'attack_fedmia_i.py', 'attack_fedmia_ii.py',
+                'runs/no_defense/config.yaml', 'runs/defense/config.yaml',
+                'runs/no_defense/ggeur_fedmia_features',
+                'runs/defense/ggeur_fedmia_features')]
+            signature = (str(root), tuple(
+                (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+                if path.exists() else (str(path), None, None)
+                for path in watched))
+            if cache.get('_signature') != signature:
+                had_cached_state = bool(cache)
+                cache.clear()
+                cache['_signature'] = signature
+                if had_cached_state:
+                    self.context.fedmia_examples_module = None
+            version = hashlib.sha256(repr(signature).encode('utf-8')).hexdigest()[:16]
             if client_id in cache:
                 return cache[client_id]
             shared = cache.setdefault('_shared', {})
@@ -242,14 +309,41 @@ class PlatformHandler(ApiHandler):
             if image_items is None:
                 image_items = {}
                 shared['image_items'] = image_items
+            index = self._fedmia_image_index()
             if client_id not in image_items:
-                image_items[client_id] = module.load_image_items(
-                    no_dir, no_cfg, client_id)
+                if index:
+                    dataset_root = self._fedmia_dataset_root()
+                    entry = index['clients'][str(client_id)]
+                    image_items[client_id] = tuple([
+                        (str(dataset_root / path), int(label), int(original))
+                        for path, label, original in entry[group]]
+                        for group in ('member', 'nonmember'))
+                    shared['names'] = index['classNames']
+                    shared['dataset'] = index['dataset']
+                else:
+                    image_items[client_id] = module.load_image_items(
+                        no_dir, no_cfg, client_id)
 
-            no_result = module.compute_scores(no_features, no_cfg, client_id,
-                                              'fedmia_ii')
-            defense_result = module.compute_scores(
-                defense_features, defense_cfg, client_id, 'fedmia_ii')
+            modern = hasattr(module, 'real_image_scores')
+            score_fn = module.real_image_scores if modern else module.compute_scores
+            no_result = score_fn(no_features, no_cfg, client_id, 'fedmia_ii')
+            defense_result = score_fn(defense_features, defense_cfg, client_id, 'fedmia_ii')
+            if modern:
+                no_mix_cfg = no_cfg.clone()
+                no_mix_cfg.defrost()
+                no_mix_cfg.attack.mode = 'mix'
+                no_mix_cfg.freeze(save=False)
+                defense_mix_cfg = defense_cfg.clone()
+                defense_mix_cfg.defrost()
+                defense_mix_cfg.attack.mode = 'mix'
+                defense_mix_cfg.freeze(save=False)
+                no_mix = module.compute_scores(no_features, no_mix_cfg, client_id, 'fedmia_ii')
+                defense_mix = module.compute_scores(defense_features, defense_mix_cfg, client_id, 'fedmia_ii')
+                no_point = module.operating_point(no_mix.scores_member, no_mix.scores_nonmember)
+                defense_point = module.operating_point(defense_mix.scores_member, defense_mix.scores_nonmember)
+            else:
+                no_mix, defense_mix = no_result, defense_result
+                no_point = defense_point = None
             member_items, nonmember_items = image_items[client_id]
             no_member_scores = module.np.asarray(
                 no_result.scores_member, dtype=module.np.float64)
@@ -279,7 +373,8 @@ class PlatformHandler(ApiHandler):
                     defense_dir, defense_cfg, client_id)
                 if tuple(defense_items) != tuple(image_items[client_id]):
                     raise PlatformError('两组历史实验的数据划分不一致', 409)
-                common, alignment = align_indexed_replay(
+                align = align_image_index_replay if modern and index else align_indexed_replay
+                common, alignment = align(
                     module,
                     ((no_cfg, no_features[client_id], no_result),
                      (defense_cfg, defense_features[client_id], defense_result)),
@@ -301,7 +396,14 @@ class PlatformHandler(ApiHandler):
             bundle = {
                 'module': module,
                 'clients': clients,
-                'names': module.class_names_for(no_cfg),
+                'names': shared.get('names', module.class_names_for(no_cfg)),
+                'dataset': shared.get('dataset', 'Office-Home'),
+                'version': version,
+                'modern': modern,
+                'thresholds': {
+                    'noDefense': no_point['threshold'] if no_point else 0.5,
+                    'defense': defense_point['threshold'] if defense_point else 0.5,
+                },
                 'member_items': member_items,
                 'nonmember_items': nonmember_items,
                 'no_member_scores': no_member_scores,
@@ -310,15 +412,19 @@ class PlatformHandler(ApiHandler):
                 'defense_nonmember_scores': defense_nonmember_scores,
                 'metrics': {
                     'noDefense': self._fedmia_attack_metrics(
-                        no_member_scores, no_nonmember_scores, module),
+                        no_mix.scores_member if modern else no_member_scores,
+                        no_mix.scores_nonmember if modern else no_nonmember_scores, module, no_point),
                     'defense': self._fedmia_attack_metrics(
-                        defense_member_scores, defense_nonmember_scores, module),
+                        defense_mix.scores_member if modern else defense_member_scores,
+                        defense_mix.scores_nonmember if modern else defense_nonmember_scores, module, defense_point),
                 },
                 'distributions': {
                     'noDefense': self._fedmia_score_distribution(
-                        no_member_scores, no_nonmember_scores, module),
+                        no_mix.scores_member if modern else no_member_scores,
+                        no_mix.scores_nonmember if modern else no_nonmember_scores, module),
                     'defense': self._fedmia_score_distribution(
-                        defense_member_scores, defense_nonmember_scores, module),
+                        defense_mix.scores_member if modern else defense_member_scores,
+                        defense_mix.scores_nonmember if modern else defense_nonmember_scores, module),
                 },
                 'payloads': {},
                 'alignment': alignment,
@@ -328,11 +434,11 @@ class PlatformHandler(ApiHandler):
 
     def _fedmia_client_payload(self, client_id: int, group: str,
                                limit: int, seed: int,
-                               threshold: float) -> dict[str, Any]:
+                               threshold: float | None) -> dict[str, Any]:
         if group not in {'member', 'nonmember'}:
             raise PlatformError('成员状态只能是 member 或 nonmember')
         bundle = self._fedmia_bundle(client_id)
-        payload_key = (group, int(limit), int(seed), float(threshold))
+        payload_key = (group, int(limit), int(seed), threshold)
         cache_lock = getattr(self.context, 'fedmia_cache_lock', None)
         if cache_lock is not None:
             with cache_lock:
@@ -341,6 +447,8 @@ class PlatformHandler(ApiHandler):
                     return cached
         module = bundle['module']
         names = bundle['names']
+        no_threshold = bundle['thresholds']['noDefense'] if threshold is None else threshold
+        defense_threshold = bundle['thresholds']['defense'] if threshold is None else threshold
         no_scores = {
             'member': bundle['no_member_scores'],
             'nonmember': bundle['no_nonmember_scores'],
@@ -358,16 +466,17 @@ class PlatformHandler(ApiHandler):
         if usable <= 0:
             raise PlatformError('该客户端没有可展示的成员推理样本', 404)
         rng = module.np.random.default_rng(int(seed))
-        order = module.comparison_priority(
-            module.np.arange(usable), truth, module.np.asarray(no_scores),
-            module.np.asarray(defense_scores), threshold, rng)
+        priority_args = (module.np.arange(usable), truth, module.np.asarray(no_scores),
+                         module.np.asarray(defense_scores), no_threshold)
+        order = (module.comparison_priority(*priority_args, defense_threshold, rng)
+                 if bundle['modern'] else module.comparison_priority(*priority_args, rng))
         items = []
         for rank, index in enumerate(order[:max(1, min(limit, usable))],
                                      start=1):
             path, label, original_index = source_items[int(index)]
-            no_pred = 'member' if float(no_scores[index]) >= threshold \
+            no_pred = 'member' if float(no_scores[index]) >= no_threshold \
                 else 'nonmember'
-            defense_pred = 'member' if float(defense_scores[index]) >= threshold \
+            defense_pred = 'member' if float(defense_scores[index]) >= defense_threshold \
                 else 'nonmember'
             items.append({
                 'id': f'{client_id}-{group}-{int(index)}',
@@ -382,7 +491,7 @@ class PlatformHandler(ApiHandler):
                 'originalDatasetIndex': int(original_index),
                 'imageUrl': (
                     f'/api/platform/privacy/membership/images/'
-                    f'{client_id}/{group}/{int(index)}'
+                    f'{client_id}/{group}/{int(index)}?v={bundle["version"]}'
                 ),
                 'noDefenseScore': float(no_scores[index]),
                 'defenseScore': float(defense_scores[index]),
@@ -395,6 +504,9 @@ class PlatformHandler(ApiHandler):
             'group': group,
             'clients': bundle['clients'],
             'threshold': threshold,
+            'thresholds': {'noDefense': no_threshold, 'defense': defense_threshold},
+            'dataset': bundle['dataset'],
+            'calibrationMode': 'mix' if bundle['modern'] else 'test',
             'metrics': bundle['metrics'],
             'distributions': bundle['distributions'],
             'items': items,
