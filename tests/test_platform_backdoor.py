@@ -46,6 +46,35 @@ class BackdoorTests(unittest.TestCase):
             with self.subTest(ids=ids), self.assertRaises(PlatformError):
                 self.service._validate_ids(ids)
 
+    def test_military_results_use_portable_dataset_root(self):
+        run = self.repo / 'resources/backdoor/exp/sabre_newdataset/attack'
+        run.mkdir(parents=True)
+        (run / 'config.yaml').write_text('data:\n  type: MilitaryAircraft-3D\n  root: C:/old/data\n')
+        service = BackdoorService(self.repo, 'military-state')
+        self.addCleanup(service.close)
+        self.assertEqual(service.base, run.parent)
+        self.assertEqual(Path(service.data_root), self.repo / 'resources/datasets/MilitaryAircraft3D')
+
+    def test_missing_cache_does_not_launch_background_gpu_work(self):
+        with patch('subprocess.run', side_effect=AssertionError('Unexpected GPU process')):
+            result = self.service.pick(dict(count=2, seed=1))
+        self.assertFalse(result['filtered'])
+        self.assertFalse(self.service._precompute_started)
+
+    def test_weighted_selection_fills_count_without_duplicates(self):
+        self.service._index = [(f'Art_{index:05d}', 1) for index in range(10)]
+        self.service._predictions_loaded = True
+        self.service._predictions = dict(targetLabel=0, items={
+            row[0]: dict(attack=0, defense=1) for row in self.service._index})
+        result = self.service.pick(dict(count=10, seed=42))
+        self.assertEqual(result['count'], 10)
+        self.assertEqual(len(set(result['ids'])), 10)
+        self.assertTrue(result['filtered'])
+        self.assertEqual(result, self.service.pick(dict(count=10, seed=42)))
+
+    def test_missing_defense_prediction_is_not_a_defense_success(self):
+        self.assertEqual(self.service._rank(dict(attack=0), 1, 0), 4)
+
     def test_run_override_cannot_escape_resource_root(self):
         with patch.dict(os.environ, {'FS_BACKDOOR_RUNS':'attack=../../outside'}):
             with self.assertRaises(PlatformError):

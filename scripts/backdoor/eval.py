@@ -130,6 +130,15 @@ class GGEUREvalServer(GGEURServer):
             from federatedscope.cv.dataset.pacs import PACS
             dataset_class = PACS
             dataset_kwargs = {}
+        elif 'militaryaircraft' in data_type.replace(' ', ''):
+            # MilitaryAircraft-3D 与 DomainNet 同为 root/domain/class/image 布局,
+            # 复用 folder-based loader; domain 顺序必须与训练时一致, 否则 id 编号错乱。
+            domains = ['aerial', 'natural', 'recon']
+            from federatedscope.cv.dataset.domainnet import (
+                DomainNet, discover_domainnet_metadata)
+            dataset_class = DomainNet
+            _, classes = discover_domainnet_metadata(data_root, domains, False)
+            dataset_kwargs = {'classes': classes}
         else:
             self.a3fl_test_loaded = True
             return
