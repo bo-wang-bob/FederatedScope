@@ -14,3 +14,4 @@ resource/*.zip
 .idea/
 .vscode/
 .workbuddy/
+exp/

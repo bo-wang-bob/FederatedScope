@@ -102,7 +102,7 @@ function Workspace() {
   const jobIdFromQuery = query.get('job');
   const routeTabs: { view: PlatformView; label: string; href?: string }[] = area === 'train' ? [{view:'train',label:'新建训练'},{view:'jobs',label:'实验记录'}] :
     area === 'experience' ? [{view:'experience',label:'单图验证'},{view:'evaluate',label:'独立评测'}] :
-    area === 'backdoor' ? [{view:'backdoor',label:'三连对比'}, ...(jobIdFromQuery ? [{view:'backdoorCompare' as PlatformView,label:'逐样本对照',href:backdoorCompareHref(jobIdFromQuery)}] : [])] : [];
+    area === 'backdoor' ? [{view:'backdoor',label:'抽样对比'}, ...(jobIdFromQuery ? [{view:'backdoorCompare' as PlatformView,label:'逐样本对照',href:backdoorCompareHref(jobIdFromQuery)}] : [])] : [];
   return <StudioShell view={view} connected={!!catalog && !error} running={!!running} openCurrent={() => running && open(running.id)} showDatasetImages={!restricted}>
     {restricted && <div className="demo-scope-strip" aria-label="演示范围"><strong>MilitaryAircraft-3D / ViT</strong><span>FedAvg · FedProx · 本架构</span></div>}
     {error && <Alert className="studio-connection-alert" type="error" showIcon title="连接中断，正在重试" description={error} action={<Button icon={<ReloadOutlined />} onClick={() => setRefreshKey(v => v+1)}>重连</Button>} />}

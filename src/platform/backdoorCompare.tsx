@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Empty, Select, Space, Spin, Tag } from 'antd';
+import { Alert, Button, Card, Empty, Space, Spin, Tag } from 'antd';
 import { ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons';
-import { api, backdoorImageUrl, statusText, terminal, type BackdoorJob } from './api';
+import { api, backdoorImageUrl, terminal, type BackdoorJob } from './api';
 import { readable } from './backdoorShared';
 import { viewHref } from './navigation';
 import './backdoor.css';
@@ -11,7 +11,7 @@ const statusColor = (status: string) => status === 'completed' ? 'success' : sta
 
 // 逐样本对照：从后门研究页面迁出，任务可复查、可分享（URL 带 job 编号）。
 export function BackdoorCompare() {
-  const [query, setQuery] = useSearchParams();
+  const [query] = useSearchParams();
   const requested = query.get('job');
   const [jobs, setJobs] = useState<BackdoorJob[]>([]);
   const [job, setJob] = useState<BackdoorJob>();
@@ -53,15 +53,12 @@ export function BackdoorCompare() {
   return <div className="backdoor-lab">
     <Card className="platform-panel backdoor-compare" title={<span><UnorderedListOutlined /> 逐样本对照</span>}
       extra={<Space>{job && <Tag color={statusColor(job.status)}>{job.stage}</Tag>}
-        <Select aria-label="对比任务" placeholder="选择对比任务" style={{ minWidth: 260 }} value={selected} disabled={!jobs.length}
-          onChange={(value: string) => setQuery({ view: 'backdoorCompare', job: value })}
-          options={jobs.map(item => ({ value: item.id, label: `${item.name || '后门对比'} · ${item.ids.length} 张 · ${statusText[item.status] || item.status}` }))} />
-        <Button icon={<ReloadOutlined />} onClick={() => setRefresh(value => value + 1)}>刷新</Button>
+        {job?.name && <span className="platform-muted">{job.name}</span>}
       </Space>}>
       {error && <Alert className="backdoor-compare-alert" type="error" showIcon title={error}
         action={<Button icon={<ReloadOutlined />} onClick={() => setRefresh(value => value + 1)}>重试</Button>} />}
       {loading && !job && <div className="backdoor-loading"><Spin /></div>}
-      {!loading && !jobs.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span>还没有对比任务，先到<Link to={viewHref('backdoor')}>后门研究</Link>生成三连对比。</span>} />}
+      {!loading && !jobs.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span>还没有对比任务，先到<Link to={viewHref('backdoor')}>后门研究</Link>生成对比。</span>} />}
       {job && <>
         {job.status !== 'completed' ? <div className="backdoor-progress">{job.status === 'failed' ? <><h3>生成失败</h3><p role="alert">{job.error || '请查看日志'}</p></> : <><Spin size="large" /><h3>{job.stage}</h3><p className="platform-muted">加载模型并对 {job.ids.length} 张图片做三次前向推理</p></>}</div> : result && <>
           <h3 className="backdoor-table-title">逐样本预测对照</h3>

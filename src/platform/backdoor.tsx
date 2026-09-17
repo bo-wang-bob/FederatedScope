@@ -20,6 +20,7 @@ export function BackdoorLab() {
   const [label, setLabel] = useState<number>();
   const [seed, setSeed] = useState(1);
   const [candidates, setCandidates] = useState<{ id: string; label: number }[]>([]);
+  const [pickInfo, setPickInfo] = useState<BackdoorPick>();
   const [chosen, setChosen] = useState<string[]>([]);
   const [picking, setPicking] = useState(false);
   const [job, setJob] = useState<BackdoorJob>();
@@ -57,6 +58,7 @@ export function BackdoorLab() {
       .then(data => {
         if (!active) return;
         setCandidates(data.ids.map((id, index) => ({ id, label: data.labels[index] })));
+        setPickInfo(data);
         setChosen(data.ids);
         setError('');
       })
@@ -113,7 +115,7 @@ export function BackdoorLab() {
       <div className="backdoor-filters">
         <label><span>测试域</span><Select aria-label="测试域" placeholder="全部域" allowClear value={domain} disabled={busy} onChange={value => { setDomain(value); setLabel(undefined); }} options={testset.domains.map(item => ({ value: item.name, label: `${item.name} (${item.count})` }))} /></label>
         <label><span>类别</span><Select aria-label="类别" placeholder="全部类别" allowClear showSearch optionFilterProp="label" value={label} disabled={busy} onChange={setLabel} options={testset.labels.map(item => ({ value: item.index, label: `${readable(item.name)} (${item.count})` }))} /></label>
-        <span className="platform-muted">随机抽样并可调换批次；编号格式 {testset.domains[0]?.name ?? 'Art'}_00001</span>
+        <span className="platform-muted">编号格式 {testset.domains[0]?.name ?? 'Art'}_00001</span>
       </div>
       <div className="backdoor-thumbnails" aria-busy={picking}>
         {picking ? <div className="backdoor-loading"><Spin /></div> : candidates.map(item => <button key={item.id} className={chosen.includes(item.id) ? 'selected' : ''} disabled={busy}
@@ -121,7 +123,7 @@ export function BackdoorLab() {
           <img src={backdoorImageUrl(item.id)} alt={`测试样本 ${item.id}`} loading="lazy" /><span>{readable(nameOf(item.label))}</span></button>)}
       </div>
       <div className="backdoor-submit">
-        <Button type="primary" size="large" icon={<ThunderboltOutlined />} disabled={busy || !ids.length} loading={busy} onClick={() => void generate()}>{busy ? '正在生成对比' : '生成三连对比'}</Button>
+        <Button type="primary" size="large" icon={<ThunderboltOutlined />} disabled={busy || !ids.length} loading={busy} onClick={() => void generate()}>{busy ? '正在生成对比' : '生成对比'}</Button>
       </div>
       {error && <Alert type="error" showIcon title={error} />}
     </Card>

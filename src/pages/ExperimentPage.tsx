@@ -28,7 +28,8 @@ const allMethodOptions: Array<{ value: ExperimentMethod; label: string }> = [
 const groupLabels: Record<string, string> = {
   digit3_cnn: 'Digits-3 · ConvNeXt CNN', digit3_vit: 'Digits-3 · ViT',
   domainnet_cnn: 'DomainNet · ConvNeXt CNN', domainnet_mixer: 'DomainNet · MLP-Mixer',
-  domainnet_vit: 'DomainNet · ViT', mdsent_lstm: '多域情感 · LSTM',
+  domainnet_vit: 'DomainNet · ViT', military_vit: 'MilitaryAircraft-3D · ViT',
+  mdsent_lstm: '多域情感 · LSTM',
   mdsent_rnn: '多域情感 · RNN', officehome_cnn: 'OfficeHome · ConvNeXt CNN',
   officehome_mixer: 'OfficeHome · MLP-Mixer', officehome_vit: 'OfficeHome · ViT',
 };

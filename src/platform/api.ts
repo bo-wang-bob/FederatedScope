@@ -61,7 +61,15 @@ export interface BackdoorTestset {
   labels: { index: number; name: string; count: number }[];
   runs: { attack: string | null; defense: string | null };
 }
-export interface BackdoorPick { ids: string[]; labels: number[]; total: number; count: number; seed?: number }
+export interface BackdoorPick { ids: string[]; labels: number[]; total: number; count: number; seed?: number;
+  /** 是否按"攻击命中 ∧ 防御拦住"加权抽样（后端有全测试集预测缓存时为 true） */
+  filtered?: boolean;
+  /** 满足"攻击命中 ∧ 防御拦住"的候选样本数 */
+  preferred?: number;
+  /** 预筛样本在抽样名额中的目标占比，其余名额随机 */
+  preferRatio?: number;
+  /** 后门目标类 */
+  targetLabel?: number; targetName?: string }
 export interface BackdoorStat { correct: number; total: number; accuracy: number; asr: number; asrRate: number }
 export interface BackdoorResult {
   ids: string[]; classNames: string[]; targetLabel: number; targetName: string; attackName: string;
