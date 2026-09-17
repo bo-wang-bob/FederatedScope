@@ -173,6 +173,12 @@ def get_class_names(cfg, num_classes):
         elif 'pacs' in data_type:
             from federatedscope.cv.dataset.pacs import PACS
             names = list(PACS.CLASSES)
+        elif 'militaryaircraft' in data_type.replace(' ', ''):
+            # 类别名必须与 loader 的 class_to_idx 同序, 因此复用同一套发现逻辑
+            from federatedscope.cv.dataset.domainnet import (
+                discover_domainnet_metadata)
+            _, names = discover_domainnet_metadata(
+                str(cfg.data.root), ['aerial', 'natural', 'recon'], False)
     except Exception as e:
         print(f"  [WARN] 类别名加载失败 ({e}), 使用数字标签")
     if names and len(names) >= num_classes:

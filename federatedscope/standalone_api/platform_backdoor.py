@@ -4,10 +4,14 @@
 同样的"spec.json + 子进程 + job.json 轮询"模式。绘图只做前向推理, 不训练。
 
 目录约定:
-    base                   实验基目录 (默认 {repo}/exp/sabre)
+    base                   实验基目录 (默认 {repo}/exp/sabre_newdataset, 缺失回退 exp/sabre)
       <attack_run>/        无防御实验, 含 *_final_mlp_head.pt 与 trigger
       <defense_run>/       有防御实验
       testset_images/       测试集导出图 + index.csv (供前端浏览挑图)
+      testset_images/trigger_predictions.json
+                           全测试集"带触发器"预测缓存, 由 scripts/backdoor/
+                           precompute_trigger_predictions.py 生成; 存在时挑图
+                           优先选"攻击命中 ∧ 防御未命中"的样本
 """
 from __future__ import annotations
 
@@ -32,6 +36,13 @@ MAX_IDS = 20
 # 域名本身可含下划线 (Office-Home 的 Real_World), 编号固定 5 位
 ID_PATTERN = re.compile(r'^[A-Za-z][A-Za-z0-9_]*_\d{5}$')
 IMAGE_NAMES = {'clean', 'triggered', 'defense', 'defenseClean'}
+# 实验目录候选名, 按优先级排列: 新数据集 (军机三域) 结果优先展示
+BASE_CANDIDATES = ('sabre_newdataset', 'sabre')
+# 全测试集触发后预测缓存文件名 (与 scripts/backdoor/precompute_trigger_predictions.py 一致)
+PREDICTIONS_CACHE = 'trigger_predictions.json'
+# 挑图时"攻击命中 ∧ 防御拦住"样本的目标占比; 其余名额从剩余池随机取。
+# 不用 1.0 是为了避免挑出来的全是完美样本 —— 混一部分普通样本, 结果好看但可信。
+PREFERRED_RATIO = 0.7
 
 
 def now():
@@ -49,9 +60,11 @@ def read_json(path, default=None):
 class BackdoorService:
     def __init__(self, repo, state):
         self.repo = Path(repo).resolve()
-        self.root = Path(state).resolve() / 'backdoor'
-        self.base = Path(os.environ.get('FS_BACKDOOR_BASE',
-                                        self.repo / 'exp' / 'sabre')).resolve()
+        state_root = (Path(state).resolve() if state
+                      else self.repo / 'exp' / 'single_host_platform')
+        self.root = state_root / 'backdoor'
+        self.base = Path(os.environ.get('FS_BACKDOOR_BASE')
+                         or self._default_base(self.repo, state_root)).resolve()
         self.data_root = os.environ.get('FS_BACKDOOR_DATA_ROOT') or None
         self.device = os.environ.get('FS_BACKDOOR_DEVICE', 'cuda')
         self.root.mkdir(parents=True, exist_ok=True)
@@ -60,7 +73,45 @@ class BackdoorService:
         self._index = None
         self._class_names = None
         self._class_names_loaded = False
+        self._predictions = None
+        self._predictions_loaded = False
+        self._precompute_started = False
         self.recover()
+
+    # ------------------------------------------------------------------ #
+    # 默认实验目录
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _exp_dirs(repo, state_root):
+        """候选 exp/ 目录, 按优先级排列。
+
+        前后端常常分处两棵工作树 (后端仓库里根本没有 exp/), 所以不能只认
+        repo/exp: 还要看状态目录的同级目录 (前端工作区 exp/platform -> exp/)、
+        FS_BACKDOOR_SEARCH_ROOTS 以及进程工作目录。
+        """
+        candidates = [Path(repo) / 'exp', Path(state_root).parent, Path.cwd() / 'exp']
+        extra = os.environ.get('FS_BACKDOOR_SEARCH_ROOTS', '')
+        for item in extra.split(os.pathsep):
+            if item.strip():
+                candidates.append(Path(item.strip()).expanduser() / 'exp')
+        seen, ordered = set(), []
+        for item in candidates:
+            key = str(item).lower()
+            if key not in seen:
+                seen.add(key)
+                ordered.append(item)
+        return ordered
+
+    @classmethod
+    def _default_base(cls, repo, state_root):
+        """优先返回新数据集实验结果目录; 全部缺失时回退第一个候选名。"""
+        exp_dirs = cls._exp_dirs(repo, state_root)
+        for name in BASE_CANDIDATES:              # 候选名优先级高于目录位置
+            for exp_dir in exp_dirs:
+                candidate = (exp_dir / name).resolve()
+                if candidate.is_dir():
+                    return candidate
+        return (exp_dirs[0] / BASE_CANDIDATES[0]).resolve()
 
     # ------------------------------------------------------------------ #
     # 实验目录发现
@@ -125,17 +176,30 @@ class BackdoorService:
         try:
             import yaml
             data_type = ''
+            data_root = ''
             for config in sorted(self.base.glob('*/config.yaml')):
                 with config.open(encoding='utf-8') as stream:
-                    data_type = str((yaml.safe_load(stream) or {}).get('data', {}).get('type', '')).lower()
+                    loaded = yaml.safe_load(stream) or {}
+                section = loaded.get('data') or {}
+                data_type = str(section.get('type', '')).lower()
+                data_root = str(section.get('root', '') or '')
                 if data_type:
                     break
+            # config.yaml 里的 data.root 多为相对路径, 换机器后失效; 显式覆盖优先
+            root = self.data_root or data_root
             if 'office' in data_type and 'home' in data_type:
                 from federatedscope.cv.dataset.office_home import OfficeHome
                 self._class_names = list(OfficeHome.CLASSES)
             elif 'pacs' in data_type:
                 from federatedscope.cv.dataset.pacs import PACS
                 self._class_names = list(PACS.CLASSES)
+            elif 'militaryaircraft' in data_type.replace(' ', '') and root:
+                # 与 DomainNet 同为 root/domain/class 布局; 类别顺序必须来自同一发现逻辑
+                from federatedscope.cv.dataset.domainnet import (
+                    discover_domainnet_metadata)
+                _, names = discover_domainnet_metadata(
+                    str(root), ['aerial', 'natural', 'recon'], False)
+                self._class_names = list(names)
         except Exception:
             self._class_names = None
         return self._class_names or []
@@ -167,8 +231,71 @@ class BackdoorService:
             raise PlatformError('测试图片不存在', 404)
         return file
 
+    # ------------------------------------------------------------------ #
+    # 触发后预测缓存 (挑图偏好)
+    # ------------------------------------------------------------------ #
+    def _load_predictions(self):
+        """全测试集"带触发器"预测缓存; 未生成时返回 None。"""
+        if self._predictions_loaded:
+            return self._predictions
+        self._predictions_loaded = True
+        cache = read_json(self.base / 'testset_images' / PREDICTIONS_CACHE)
+        if (isinstance(cache, dict) and isinstance(cache.get('items'), dict)
+                and isinstance(cache.get('targetLabel'), int)):
+            self._predictions = cache
+        return self._predictions
+
+    def _start_precompute(self):
+        """缓存缺失时后台生成一次 (不阻塞挑图, 失败也不影响本次随机抽样)。"""
+        with self.lock:
+            if self._precompute_started:
+                return
+            self._precompute_started = True
+        script = self.repo / 'scripts' / 'backdoor' / 'precompute_trigger_predictions.py'
+        runs = self.runs()
+        if not script.is_file() or not runs.get('attack'):
+            return
+        command = [sys.executable, str(script), '--base', str(self.base),
+                   '--device', self.device, '--runs',
+                   ','.join(f'{key}={value}' for key, value in runs.items() if value)]
+        if self.data_root:
+            command += ['--data-root', str(self.data_root)]
+        log = self.root / 'precompute.log'
+
+        def _worker():
+            try:
+                with log.open('ab') as stream:
+                    stream.write(f'\n=== {now()} ===\n'.encode('utf-8'))
+                    subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
+                                   cwd=str(self.repo), timeout=3600)
+            except Exception as exc:  # pragma: no cover - 后台线程, 失败只记录
+                print(f'[backdoor] 预计算失败: {exc}')
+            finally:
+                with self.lock:
+                    self._predictions_loaded = False
+                    self._predictions = None
+
+        threading.Thread(target=_worker, name='backdoor-precompute', daemon=True).start()
+
+    @staticmethod
+    def _rank(entry, label, target):
+        """展示优先级: 攻击命中∧防御拦住 > 都命中 > 都没中 > 防御误判 > 无缓存。"""
+        if entry is None:
+            return 4
+        attack_hit = entry.get('attack') == target and label != target
+        defense_hit = entry.get('defense') == target and label != target
+        if attack_hit:
+            return 0 if not defense_hit else 1
+        return 3 if defense_hit else 2
+
     def pick(self, payload):
-        """随机挑选图片编号, 支持按域/类别过滤。"""
+        """挑选图片编号, 支持按域/类别过滤。
+
+        默认按全测试集的"带触发器"预测缓存做**加权抽样**: 约 PREFERRED_RATIO
+        的名额给"无防御命中目标类 ∧ 有防御未命中"的样本 (同时体现后门打得进、
+        防御拦得住), 其余名额从剩余池随机取 —— 故意不取满, 免得挑出来的全是
+        完美样本。缓存缺失时退化为随机抽样, 并在后台触发一次预计算。
+        """
         rows = self._load_index()
         if rows is None:
             raise PlatformError('测试集尚未导出, 请先运行一次绘图脚本以生成测试集图片', 409)
@@ -195,9 +322,39 @@ class BackdoorService:
         if seed is not None and not isinstance(seed, int):
             raise PlatformError('随机种子非法')
         rng = random.Random(seed)
-        picked = rng.sample(pool, min(count, len(pool)))
+        cache = self._load_predictions() if payload.get('prefer', True) is not False else None
+        if cache is None:
+            if payload.get('prefer', True) is not False:
+                self._start_precompute()
+            picked = rng.sample(pool, min(count, len(pool)))
+            return dict(ids=[row[0] for row in picked], labels=[row[1] for row in picked],
+                        total=len(pool), seed=seed, count=len(picked), filtered=False)
+        target = cache['targetLabel']
+        items = cache['items']
+        preferred_pool = [row for row in pool
+                          if self._rank(items.get(row[0]), row[1], target) == 0]
+        rest = [row for row in pool
+                if self._rank(items.get(row[0]), row[1], target) != 0]
+        wanted = min(count, len(pool))
+        ratio = PREFERRED_RATIO
+        try:                                   # 允许调用方覆盖占比 (仅内部/调试用)
+            override = payload.get('preferRatio')
+            if override is not None:
+                ratio = min(max(float(override), 0.0), 1.0)
+        except (TypeError, ValueError):
+            pass
+        taken = min(len(preferred_pool), int(round(wanted * ratio)))
+        # 只要还有别的样本, 就至少留一个名额给随机池, 避免"满分"展示
+        if rest and wanted > 1 and taken >= wanted:
+            taken = wanted - 1
+        picked = rng.sample(preferred_pool, taken)
+        picked += rng.sample(rest, min(wanted - taken, len(rest)))
+        rng.shuffle(picked)                    # 打乱, 免得前排全是预筛样本
         return dict(ids=[row[0] for row in picked], labels=[row[1] for row in picked],
-                    total=len(pool), seed=seed, count=len(picked))
+                    total=len(pool), seed=seed, count=len(picked),
+                    filtered=len(preferred_pool) > 0, preferred=len(preferred_pool),
+                    preferRatio=ratio, targetLabel=target,
+                    targetName=cache.get('targetName'))
 
     # ------------------------------------------------------------------ #
     # 任务

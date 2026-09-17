@@ -182,3 +182,4 @@ scripts/distributed_scripts/headonly_hierarchical_qps/runs/
 /scripts/_*.py
 /scripts/_*.ps1
 /scripts/distributed_scripts/**/runs/
+node_modules
