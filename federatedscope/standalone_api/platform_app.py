@@ -24,6 +24,7 @@ from .app import ApiHandler
 from .platform_backdoor import BackdoorService
 from .platform_config import PlatformError, sha256
 from .platform_service import PlatformService
+from .platform_privacy import PrivacyService
 from .paths import env_path, project_path
 from .schemas import ValidationError
 from .platform_paths import resolve_path
@@ -560,8 +561,11 @@ class PlatformHandler(ApiHandler):
                 origin = self.headers.get('Origin')
                 if origin and urlparse(origin).netloc != self.headers.get('Host'):
                     raise PlatformError('不允许跨站启动或停止任务', 403)
-                if self.headers.get_content_type() != 'application/json':
-                    raise PlatformError('仅接受 application/json', 415)
+                upload_path = re.fullmatch(r'/api/platform/datasets/[a-f0-9]{32}/files',
+                                          urlparse(self.path).path.rstrip('/'))
+                expected_type = 'application/octet-stream' if upload_path else 'application/json'
+                if self.headers.get_content_type() != expected_type:
+                    raise PlatformError(f'仅接受 {expected_type}', 415)
             self._route(write)
         except (PlatformError, ValidationError) as error:
             self._error(getattr(error, 'status', 422), 'PLATFORM_ERROR', str(error))
@@ -731,6 +735,40 @@ class PlatformHandler(ApiHandler):
     def _route(self, write):
         path = urlparse(self.path).path.rstrip('/') or '/'
         service = self.context.platform
+        if path == '/api/platform/datasets':
+            from .uploaded_datasets import DatasetStore
+            store = DatasetStore(service.repo)
+            self._data(store.create(self._body()) if write else store.list())
+            return
+        uploaded = re.fullmatch(r'/api/platform/datasets/([a-f0-9]{32})/(files|finish|images/(\d+))', path)
+        if uploaded:
+            from .uploaded_datasets import DatasetStore, MAX_IMAGE
+            store = DatasetStore(service.repo)
+            identifier, action, image_index = uploaded.groups()
+            if write and action == 'files':
+                query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if set(query) != {'path'} or len(query['path']) != 1:
+                    raise PlatformError('需要图片相对路径')
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                except ValueError as error:
+                    raise PlatformError('Content-Length 非法', 400) from error
+                if not 0 < length <= MAX_IMAGE:
+                    raise PlatformError('每张图片不得超过 25 MiB', 413)
+                content = self.rfile.read(length)
+                if len(content) != length:
+                    raise PlatformError('图片上传不完整')
+                self._data(store.put(identifier, query['path'][0], content))
+                return
+            if write and action == 'finish':
+                self._body()
+                self._data(store.finish(identifier))
+                return
+            if not write and image_index is not None:
+                file = store.image(identifier, int(image_index))
+                self._download(file, file.name, mimetypes.guess_type(file.name)[0] or 'image/jpeg', inline=True)
+                return
+            raise PlatformError('上传接口不存在', 404)
         if not write:
             endpoints = {'/api/health': lambda: {'status': 'ok', 'mode': 'single-host', 'commit': service.commit},
                          '/api/platform/catalog': service.catalog,
@@ -762,11 +800,47 @@ class PlatformHandler(ApiHandler):
             query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             self._data(self._fedmia_membership(query))
             return
+        if path.startswith('/api/platform/privacy/experiments'):
+            privacy = self.context.privacy
+            suffix = path[len('/api/platform/privacy/experiments'):]
+            if not write and suffix in {'/catalog', '/jobs'}:
+                self._data(privacy.catalog() if suffix == '/catalog' else privacy.list())
+                return
+            if write and suffix in {'/preflight', '/train'}:
+                self._data(privacy.create('inspect' if suffix == '/preflight' else 'train', self._body()), 202)
+                return
+            match = re.fullmatch(r'/jobs/([a-f0-9]{32})(?:/(stop|logs|results|features|images/(\d+)/(member|nonmember)/(\d+)))?', suffix)
+            if match:
+                job_id, action, client, group, index = match.groups()
+                if write and action == 'stop':
+                    self._body()
+                    self._data(privacy.stop(job_id))
+                    return
+                if not write:
+                    if action is None:
+                        self._data(privacy.get(job_id))
+                    elif action == 'logs':
+                        self._data(privacy.logs(job_id))
+                    elif action == 'results':
+                        query = parse_qs(urlparse(self.path).query)
+                        value = query.get('clientId', ['1'])
+                        if set(query) - {'clientId'} or len(value) != 1 or not value[0].isdecimal():
+                            raise PlatformError('客户端参数非法')
+                        self._data(privacy.results(job_id, int(value[0])))
+                    elif action == 'features':
+                        self._download(privacy.feature_bundle(job_id), job_id + '-fedmia.zip', 'application/zip')
+                    elif action.startswith('images/'):
+                        file = privacy.image(job_id, int(client), group, int(index))
+                        self._download(file, file.name, mimetypes.guess_type(file.name)[0] or 'image/jpeg', inline=True)
+                    else:
+                        raise PlatformError('接口不存在', 404)
+                    return
+            raise PlatformError('隐私实验接口不存在', 404)
         if path.startswith('/api/platform/backdoor'):
             self._backdoor(write, path, self.context.backdoor)
             return
-        if write and path in {'/api/platform/preflight', '/api/platform/train', '/api/platform/evaluate', '/api/platform/predict'}:
-            action = {'preflight': 'inspect', 'train': 'train', 'evaluate': 'evaluate', 'predict': 'predict'}[path.split('/')[-1]]
+        if write and path in {'/api/platform/preflight', '/api/platform/train', '/api/platform/evaluate', '/api/platform/predict', '/api/platform/test-upload'}:
+            action = {'preflight': 'inspect', 'train': 'train', 'evaluate': 'evaluate', 'predict': 'predict', 'test-upload': 'test-upload'}[path.split('/')[-1]]
             self._data(service.create(action, self._body()), 202)
             return
         match = re.fullmatch(r'/api/platform/jobs/([a-f0-9]{32})(?:/(stop|logs|export|csv|bundle|model-final|model-best))?', path)
@@ -825,7 +899,8 @@ def create_server(host='127.0.0.1', port=8001, state=None):
     root = resolve_path(repo, state or 'exp/platform')
     service = PlatformService(repo, root)
     backdoor = BackdoorService(repo, root)
-    context = type('PlatformContext', (), {'platform': service, 'backdoor': backdoor,
+    privacy = PrivacyService(repo, root)
+    context = type('PlatformContext', (), {'platform': service, 'backdoor': backdoor, 'privacy': privacy,
         'fedmia_cache': {}, 'fedmia_cache_lock': threading.RLock(),
         'frontend_dist': resolve_path(repo, os.environ.get('FEDERATEDSCOPE_FRONTEND_DIST', '../frontend/dist'))})()
     handler = type('BoundPlatformHandler', (PlatformHandler,), {'context': context})
@@ -834,6 +909,7 @@ def create_server(host='127.0.0.1', port=8001, state=None):
     except Exception:
         service.close()
         backdoor.close()
+        privacy.close()
         raise
     return server
 
@@ -854,6 +930,7 @@ def main():
         server.serve_forever()
     finally:
         server.RequestHandlerClass.context.backdoor.close()
+        server.RequestHandlerClass.context.privacy.close()
         server.RequestHandlerClass.context.platform.close()
         server.server_close()
 

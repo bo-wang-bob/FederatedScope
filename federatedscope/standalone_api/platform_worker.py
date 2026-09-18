@@ -48,7 +48,7 @@ def check_feature_contract(checkpoint, bundle, spec):
 
 def emit(kind, **payload):
     print('__PLATFORM__' + json.dumps(
-        {'type': kind, **payload}, ensure_ascii=False, allow_nan=False), flush=True)
+        {'type': kind, **payload}, ensure_ascii=True, allow_nan=False), flush=True)
 
 
 def sample_refs(dataset):
@@ -83,6 +83,9 @@ def prepare(spec):
     torch.set_num_threads(2)
     cfg = global_cfg.clone()
     cfg.merge_from_file(spec['configPath'])
+    if spec['request']['group'].startswith('uploaded_'):
+        from .uploaded_features import prepare_uploaded
+        prepare_uploaded(cfg, spec['request']['group'])
     setup_seed(cfg.seed)
     data, modified = get_data(cfg.clone())
     cfg.merge_from_other_cfg(modified)
@@ -647,6 +650,9 @@ def main():
     args = parser.parse_args()
     spec_path = Path(args.spec).resolve()
     spec = json.loads(spec_path.read_text(encoding='utf-8'))
+    if spec.get('provenance', {}).get('privacyExperiment') or spec.get('request', {}).get('group', '').startswith('uploaded_'):
+        # Old generated gRPC descriptors; opt in for this worker only.
+        os.environ.setdefault('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', 'python')
     if spec.get('pathBase') == 'backend-directory':
         os.chdir(Path(__file__).resolve().parents[2])
     import psutil
@@ -655,7 +661,13 @@ def main():
         'spec': str(spec_path),
     })
     try:
-        if spec['action'] == 'predict':
+        if spec.get('provenance', {}).get('cloudPreset'):
+            from .platform_privacy_native import run
+            run(spec)
+        elif spec['action'] == 'test-upload':
+            from .uploaded_prediction import run
+            run(spec)
+        elif spec['action'] == 'predict':
             predict(spec)
         elif spec['action'] == 'evaluate':
             evaluate(spec)

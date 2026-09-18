@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,7 +37,17 @@ class JsonRepository:
                 json.dump(payload, stream, ensure_ascii=False, indent=2)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, path)
+            # Windows readers/scanners can temporarily deny replacement even
+            # after our own stream is closed. Keep the previous JSON intact
+            # and retry the same complete temporary file for at most 1.55 s.
+            for attempt in range(10):
+                try:
+                    os.replace(temporary, path)
+                    break
+                except OSError as error:
+                    if getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 9:
+                        raise
+                    time.sleep(min(.05 * (attempt + 1), .2))
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)

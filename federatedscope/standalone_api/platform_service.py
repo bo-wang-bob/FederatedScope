@@ -45,7 +45,8 @@ class PlatformService:
         self.repo = Path(repo).resolve()
         self.state = resolve_path(self.repo, state)
         self.state.mkdir(parents=True, exist_ok=True)
-        self.configs = ConfigFactory(self.repo)
+        from .uploaded_config import UploadedConfig
+        self.configs = UploadedConfig(ConfigFactory(self.repo))
         self.samples = SampleCatalog(self)
         self.lock = threading.RLock()
         self.processes = {}
@@ -204,7 +205,7 @@ class PlatformService:
         return execution, selection, registered, root
 
     def create(self, action, payload):
-        if action not in {'inspect', 'train', 'evaluate', 'predict'}:
+        if action not in {'inspect', 'train', 'evaluate', 'predict', 'test-upload'}:
             raise PlatformError('不支持的任务类型')
         if not isinstance(payload, dict):
             raise PlatformError('请求必须是 JSON 对象')
@@ -218,7 +219,7 @@ class PlatformService:
                         raise PlatformError('幂等键已用于另一请求', 409)
                     return job
             self._assert_available()
-            req = (self._prediction_request(payload) if action == 'predict' else
+            req = (self._uploaded_request(payload) if action == 'test-upload' else self._prediction_request(payload) if action == 'predict' else
                    self._evaluation_request(payload) if action == 'evaluate' else self.configs.normalize(payload))
             preflight = None
             if action == 'train':
@@ -233,7 +234,14 @@ class PlatformService:
             spec = {'action': action, 'request': req, 'output': relative_path(self.repo, output),
                     'pathBase': 'backend-directory'}
             config, provenance = {}, {}
-            if action not in {'evaluate', 'predict'}:
+            if action == 'test-upload':
+                model_job = self.get(req['modelId'].split(':')[0])
+                kind = req['modelId'].split(':')[1]
+                spec.update(checkpointPath=relative_path(self.repo, self.directory(model_job['id']) / f'checkpoints/mlp_{kind}.pt'),
+                    checkpointHash=model_job['result']['artifactHashes'][f'mlp_{kind}.pt'],
+                    classNames=model_job['result']['classes'],
+                    trainingDatasetId=model_job['request']['group'][9:])
+            elif action not in {'evaluate', 'predict'}:
                 execution, selection, registered, root = self._augmentation_execution(
                     req, preflight.get('provenance', {}).get('augmentationSelection') if preflight else None)
                 spec['request'] = execution
@@ -329,6 +337,8 @@ class PlatformService:
                     return
                 env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'OMP_NUM_THREADS': '2',
                        'FEDERATEDSCOPE_GGEUR_LIGHTWEIGHT': '1', 'MPLCONFIGDIR': str(output / 'mpl')}
+                if job.get('provenance', {}).get('privacyExperiment'):
+                    env['PYTHONIOENCODING'] = 'utf-8'
                 with (output / 'runner.log').open('wb') as log:
                     proc = subprocess.Popen([sys.executable, '-m',
                         'federatedscope.standalone_api.platform_worker', str(output / 'spec.json')],
@@ -484,6 +494,21 @@ class PlatformService:
         req = self._evaluation_request({k: v for k, v in payload.items() if k not in {'sampleId', 'imageSha256'}}
                                        | {'domains': [sample['domain']], 'classes': [sample['label']]})
         return dict(req, sampleId=identifier, imageSha256=image_hash)
+
+    def _uploaded_request(self, payload):
+        from .uploaded_datasets import DatasetStore
+        if set(payload) - {'modelId', 'uploadId', 'name', 'idempotencyKey'}:
+            raise PlatformError('上传测试含未知参数')
+        model = next((m for m in self.library()['models'] if m['id'] == payload.get('modelId')), None)
+        if not model or not model['group'].startswith('uploaded_'):
+            raise PlatformError('请选择使用上传数据集训练完成的 ConvNeXt 模型')
+        value = DatasetStore(self.repo).get(payload.get('uploadId'))
+        if value['kind'] != 'test':
+            raise PlatformError('请选择测试数据集或单张测试图片')
+        if set(value['classes']) - set(model['classes']):
+            raise PlatformError('测试类别不属于所选模型，请检查类别文件夹名称')
+        return dict(modelId=model['id'], uploadId=value['id'], group=model['group'], method=model['method'],
+                    name=str(payload.get('name', '上传图片测试'))[:120])
 
     def logs(self, job_id):
         self.get(job_id)

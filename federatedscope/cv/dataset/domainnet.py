@@ -140,6 +140,14 @@ class DomainNet(Dataset):
 
     def _load_data(self):
         if self.records is not None:
+            # Uploaded manifests may carry an explicit train/val/test contract.
+            # Preserve those identities; legacy manifests still use seeded splits.
+            if any('split' in record for record in self.records):
+                if not all(record.get('split') in {'train', 'val', 'test'} for record in self.records):
+                    raise ValueError('Explicit dataset manifest has missing or invalid splits')
+                rows = [r for r in self.records if r['split'] == self.split]
+                images = [str(r['path']) if osp.isabs(str(r['path'])) else osp.join(self.root, str(r['path'])) for r in rows]
+                return images, [int(r['label']) for r in rows]
             all_images = []
             all_labels = []
             for record in self.records:
