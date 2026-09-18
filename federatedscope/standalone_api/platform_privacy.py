@@ -8,7 +8,7 @@ import zipfile
 import yaml
 
 from .platform_config import FAMILIES, PlatformError, sha256
-from .platform_paths import relative_path, resolve_path
+from .platform_paths import relative_path, resolve_path, portable_config
 from .platform_service import PlatformService, TERMINAL, read, now
 from .privacy_artifacts import run_directory, feature_files, feature_summary, archive_existing_run
 from .repository import JsonRepository
@@ -83,6 +83,7 @@ class PrivacyConfig:
     def build(self, req, output):
         source, raw = self.preset(req['group'], req['defense'])
         raw = copy.deepcopy(raw)
+        output = resolve_path(self.repo, output)
         raw['data']['root'] = relative_path(self.repo, self.dataset_root(req['group']))
         raw['federate'].update(client_num=req['clientCount'], sample_client_num=req['clientCount'],
                                total_round_num=req['rounds'])
@@ -93,7 +94,8 @@ class PrivacyConfig:
             training_distribution_dir=relative_path(self.repo, Path(output) / 'distributions'))
         if req['group'].startswith('uploaded_'):
             self.base.store.configure(raw, req['group'])
-        return raw, dict(source=source.relative_to(self.repo).as_posix(), sourceSha256=sha256(source),
+        return portable_config(raw, self.repo), dict(source=source.relative_to(self.repo).as_posix(), sourceSha256=sha256(source),
+            pathBase='backend-directory',
             privacyExperiment=True, privacyProtocol='cloud-yaml-native-v2', cloudPreset=True,
             thresholdPolicy='mix ROC attainable FPR<=1%; real-image test scores for display',
             configOverrides=['data.root', 'outdir', 'expname', 'federate.client_num',
@@ -180,7 +182,7 @@ class PrivacyService(PlatformService):
                 groups[value['group']] = (value['name'], 1, '')
         return dict(groups=[dict(id=group, dataset=label, backbone='ConvNeXt-Base', domains=domains,
             datasetFound=self.configs.dataset_root(group).is_dir(),
-            methods=[dict(id='ggeur', label='GGEUR + FedMIA（云服务器原配置）', enabled=True,
+            methods=[dict(id='ggeur', label='GGEUR + FedMIA', enabled=True,
                 defaults=self.configs.defaults(group), defenseDefaults=self.configs.defaults(group, True))])
             for group, (label, domains, _) in groups.items()], host=socket.gethostname(),
             protocol='六项配置 / 云服务器原始 YAML / 本地原生训练')
