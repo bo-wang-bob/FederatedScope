@@ -1,5 +1,4 @@
 """Local, per-run FedMIA artifacts; never overwrite an imported experiment."""
-import os
 from pathlib import Path
 import re
 import shutil
@@ -7,7 +6,7 @@ import shutil
 import yaml
 
 from .paths import env_path
-from .platform_paths import relative_path
+from .platform_paths import relative_path, portable_config, resolve_path
 from .repository import JsonRepository
 
 
@@ -48,7 +47,7 @@ def feature_summary(repo, job, output):
 
 def prepare_run(repo, request, job_id, output):
     """Save portable configuration and exact image identities next to features."""
-    output = Path(output)
+    output = resolve_path(repo, output)
     archive = run_directory(repo, request, job_id)
     archive.mkdir(parents=True, exist_ok=True)
     (archive / 'ggeur_fedmia_features').mkdir(exist_ok=True)
@@ -62,11 +61,7 @@ def prepare_run(repo, request, job_id, output):
     if not config.is_file():
         config = output / 'effective.yaml'
     if config.is_file() and not (archive / 'config.yaml').exists():
-        raw = yaml.safe_load(config.read_text(encoding='utf-8'))
-        root = Path(raw['data']['root'])
-        if not root.is_absolute():
-            root = Path(repo) / root
-        raw['data']['root'] = os.path.relpath(root.resolve(), archive).replace('\\', '/')
+        raw = portable_config(yaml.safe_load(config.read_text(encoding='utf-8')), repo, path_base=archive)
         raw['outdir'] = '.'
         (archive / 'config.yaml').write_text(yaml.safe_dump(raw, allow_unicode=True), encoding='utf-8')
     return archive

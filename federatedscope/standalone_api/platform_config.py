@@ -200,7 +200,7 @@ class ConfigFactory:
     def build(self, req, output):
         path = self.source(req['group'], req['method'])
         raw = copy.deepcopy(yaml.safe_load(path.read_text(encoding='utf-8')))
-        output = Path(output).resolve()
+        output = project_path(output, self.repo)
         family = req['group'].split('_')[0]
         raw.update(use_gpu=req['gpu'] >= 0, device=max(0, req['gpu']), seed=req['seed'],
                    outdir=str(output / 'logs'), expname='training', log_file='')

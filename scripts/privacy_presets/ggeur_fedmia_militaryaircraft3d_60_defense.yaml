@@ -51,7 +51,7 @@ federate:
 
 data:
   type: 'domainnet'
-  root: '/root/autodl-tmp/zqq/MilitaryAircraft3D'
+  root: 'resources/datasets/MilitaryAircraft3D'
   splits: [0.7, 0.0, 0.3]
 
 dataloader:

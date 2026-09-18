@@ -16,7 +16,9 @@ from federatedscope.standalone_api.platform_config import ConfigFactory
 class PortablePathsTests(unittest.TestCase):
     def test_relative_paths_do_not_depend_on_startup_directory(self):
         previous = Path.cwd()
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+        # Test the default layout independently of a user's selected replay package.
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
+                patch.object(Path, 'is_file', return_value=False):
             try:
                 os.chdir(directory)
                 configs = ConfigFactory(REPO_ROOT)

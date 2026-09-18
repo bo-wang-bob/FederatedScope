@@ -19,9 +19,12 @@ def relative_path(base, value):
         return target.as_posix()
 
 
-def portable_config(config, repo):
+def portable_config(config, repo, *, path_base=None):
+    """Read paths from repo and persist them relative to path_base (repo by default)."""
     result = copy.deepcopy(config)
+    path_base = resolve_path(repo, path_base) if path_base is not None else Path(repo).resolve()
     fields = [(result, 'outdir'), (result, 'log_file'), (result.get('data', {}), 'root')]
+    fields += [(result.get('federate', {}), key) for key in ('save_to', 'restore_from')]
     g = result.get('ggeur', {})
     fields += [(g, key) for key in (
         'feature_cache_dir', 'augmented_feature_cache_dir', 'mlp_checkpoint_dir',
@@ -31,7 +34,7 @@ def portable_config(config, repo):
         'bert_model_path', 'bert_tokenizer_path')]
     for mapping, key in fields:
         if mapping.get(key):
-            mapping[key] = relative_path(repo, mapping[key])
+            mapping[key] = relative_path(path_base, resolve_path(repo, mapping[key]))
     return result
 
 

@@ -31,6 +31,8 @@ class PrivacyIntegrationTests(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown()
         self.context.platform.close()
+        self.context.privacy.close()
+        self.context.backdoor.close()
         self.server.server_close()
         self.thread.join(timeout=5)
         self.env.stop()

@@ -7,6 +7,7 @@ import time
 import yaml
 
 from .platform_worker import emit, save, sample_refs, digest
+from .platform_paths import portable_config, resolve_path
 
 
 def resolve_sample_image(path, root):
@@ -25,9 +26,9 @@ def resolve_sample_image(path, root):
 def run(spec):
     import torch
     # Keep the cloud backbone in the project's portable local cache.
-    local_hub = Path(__file__).resolve().parents[2] / 'resources' / 'torch' / 'hub'
-    if (local_hub / 'checkpoints' / 'convnext_base-6075fbad.pth').is_file():
-        torch.hub.set_dir(str(local_hub))
+    repo = Path(__file__).resolve().parents[2]
+    local_hub = resolve_path(repo, 'resources/torch/hub')
+    torch.hub.set_dir(str(local_hub))
     from federatedscope.core.configs.config import CN, global_cfg
     from federatedscope.core.auxiliaries.data_builder import get_data
     from federatedscope.core.auxiliaries.utils import setup_seed
@@ -36,7 +37,7 @@ def run(spec):
     from .platform_privacy_worker import privacy_bases, finalize
     started = time.monotonic()
     output = Path(spec['output'])
-    raw = yaml.safe_load(Path(spec['configPath']).read_text(encoding='utf-8'))
+    raw = portable_config(yaml.safe_load(Path(spec['configPath']).read_text(encoding='utf-8')), repo)
     spec['cloudAttack'] = copy.deepcopy(raw['attack'])
     # These newer cloud fields are implemented by the private server adapter.
     raw['attack'].pop('fedmia_save_start_round', None)
@@ -107,7 +108,8 @@ def run(spec):
     saved_cfg = cfg.clone()
     saved_cfg.de_arguments()
     saved_cfg.clear_aux_info()
-    (output / 'resolved_config.yaml').write_text(saved_cfg.dump(), encoding='utf-8')
+    saved = portable_config(yaml.safe_load(saved_cfg.dump()), repo)
+    (output / 'resolved_config.yaml').write_text(yaml.safe_dump(saved, allow_unicode=True), encoding='utf-8')
     emit('prepared', **info)
     if spec['action'] == 'inspect':
         save(output / 'result.json', info)
