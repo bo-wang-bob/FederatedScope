@@ -44,6 +44,11 @@ function Workspace() {
   const {message}=AntApp.useApp(), pending=useRef(pendingRequests());
   const open=useCallback((id:string) => { setQuery({view:'jobs',id});setRefreshKey(value => value+1); },[setQuery]);
   const launch=useTrainingLaunch(open,restricted ? DEMO_LAUNCH_KEY : undefined);
+  useEffect(() => {
+    const reloadDatasets = () => setRefreshKey(value => value + 1);
+    window.addEventListener('datasets:changed', reloadDatasets);
+    return () => window.removeEventListener('datasets:changed', reloadDatasets);
+  }, []);
   useEffect(() => { document.title=page.label+' · 跨域协同训练'; },[page.label]);
   useEffect(() => { window.scrollTo(0,0); },[view,selectedId]);
   useEffect(() => {

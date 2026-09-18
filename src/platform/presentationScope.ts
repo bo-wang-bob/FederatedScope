@@ -11,7 +11,7 @@ export function isAircraftVit(group: Group) {
   return normalize(group.dataset) === 'militaryaircraft3d' && normalize(group.backbone) === 'vit';
 }
 export function isPresentationGroup(group: Group) {
-  return isAircraftVit(group) || (normalize(group.dataset) === 'officehome' && normalize(group.backbone) === 'vit');
+  return group.id.startsWith('uploaded_') || isAircraftVit(group) || (normalize(group.dataset) === 'officehome' && normalize(group.backbone) === 'vit');
 }
 export function presentationCatalog(catalog: Catalog, restricted = aircraftDemoEnabled()): Catalog {
   if (!restricted) return catalog;

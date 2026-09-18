@@ -4,6 +4,7 @@ import { ArrowLeftOutlined, ArrowRightOutlined, CheckOutlined, ExperimentOutline
 import { api, methodLabel, type Catalog, type Job, type RequestConfig } from './api';
 import { initialDraft, requestFromDraft, saveDraft, validateDraft, type Draft } from './draft';
 import type { TrainingLaunch } from './launch';
+import { DatasetUpload } from './datasetUpload';
 
 const coreFields = ['name','group','method'];
 export function augmentationConfigLabel(source: { request: RequestConfig }) {
@@ -22,6 +23,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
   const [sourceLoading, setSourceLoading] = useState(!preview && !!sourceId), [sourceError, setSourceError] = useState('');
   const [reload, setReload] = useState(0);
   const [presetId, setPresetId] = useState('');
+  const [uploadedGroup, setUploadedGroup] = useState('');
   const group = catalog.groups.find(g => g.id === draft.group);
   const augmentationPresets = (group?.augmentationSources || [])
     .filter(source => source.request.method === 'heterogeneous_solution'
@@ -58,6 +60,11 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
     const defaults = next?.methods.find(m => m.id === draft.method && m.enabled)?.defaults || next?.methods.find(m => m.enabled)?.defaults;
     setPresetId(''); setDraft({ ...defaults, name: draft.name || '' }); setErrors({});
   };
+  useEffect(() => {
+    if (uploadedGroup && catalog.groups.some(g => g.id === uploadedGroup)) {
+      chooseGroup(uploadedGroup); setUploadedGroup('');
+    }
+  }, [catalog, uploadedGroup]);
   const chooseMethod = (id: string) => {
     const defaults = group?.methods.find(m => m.id === id)?.defaults;
     setPresetId(''); setDraft({ ...defaults, name: draft.name || '' }); setErrors({});
@@ -92,7 +99,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
       {sourceError && <Alert type="error" title={sourceError} action={<Button onClick={() => setReload(x => x + 1)}>重试</Button>} />}
       {running && !launch.intent && <Alert type="info" title="当前有任务运行中，可先配置下一次实验" action={<Button onClick={() => open(running.id)}>查看任务</Button>} />}
       <div key={step} className="wizard-page">
-      {step === 0 && <><div className="wizard-title"><h2>数据与算法</h2></div><div className="wizard-fields">
+      {step === 0 && <><div className="training-dataset-heading"><h2>数据与算法</h2>{!preview && <DatasetUpload disabled={frozen} onUploaded={setUploadedGroup} />}</div><div className="wizard-fields">
         <div className="wizard-field"><label htmlFor="train-name">实验名称</label><Input id="train-name" value={draft.name} maxLength={120} placeholder="输入实验名称" disabled={frozen} onChange={event => change('name',event.target.value)} /></div>
         <div className="wizard-field"><label htmlFor="train-group">数据集</label><Select id="train-group" aria-label="数据集" aria-invalid={!!errors.group} value={draft.group} disabled={frozen} onChange={chooseGroup} options={catalog.groups.map(g => ({ value:g.id,label:g.dataset + ' / ' + g.backbone.toUpperCase() + (!g.cacheFound ? ' · 暂不可用' : ''),disabled:!g.cacheFound }))} />{errors.group && <small className="field-error" role="alert">{errors.group}</small>}</div>
         </div><div className="wizard-field"><label>训练算法</label><div className="algorithm-options" role="radiogroup" aria-label="训练算法">{group?.methods.map(method => <button key={method.id} type="button" role="radio" aria-checked={draft.method === method.id} disabled={frozen || !method.enabled} title={method.reason || undefined} className={draft.method === method.id ? 'selected' : ''} onClick={() => chooseMethod(method.id)}><span className="algorithm-glyph">{method.id === 'heterogeneous_solution' ? 'f' : methodLabel(method.id).slice(0,1)}</span><strong>{methodLabel(method.id)}</strong><i>{draft.method === method.id && <CheckOutlined />}</i></button>)}</div>{errors.method && <small className="field-error" role="alert">{errors.method}</small>}</div>

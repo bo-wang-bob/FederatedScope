@@ -4,6 +4,7 @@ import { Alert, Popover, Select, Skeleton, Tag } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from './api';
+import { PrivacyLab } from './privacyLab';
 
 // UI reservations only. Real execution requires a separate backend capability.
 // 后门研究已接入（src/platform/backdoor.tsx），保留在此会把它当未接入模块处理。
@@ -281,6 +282,6 @@ function PrivacyMembershipPanel() {
 
 export function PlannedModule({ moduleId }: { moduleId: PlannedModuleId }) {
   const module = plannedModules[moduleId];
-  if (moduleId === 'privacy') return <PrivacyMembershipPanel />;
+  if (moduleId === 'privacy') return <PrivacyLab />;
   return <section className="design-reserved" aria-label={`${module.label}规划说明`}>{module.icon}<h2>未接入</h2></section>;
 }
