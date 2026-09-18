@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Collapse, Empty, Modal, Pagination, Select, Space, Spin, Tag, Tooltip } from 'antd';
+import { Alert, Button, Card, Collapse, Empty, Modal, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip } from 'antd';
 import { ArrowLeftOutlined, ArrowRightOutlined, DownloadOutlined, ExpandOutlined, PictureOutlined, ScanOutlined } from '@ant-design/icons';
 import { api, methodLabel, percent, terminology, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
 import { modelHref } from './navigation';
 import './inference.css';
+import { UploadedTesting } from './uploadedTesting';
 
 function SampleImage({ sample, large = false, onUnavailable, onReady }: { sample: TestSample; large?: boolean; onUnavailable?: () => void; onReady?: () => void }) {
   const [failed, setFailed] = useState(false);
@@ -19,18 +20,24 @@ export function PredictionPanel({ job, open }: { job?: Job; open?: (id: string) 
       <div className="experience-verdict"><span>预测类别</span><h2>{result.predictedName.replaceAll('_', ' ')}</h2><div><strong>{percent(result.confidence)}</strong><span>Softmax 分数</span></div></div>
       <div className={`experience-ground-truth ${result.correct ? 'matched' : 'mismatched'}`}><div><span>真实标签</span><b>{result.labelName.replaceAll('_', ' ')}</b></div><Tag color={result.correct ? 'success' : 'warning'}>{result.correct ? '预测一致' : '预测不一致'}</Tag></div>
       <div className="experience-ranks"><h3>TOP {result.topK.length}<span>分类分数</span></h3>{result.topK.map((item, index) => <div className="experience-rank" key={item.classIndex}><div><span><i>{String(index + 1).padStart(2, '0')}</i>{item.className.replaceAll('_', ' ')}</span><b>{percent(item.score)}</b></div><div className="experience-rank-track"><span style={{ width: `${item.score * 100}%` }} /></div></div>)}</div>
-      <p className="experience-score-note">分数未经校准；单图结果不代表整体准确率。</p>
       <Space wrap>{open && <Button type="link" onClick={() => open(job!.id)}>完整记录 <ArrowRightOutlined /></Button>}<Button type="link" href={`/api/platform/jobs/${job!.id}/export`} icon={<DownloadOutlined />}>导出结果</Button></Space>
       <Collapse ghost size="small" items={[{ key: 'version', label: '运行详情与来源', children: <div className="experience-version"><div className="experience-runtime"><span>分类器批次计算 <b>{result.inferenceMs.toFixed(1)} ms</b></span><span>加载与推理 <b>{result.elapsedSeconds.toFixed(2)} s</b></span></div>{[['模型 SHA-256', result.checkpointSha256], ['测试特征包 SHA-256', result.testBundleSha256], ['当前原图 SHA-256', result.imageSha256], ['样本清单 SHA-256', result.manifestSha256], ['样本关联方式', result.testProvenance], ['推理口径', result.inferenceContract]].map(([label, value]) => <p key={label}><span>{label}</span><code>{value}</code></p>)}</div> }]} />
     </>}
   </Card>;
 }
 
-export function ModelExperience({ library, initialModel, initialTestset, onSelectionChange, disabled, create, open, imageGroups }: {
+export function ModelExperience(props: Parameters<typeof StoredModelExperience>[0]) {
+  return <Tabs items={[
+    { key: 'existing', label: '已有测试集', children: <StoredModelExperience {...props} /> },
+    { key: 'upload', label: '上传测试', children: <UploadedTesting library={props.library} initialModel={props.initialModel} disabled={props.disabled} create={props.create} open={props.open} /> },
+  ]} />;
+}
+
+function StoredModelExperience({ library, initialModel, initialTestset, onSelectionChange, disabled, create, open, imageGroups }: {
   library: Library; initialModel?: string; initialTestset?: string; onSelectionChange?: (model:string,testset?:string)=>void; disabled: boolean; create: (action: string, payload: object) => Promise<Job>; open: (id: string) => void;
   imageGroups?: string[];
 }) {
-  const models = library.models.filter(m => imageGroups ? imageGroups.includes(m.group) : /^(officehome|digit3|domainnet|military)_/.test(m.group));
+  const models = library.models.filter(m => imageGroups ? imageGroups.includes(m.group) : /^(officehome|digit3|domainnet|military|uploaded)_/.test(m.group));
   const [modelId, setModelId] = useState<string>(initialModel || '');
   const [testsetId, setTestsetId] = useState<string>();
   const [domain, setDomain] = useState<string>();

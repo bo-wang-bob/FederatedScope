@@ -6,13 +6,14 @@ import { api, methodLabel, percent, terminology, terminal, type Client, type Job
 import { Curves, Distribution, LossChart, Topology } from './charts';
 import { EvaluationResults } from './evaluation';
 import { PredictionPanel } from './inference';
+import { UploadedResults } from './uploadedTesting';
 import { modelHref } from './navigation';
 import { Panel, State, Stat } from './ui';
 
 export function JobTable({jobs,open}:{jobs:Job[];open:(id:string)=>void}) {
   return <Table<Job> rowKey="id" dataSource={jobs} pagination={{pageSize:8,hideOnSinglePage:true}} locale={{emptyText:'没有匹配的实验'}} columns={[
     {title:'实验',key:'name',render:(_,job)=><Button className="platform-job-link" type="link" onClick={()=>open(job.id)}>{job.request.name || job.id.slice(0,8)}<small>{job.request.group} · {methodLabel(job.request.method)}</small></Button>},
-    {title:'类型',dataIndex:'action',render:(action:string)=>({train:'训练',inspect:'配置检查',evaluate:'评测',predict:'预测'})[action]},
+    {title:'类型',dataIndex:'action',render:(action:string)=>({train:'训练',inspect:'配置检查',evaluate:'评测',predict:'预测','test-upload':'图片测试'})[action]},
     {title:'状态',dataIndex:'status',render:value=><State value={value}/>},
     {title:'创建时间',dataIndex:'createdAt',render:value=><span className="table-date">{new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>},
     {title:'',key:'open',width:55,render:(_,job)=><Button type="text" aria-label={'打开实验 '+(job.request.name || job.id)} icon={<ArrowRightOutlined/>} onClick={()=>open(job.id)}/>},
@@ -35,7 +36,7 @@ export function JobDetail({job,library,stop,rerun}:{job:Job;library:Library;stop
   const clients=Object.values(job.clients || {}),points=job.metrics || [],final=points.at(-1);
   const finished=terminal(job.status), training=job.action==='train';
   const model=library.models.find(m=>m.jobId===job.id&&m.kind==='final');
-  const imageModel=model && /^(officehome|digit3|domainnet|military)_/.test(model.group);
+  const imageModel=model && /^(officehome|digit3|domainnet|military|uploaded)_/.test(model.group);
   const detail=<div className="job-details-grid"><Panel title="实际参数"><Descriptions column={2} items={Object.entries(job.request).map(([key,value])=>({key,label:key,children:JSON.stringify(value)}))}/><Collapse ghost items={[{key:'versions',label:'配置与数据版本',children:<pre className="platform-code">{JSON.stringify({config:job.config,provenance:job.provenance,data:job.data},null,2)}</pre>}]} /></Panel><Panel title="运行日志"><pre className="platform-log">{terminology(logs) || '尚无日志'}</pre></Panel></div>;
   return <div className="job-detail"><div className="platform-job-heading"><div><div className="job-title-line"><State value={job.status}/><span>{new Date(job.createdAt).toLocaleString('zh-CN')}</span></div><h2>{job.request.name || job.id.slice(0,8)}</h2><p>{job.request.group} <i> / </i> {methodLabel(job.request.method)}</p></div><Space>
     {!finished&&<Popconfirm title="停止当前任务？" description="只回收此任务进程，保留配置、日志和已生成文件。" onConfirm={()=>stop(job.id)}><Button danger icon={<StopOutlined/>}>停止任务</Button></Popconfirm>}
@@ -53,6 +54,7 @@ export function JobDetail({job,library,stop,rerun}:{job:Job;library:Library;stop
     {training&&<><div className="job-progress"><div><span>{terminology(job.stage)}</span><strong>{final?.round ?? '—'} <small>/ {job.request.rounds} 轮已评测</small></strong></div><Progress percent={final ? Math.min(100,final.round/job.request.rounds*100):0} showInfo={false} strokeColor="#83bcc3" railColor="#263640" status={job.status==='failed'?'exception':job.status==='running'?'active':'normal'} size="small"/></div>
       <div className="platform-stats"><Stat label="总体准确率" value={percent(final?.accuracy)}/><Stat label="分域平均" value={percent(final?.domainMean)}/><Stat label="最差域准确率" value={percent(final?.worstDomain)}/><Stat label="测试样本" value={job.data?.testSamples?.toLocaleString() || '—'}/></div></>}
     {job.action==='predict'&&<div className="job-prediction-result"><PredictionPanel job={job}/></div>}
+    {job.action==='test-upload'&&<UploadedResults job={job}/>}
     {job.action==='evaluate'&&<EvaluationResults job={job} library={library}/>}
     {training||job.action==='inspect'?<Tabs activeKey={tab} onChange={setTab} items={[
       ...(training||job.action==='inspect'?[{key:'monitor',label:'训练结果',children:<><div className="job-chart-grid"><Panel title="准确率"><Curves points={points}/></Panel><Panel title="本地训练损失"><LossChart points={points}/></Panel></div>

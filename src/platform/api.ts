@@ -32,12 +32,12 @@ export interface DataInfo {
 }
 export interface EvaluationResult extends Metric { domains: Record<string, Metric>; domainMean: number; worstDomain: number; domainGap: number; elapsedSeconds: number }
 export interface Job {
-  id: string; action: 'train' | 'inspect' | 'evaluate' | 'predict'; status: string; stage: string;
+  id: string; action: 'train' | 'inspect' | 'evaluate' | 'predict' | 'test-upload'; status: string; stage: string;
   request: RequestConfig & { modelId?: string; testsetId?: string; domains?: string[]; classes?: number[]; sampleId?: string; imageSha256?: string };
   createdAt: string; updatedAt: string; endedAt?: string; error: string | null;
   cleanup: { ok: boolean; message: string }; clients: Record<string, Client>; metrics: Point[];
   data?: DataInfo; config: Record<string, unknown>; provenance: Record<string, unknown>;
-  result?: DataInfo | EvaluationResult | Prediction;
+  result?: DataInfo | EvaluationResult | Prediction | UploadedPrediction;
 }
 export interface LibraryItem {
   id: string; jobId: string; name: string; group: string; method: string; kind?: string; samples?: number;
@@ -54,6 +54,11 @@ export interface Prediction {
   imageSha256: string; manifestSha256: string; testProvenance: string; inferenceContract: string;
 }
 export interface Library { models: LibraryItem[]; testsets: LibraryItem[] }
+export interface UploadedPrediction {
+  samples: number; labelled: boolean; metrics: Metric | null; checkpointSha256: string;
+  items: { index: number; filename: string; labelName: string | null; predictedName: string;
+    confidence: number; correct: boolean | null; imageUrl: string }[];
+}
 export interface BackdoorTestset {
   exported: boolean; total: number; maxIds: number; base: string; message?: string;
   classNames: string[];
@@ -96,7 +101,7 @@ export class PlatformApiError extends Error {
 export async function api<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api/platform/${path}`, { method: body === undefined ? 'GET' : 'POST',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000) });
+    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(90000) });
   const payload = await response.json();
   if (!response.ok) throw new PlatformApiError(payload.error?.message || `HTTP ${response.status}`, response.status, payload.error?.code);
   return payload.data;

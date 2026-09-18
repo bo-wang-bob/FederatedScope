@@ -1,6 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { PlannedModule } from '../platform/extensions';
+import { PrivacyMembershipPanel } from '../platform/extensions';
+
+// Historical replay remains available as a component/API, while the route now
+// opens native privacy experiments. Test replay here without mocking that route.
+function PlannedModule(_props: { moduleId: string }) { return <PrivacyMembershipPanel />; }
 
 beforeAll(() => {
   window.matchMedia = vi.fn().mockImplementation(query => ({ matches: false, media: query,

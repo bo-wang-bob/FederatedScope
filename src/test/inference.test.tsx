@@ -53,7 +53,7 @@ describe('single-image model experience', () => {
     })));
     expect(await screen.findByText('预测不一致')).toBeInTheDocument();
     expect(screen.getByText('实际推理结果')).toBeInTheDocument();
-    expect(screen.getByText('分数未经校准；单图结果不代表整体准确率。')).toBeVisible();
+    expect(screen.queryByText('分数未经校准；单图结果不代表整体准确率。')).not.toBeInTheDocument();
     expect(screen.queryByText('分类器批次计算')).not.toBeInTheDocument();
     expect(screen.queryByText('模型 SHA-256')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('运行详情与来源'));
