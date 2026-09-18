@@ -44,7 +44,7 @@ python backend/scripts/export_platform_cache.py --job <任务ID>
 
 需要保留已有模型库时，复制所选任务的完整目录到 exp/platform/jobs/，包括 job.json、data_manifest.json、checkpoints、配置和结果。旧生成任务的绝对缓存路径按已登记任务 ID 安全重定位，重新核验每个文件。新模型/测试特征包保存固定的主干标识和 featureSpace；旧模型与新测试包混用时必须通过缓存特征指纹、类别、数据集及样本不交叉检查。
 
-没有数据文件不应只靠复制源码启动。基础训练/测试特征仍必须完整；本改造不新增原图特征生成或任意图片上传。
+没有数据文件不应只靠复制源码启动。已有 ViT 训练/验证仍要求完整的基础特征。新版另有上传图片训练与独立测试链路，使用上传训练生成的模型；参见 [图片格式说明](uploaded-dataset-formats.md) 和 [当前交付目录](RELEASE_LAYOUT.md)。
 
 ## 验证
 

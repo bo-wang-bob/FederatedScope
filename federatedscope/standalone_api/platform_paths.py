@@ -10,7 +10,13 @@ def resolve_path(base, value):
 
 
 def relative_path(base, value):
-    return Path(os.path.relpath(resolve_path(base, value), Path(base).resolve())).as_posix()
+    target = resolve_path(base, value)
+    try:
+        return Path(os.path.relpath(target, Path(base).resolve())).as_posix()
+    except ValueError:
+        if os.name != 'nt':
+            raise
+        return target.as_posix()
 
 
 def portable_config(config, repo):

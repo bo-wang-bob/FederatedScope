@@ -1,6 +1,5 @@
 """Immutable, shared image uploads. No caller supplied absolute filesystem paths."""
 import hashlib
-import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -11,10 +10,9 @@ import uuid
 from .paths import env_path
 from .platform_config import PlatformError
 from .repository import JsonRepository
+from .uploaded_images import IMAGE_TYPES, MAX_IMAGE, normalize_image
 
-IMAGE_TYPES = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
 UPLOAD_LOCK = threading.RLock()
-MAX_IMAGE = 25 * 1024 * 1024
 MAX_BYTES = 20 * 1024 ** 3
 SPLIT_NAMES = {'train', 'test', 'val', 'valid', 'validation'}
 
@@ -67,22 +65,13 @@ class DatasetStore:
         return value
 
     def put(self, identifier, relative, content):
-        from PIL import Image, UnidentifiedImageError
         # Reject Windows drive names, ADS, reserved filenames and escaping paths.
         parts = str(relative).split('/')
         if (not parts or len(parts) > 3 or any(not p or p in ('.', '..') or
             re.search(r'[\\:\x00-\x1f<>"|?*]', p) or p.endswith((' ', '.')) or
             re.fullmatch(r'(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', p) for p in parts)):
             raise PlatformError('图片路径必须为 类别/图片 或测试图片名')
-        if PurePosixPath(relative).suffix.lower() not in IMAGE_TYPES or not 0 < len(content) <= MAX_IMAGE:
-            raise PlatformError('仅支持 JPG、PNG、WebP、BMP，每张不超过 25 MiB')
-        try:
-            with Image.open(io.BytesIO(content)) as image:
-                if image.width * image.height > 40_000_000:
-                    raise PlatformError('图片像素过大')
-                image.verify()
-        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
-            raise PlatformError('图片损坏或格式不支持') from error
+        normalized, image_metadata = normalize_image(content, PurePosixPath(relative).suffix.lower())
         with UPLOAD_LOCK:
             value = self.get(identifier, False)
             if value['status'] != 'uploading':
@@ -91,27 +80,45 @@ class DatasetStore:
             if split_layout and (len(parts) != 3 or parts[0].lower() not in SPLIT_NAMES):
                 raise PlatformError('完整数据集应为 train/类别/图片 和 test（或 val）/类别/图片')
             if not split_layout and (len(parts) > 2 or value['kind'] == 'train' and len(parts) != 2):
-                raise PlatformError('训练集需 类别/图片；测试集支持 类别/图片 或单张图片')
-            previous = next((r for r in value['items'] if r['path'].casefold() == relative.casefold()), None)
-            checksum = hashlib.sha256(content).hexdigest()
+                raise PlatformError('训练集需 类别/图片；测试集支持图片文件夹或单张图片')
+            previous = next((r for r in value['items'] if r.get('originalPath', r['path']).casefold() == relative.casefold()), None)
+            original_checksum = hashlib.sha256(content).hexdigest()
+            checksum = hashlib.sha256(normalized).hexdigest()
             if previous:
-                if previous['sha256'] == checksum and previous['path'] == relative:
+                if previous.get('originalSha256', previous['sha256']) == original_checksum and previous.get('originalPath', previous['path']) == relative:
                     return dict(count=value['count'], bytes=value['bytes'])
                 raise PlatformError('存在重名图片（包括大小写冲突）', 409)
-            if value['count'] >= 50000 or value['bytes'] + len(content) > MAX_BYTES:
+            stored_bytes = value.get('storedBytes', value['bytes']) + len(content) + len(normalized)
+            if value['count'] >= 50000 or stored_bytes > MAX_BYTES:
                 raise PlatformError('单次上传最多 50000 张、20 GiB')
-            if any(r['sha256'] == checksum for r in value['items']):
+            if any(r['sha256'] == checksum or r.get('originalSha256', r['sha256']) == original_checksum for r in value['items']):
                 raise PlatformError('存在内容相同的重复图片，请去重后上传，避免训练/测试泄漏')
             root = self.directory(identifier) / 'images'
-            file = root / ('' if split_layout else 'uploaded' if value['kind'] == 'train' else 'test') / relative
+            # Appending rather than replacing the suffix keeps a.jpg/a.png distinct.
+            normalized_relative = relative + '.png'
+            file = root / ('' if split_layout else 'uploaded' if value['kind'] == 'train' else 'test') / normalized_relative
             file.resolve().relative_to(root.resolve())
             file.parent.mkdir(parents=True, exist_ok=True)
-            with file.open('xb') as stream:
-                stream.write(content)
-            value['items'].append(dict(path=relative, sha256=checksum, bytes=len(content)))
-            value['count'] += 1
-            value['bytes'] += len(content)
-            JsonRepository._atomic_write(self.directory(identifier) / 'dataset.json', value)
+            original = self.directory(identifier) / 'originals' / relative
+            original.resolve().relative_to((self.directory(identifier) / 'originals').resolve())
+            original.parent.mkdir(parents=True, exist_ok=True)
+            created = []
+            try:
+                for target, data in ((file, normalized), (original, content)):
+                    with target.open('xb') as stream:
+                        created.append(target)
+                        stream.write(data)
+                value['items'].append(dict(path=normalized_relative, sha256=checksum, bytes=len(content),
+                    originalPath=relative, originalSha256=original_checksum, normalizedBytes=len(normalized), **image_metadata))
+                value['count'] += 1
+                value['bytes'] += len(content)
+                value['storedBytes'] = stored_bytes
+                JsonRepository._atomic_write(self.directory(identifier) / 'dataset.json', value)
+            except OSError:
+                # Remove only new files from this failed write, never old uploads.
+                for target in reversed(created):
+                    target.unlink(missing_ok=True)
+                raise PlatformError('保存图片失败，请检查磁盘空间后重试')
             return dict(count=value['count'], bytes=value['bytes'])
 
     def finish(self, identifier):
@@ -144,8 +151,6 @@ class DatasetStore:
                 labelled = ['/' in r['path'] for r in value['items']]
                 if any(labelled) and not all(labelled):
                     raise PlatformError('不能混合带类别目录的图片和无标签图片')
-                if not any(labelled) and value['count'] != 1:
-                    raise PlatformError('批量测试请按 类别/图片 组织文件夹；无标签仅支持单张图片')
                 value['classes'] = sorted({r['path'].split('/')[0] for r in value['items']}) if all(labelled) else []
             if value['kind'] == 'train':
                 training_rows = [r for r in value['items'] if not split_layout or r['split'] == 'train']

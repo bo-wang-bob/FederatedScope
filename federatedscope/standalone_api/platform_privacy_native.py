@@ -45,7 +45,7 @@ def run(spec):
     cfg.merge_from_other_cfg(CN(raw))
     setup_seed(cfg.seed)
     torch.set_num_threads(2)
-    emit('stage', stage='核验云服务器预设、本地 GPU 与 ConvNeXt 权重')
+    emit('stage', stage='核验实验配置、计算设备与 ConvNeXt 权重')
     if cfg.use_gpu and (not torch.cuda.is_available() or cfg.device >= torch.cuda.device_count()):
         raise ValueError(f'云服务器预设使用 GPU {cfg.device}，当前后端 Python 环境不可用；请使用支持 CUDA 的环境')
     from torchvision.models import ConvNeXt_Base_Weights

@@ -18,7 +18,8 @@ sys.path.insert(0, str(REPO))
 
 TERMINAL = {'completed', 'failed', 'stopped', 'interrupted'}
 IGNORE = shutil.ignore_patterns('.git', '__pycache__', '*.pyc', 'node_modules',
-                               '.env', '.env.*', '*.tsbuildinfo')
+                               '.env', '.env.*', '*.tsbuildinfo', '.pytest_cache',
+                               '.venv', 'venv', '.mypy_cache', '.ruff_cache')
 HELPER_HASHES = {
     '530107bc5e7679cc3f49cbdc16a3f0030e59cf17e7b26a962b278efb7bf1f513',
     '24c47c2c434195bfbad196f05b953d73a9bbe01a4638ac7a5fa5180c5b24cd2e',
@@ -73,8 +74,9 @@ def state_snapshot(root):
     root = Path(root)
     snapshot = {}
     state_files = list(files(root / 'jobs'))
-    if (root / 'backdoor').exists():
-        state_files.extend(files(root / 'backdoor'))
+    for module in ('backdoor', 'privacy_experiments'):
+        if (root / module).exists():
+            state_files.extend(files(root / module))
     for path in state_files:
         if path.name == 'job.json':
             job = json.loads(path.read_text(encoding='utf-8'))

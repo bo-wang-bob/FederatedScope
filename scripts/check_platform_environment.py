@@ -52,7 +52,7 @@ def check_environment(gpu=False, strict=False):
         'federatedscope.contrib.worker.ggeur_client',
         'federatedscope.contrib.worker.ggeur_server',
         'scipy', 'sklearn', 'fvcore', 'pympler',
-        'open_clip', 'timm', 'safetensors',
+        'open_clip', 'timm', 'safetensors', 'pillow_heif',
     ]
     for module in modules:
         try:

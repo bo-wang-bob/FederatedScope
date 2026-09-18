@@ -1,5 +1,6 @@
 """Adapt uploaded folders to the existing CNN training protocols."""
 import copy
+import os
 from pathlib import Path
 
 from .platform_config import PlatformError
@@ -19,7 +20,9 @@ class UploadedConfig:
             return self.base.defaults(group, method)
         self.store.training(group)
         req = self.base.defaults('officehome_cnn', method)
-        req.update(group=group, clientCount=3, gpu=0, sampleClients=0, augmentationSourceId='',
+        req.update(group=group, clientCount=3,
+                   gpu=-1 if os.environ.get('FS_PLATFORM_DEVICE') == 'cpu' else 0,
+                   sampleClients=0, augmentationSourceId='',
                    augmentationMode='generate' if method == 'heterogeneous_solution' else 'none')
         return req
 

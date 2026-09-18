@@ -1,4 +1,4 @@
-"""Forward inference on labelled folders or a single unlabelled uploaded image."""
+"""Forward inference on labelled/unlabelled folders and single uploaded images."""
 from pathlib import Path
 
 
@@ -51,7 +51,7 @@ def run(spec):
                 label = item['path'].split('/')[0] if value['classes'] else None
                 if label is not None:
                     matrix[names.index(label), predicted] += 1
-                rows.append(dict(index=i, filename=item['path'], labelName=label, predictedName=names[predicted],
+                rows.append(dict(index=i, filename=item.get('originalPath', item['path']), labelName=label, predictedName=names[predicted],
                     confidence=float(score[predicted]), correct=None if label is None else label == names[predicted],
                     imageUrl=f'/api/platform/datasets/{value["id"]}/images/{i}'))
             emit('stage', stage=f'测试图片推理 {len(rows)}/{value["count"]}')

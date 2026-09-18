@@ -1,5 +1,9 @@
 # 跨域协同训练 · 后端原型
 
+## 当前交付方式（2026-09-19）
+
+前后端同级放置为 `frontend/`、`backend/`；所有数据/权重放在 `backend/resources/`，实验和模型保存在 `backend/exp/platform/`。完整目录、检查/导出命令和启动方式以 [源码与资源交付说明](docs/RELEASE_LAYOUT.md) 为准。新版导出包含隐私、后门及上传数据，不携带本机 CPU 环境设置。上传支持范围见 [图片格式说明](docs/uploaded-dataset-formats.md)。以下带日期的内容与旧服务器路径仅供历史参考。
+
 2026-09-16 离线改造：军机三方法默认 100 轮，本架构每类 40 / 样本 20 / 原型 20 / 本地轮数 1。资源、任务配置和模型定位采用相对路径；本架构自动核验并复用匹配缓存。启动及目录规范见 [离线运行说明](docs/PORTABLE_PLATFORM.md)。下面的旧服务器路径仅记录历史部署方式。
 
 分支：`prototype/backend`。对应前端：[prototype/frontend](https://github.com/bo-wang-bob/FederatedScope/tree/prototype/frontend)。

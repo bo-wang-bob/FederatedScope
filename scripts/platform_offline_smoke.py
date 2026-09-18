@@ -38,6 +38,8 @@ def main():
         if server:
             server.shutdown()
             server.RequestHandlerClass.context.platform.close()
+            server.RequestHandlerClass.context.backdoor.close()
+            server.RequestHandlerClass.context.privacy.close()
             server.server_close()
             thread.join(timeout=10)
 

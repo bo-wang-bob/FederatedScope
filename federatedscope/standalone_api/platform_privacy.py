@@ -83,6 +83,8 @@ class PrivacyConfig:
     def build(self, req, output):
         source, raw = self.preset(req['group'], req['defense'])
         raw = copy.deepcopy(raw)
+        if os.environ.get('FS_PLATFORM_DEVICE') == 'cpu':
+            raw.update(use_gpu=False, device=0)
         raw['data']['root'] = relative_path(self.repo, self.dataset_root(req['group']))
         raw['federate'].update(client_num=req['clientCount'], sample_client_num=req['clientCount'],
                                total_round_num=req['rounds'])
@@ -98,7 +100,8 @@ class PrivacyConfig:
             thresholdPolicy='mix ROC attainable FPR<=1%; real-image test scores for display',
             configOverrides=['data.root', 'outdir', 'expname', 'federate.client_num',
                 'federate.sample_client_num', 'federate.total_round_num', 'ggeur.save_mlp_checkpoint',
-                'ggeur.mlp_checkpoint_dir', 'ggeur.training_distribution_dir'])
+                'ggeur.mlp_checkpoint_dir', 'ggeur.training_distribution_dir'] +
+                (['use_gpu', 'device'] if os.environ.get('FS_PLATFORM_DEVICE') == 'cpu' else []))
 
 class PrivacyService(PlatformService):
     def __init__(self, repo, state):

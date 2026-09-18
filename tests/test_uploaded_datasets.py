@@ -71,6 +71,24 @@ def test_labelled_test_folder_and_single_image(store):
     assert store.finish(single)['classes'] == []
 
 
+def test_flat_test_folder_accepts_multiple_unlabelled_images(store):
+    identifier = store.create(dict(name='独立测试图片', kind='test'))['id']
+    for index in range(3):
+        store.put(identifier, f'picture{index}.png', picture(index))
+    value = store.finish(identifier)
+    assert value['count'] == 3 and value['classes'] == []
+    assert all(store.image(identifier, i).is_file() for i in range(3))
+    assert 'group' not in value
+
+
+def test_test_folder_cannot_mix_labelled_and_unlabelled_images(store):
+    identifier = store.create(dict(name='混合目录', kind='test'))['id']
+    store.put(identifier, 'a.png', picture())
+    store.put(identifier, 'A/b.png', picture(1))
+    with pytest.raises(PlatformError, match='不能混合'):
+        store.finish(identifier)
+
+
 def test_uploaded_training_uses_real_class_count_and_private_cache(store, tmp_path):
     value = train_dataset(store)
     base = ConfigFactory(store.repo)
@@ -115,7 +133,7 @@ def test_whole_dataset_preserves_user_split(store, evaluation_folder):
     import json
     records = json.loads((store.directory(identifier) / 'manifest.json').read_text(encoding='utf-8'))['records']['uploaded']
     assert sum(r['split'] == 'train' for r in records) == 6
-    assert [r['path'] for r in records if r['split'] == 'test'] == [f'{evaluation_folder}/ants/test.png']
+    assert [r['path'] for r in records if r['split'] == 'test'] == [f'{evaluation_folder}/ants/test.png.png']
     assert all(store.image(identifier, i).is_file() for i in range(value['count']))
 
 

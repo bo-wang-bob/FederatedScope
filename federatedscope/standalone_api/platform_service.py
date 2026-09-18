@@ -59,6 +59,18 @@ class PlatformService:
             except OSError as error:
                 self._lease.close()
                 raise PlatformError('该状态目录已被另一服务占用', 409) from error
+        elif os.name == 'nt':
+            import msvcrt
+            self._lease.seek(0, os.SEEK_END)
+            if self._lease.tell() == 0:
+                self._lease.write(b'\0')
+                self._lease.flush()
+            self._lease.seek(0)
+            try:
+                msvcrt.locking(self._lease.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                self._lease.close()
+                raise PlatformError('该状态目录已被另一服务占用', 409) from error
         try:
             self.commit = subprocess.check_output(
                 ['git', 'rev-parse', 'HEAD'], cwd=self.repo, text=True,
