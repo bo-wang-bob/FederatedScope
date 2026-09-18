@@ -111,21 +111,21 @@ function PrivacyExperiments({ stageTab, onStageChange }: { stageTab: 'train' | '
     catch (e) { setError((e as Error).message); }
   }
   return <section className="privacy-lab-experiments" aria-label="独立隐私攻击实验">
-    {stageTab === 'train' && <div className="privacy-lab-intro"><div><h2>发起隐私实验</h2><p>配置训练任务，自动采集攻击特征，查看逐客户端评测结果。</p></div><span className="privacy-lab-pipeline">模型训练 <span>→</span> 特征保存 <span>→</span> 攻击评测</span></div>}
+    {stageTab === 'train' && <div className="privacy-lab-intro"><div><h2>发起隐私实验</h2></div></div>}
     {error && <Alert type="error" showIcon closable title={error} onClose={() => setError('')} />}
     <div hidden={stageTab !== 'train'}>
     <div className="privacy-lab-workflow">
       <Panel title="实验配置" extra={<Tag>{ready ? '预检通过' : '待预检'}</Tag>}>
         <Form form={form} layout="vertical" disabled={!catalog || active || busy} onValuesChange={() => setPreflight(undefined)}>
           <div className="privacy-lab-form-grid">
-            <Form.Item name="group" label="数据集与骨干" rules={[{ required: true }]}><Select options={catalog?.groups.map(g => ({ value: g.id, label: `${g.dataset} / ${g.backbone}` }))} onChange={value => {
+            <Form.Item name="group" label="数据集" rules={[{ required: true }]}><Select options={catalog?.groups.map(g => ({ value: g.id, label: g.dataset }))} onChange={value => {
               const next = catalog!.groups.find(g => g.id === value)!; form.setFieldsValue(next.methods[0].defaults); setPreflight(undefined);
             }} /></Form.Item>
             <Form.Item name="method" label="训练方案" rules={[{ required: true }]}><Select options={group?.methods.map(m => ({ value: m.id, label: m.label, disabled: !m.enabled }))} onChange={value => {
               form.setFieldsValue(group!.methods.find(m => m.id === value)!.defaults); setPreflight(undefined);
             }} /></Form.Item>
             <Form.Item name="name" label="实验名称"><Input placeholder="为本次隐私实验命名" /></Form.Item>
-            <Form.Item name="defense" label="防御配置"><Select options={[{ value: false, label: '无防御 / 云服务器原配置' }, { value: true, label: '有防御 / 云服务器原配置' }]} onChange={value => {
+            <Form.Item name="defense" label="防御配置"><Select options={[{ value: false, label: '无防御' }, { value: true, label: '有防御' }]} onChange={value => {
               const method = group?.methods.find(item => item.id === form.getFieldValue('method'));
               if (method) { const currentName = form.getFieldValue('name'); form.setFieldsValue(value ? method.defenseDefaults : method.defaults); form.setFieldValue('name', currentName); }
               setPreflight(undefined);
@@ -134,8 +134,7 @@ function PrivacyExperiments({ stageTab, onStageChange }: { stageTab: 'train' | '
             <Form.Item name="clientCount" label="客户端数量" rules={[{ required: true }]}><InputNumber min={group?.domains || 3} max={240} step={group?.domains || 3} /></Form.Item>
           </div>
         </Form>
-        <p className="privacy-lab-note privacy-lab-preset-note"><SafetyCertificateOutlined /> 其余参数沿用已验证的实验配置，训练中自动保存攻击特征。</p>
-        {group && !group.datasetFound && <Alert type="warning" showIcon title="尚未找到本地数据集" description="预检会检查数据集、GPU 和 ConvNeXt-Base 预训练权重。" />}
+        {group && !group.datasetFound && <Alert type="warning" showIcon title="尚未找到数据集" />}
         <Space className="privacy-lab-actions"><Button icon={<SafetyCertificateOutlined />} loading={busy && !ready} disabled={active || !catalog} onClick={() => void launch(false)}>预检资源与划分</Button>
           <Button type="primary" icon={<ExperimentOutlined />} loading={busy && !!ready} disabled={!ready || active} onClick={() => void launch(true)}>开始训练与攻击</Button></Space>
       </Panel>
@@ -144,27 +143,25 @@ function PrivacyExperiments({ stageTab, onStageChange }: { stageTab: 'train' | '
           <Panel title="训练进度" extra={<State value={job.status} />}>
             <div className="privacy-lab-task-heading"><strong>{job.request.name || job.id.slice(0, 8)}</strong><Tag>{job.request.defense ? '有防御' : '无防御'}</Tag></div>
             <Steps size="small" current={job.action === 'inspect' ? 0 : terminal(job.status) && job.status === 'completed' ? 3 : job.stage.includes('评测') || job.stage.includes('结果') ? 2 : 1} items={[{ title: '预检' }, { title: '训练 / 保存' }, { title: '攻击评测' }, { title: '完成' }]} />
-            <p className="privacy-lab-stage">{job.stage}</p>
             <Progress percent={Math.min(100, Math.round((job.metrics.at(-1)?.round || 0) / job.request.rounds * 100))} status={job.status === 'failed' ? 'exception' : job.status === 'completed' ? 'success' : 'active'} />
-            <div className="privacy-lab-stats"><Stat label="评估轮次" value={`${job.metrics.at(-1)?.round || 0} / ${job.request.rounds}`} /><Stat label="当前准确率" value={percent(job.metrics.at(-1)?.accuracy)} /><Stat label="已保存攻击特征" value={job.featureStorage?.files ?? '—'} sub={job.featureStorage?.files ? `${job.featureStorage.rounds.length} 个保存轮次 · 自动保存到本地` : '等待配置的特征保存轮次'} /></div>
-            {job.featureStorage && <p className="privacy-lab-note" style={{ overflowWrap: 'anywhere' }}>自动保存位置：{job.featureStorage.directory}<br />原始攻击特征按客户端和轮次保存，可直接用于本地结果展示，无需下载。</p>}
-            {job.storageError && <Alert type="error" title="本地特征归档失败" description={job.storageError} />}
+            <div className="privacy-lab-stats"><Stat label="评估轮次" value={`${job.metrics.at(-1)?.round || 0} / ${job.request.rounds}`} /><Stat label="当前准确率" value={percent(job.metrics.at(-1)?.accuracy)} /><Stat label="已保存攻击特征" value={job.featureStorage?.files ?? '—'} sub={job.featureStorage?.files ? `${job.featureStorage.rounds.length} 个保存轮次` : '等待保存'} /></div>
+            {job.storageError && <Alert type="error" title="特征保存失败" description={job.storageError} />}
             {job.error && <Alert type="error" showIcon title={job.error} />}
             {job.data && <p className="privacy-lab-note">{job.data.clientCount} 个客户端 · {job.data.trainSamples} 训练样本 · {job.data.testSamples} 测试样本</p>}
             <Space wrap>{job.featureStorage?.resultsReady && <Button type="primary" onClick={() => onStageChange('results')}>查看攻击结果</Button>}{!terminal(job.status) && <Popconfirm title="停止本次隐私实验？已保存特征会保留。" onConfirm={() => void stop()}><Button danger icon={<StopOutlined />}>停止任务</Button></Popconfirm>}
               {terminal(job.status) && <Button icon={<ReloadOutlined />} onClick={() => { form.setFieldsValue(job.request); setPreflight(job.action === 'inspect' && job.status === 'completed' ? job : undefined); }}>载入此配置</Button>}</Space>
           </Panel>
-          <Tabs items={[{ key: 'curves', label: '训练曲线', children: <Panel title="真实训练指标"><Curves points={job.metrics} /><LossChart points={job.metrics} /></Panel> },
+          <Tabs items={[{ key: 'curves', label: '训练曲线', children: <Panel title="训练指标"><Curves points={job.metrics} /><LossChart points={job.metrics} /></Panel> },
             { key: 'clients', label: '客户端状态', children: <Table rowKey="id" dataSource={Object.values(job.clients)} size="small" pagination={{ pageSize: 8 }} columns={[{ title: '客户端', dataIndex: 'id' }, { title: '域', dataIndex: 'domain' }, { title: '样本数', dataIndex: 'samples' }, { title: '状态', dataIndex: 'stage' }, { title: '损失', dataIndex: 'loss', render: (v: number | undefined) => v?.toFixed(4) ?? '—' }]} /> },
             { key: 'logs', label: '执行日志', children: <PrivacyLogs id={job.id} /> },
           ]} />
-        </> : <Panel title="训练进度" extra={<Tag>等待启动</Tag>}><div className="privacy-lab-await"><div className="privacy-lab-empty-icon"><ExperimentOutlined /></div><h3>准备开始训练</h3><p>完成左侧配置并通过资源预检后启动实验。</p><div className="privacy-lab-empty-stages"><span>01 配置实验</span><span>02 采集特征</span><span>03 查看结果</span></div></div></Panel>}
+        </> : <Panel title="训练进度" extra={<Tag>等待启动</Tag>}><div className="privacy-lab-await"><div className="privacy-lab-empty-icon"><ExperimentOutlined /></div><h3>准备开始训练</h3></div></Panel>}
       </div>
     </div>
     </div>
     <div hidden={stageTab !== 'results'}>
       <div className="privacy-results-stage">
-      <Panel title="本地特征与攻击结果" extra={<Tag>fedmia_local 自动保存</Tag>}>
+      <Panel title="实验结果">
         <Table<PrivacyJob> rowKey="id" size="small" dataSource={jobs.filter(item => item.action === 'train')} pagination={{ pageSize: 6 }} columns={[
           { title: '实验', render: (_, item) => <Button type="link" onClick={() => void open(item.id)}>{item.request.name || item.id.slice(0, 8)}</Button> },
           { title: '数据集', render: (_, item) => catalog?.groups.find(g => g.id === item.request.group)?.dataset || item.request.group },
@@ -175,7 +172,7 @@ function PrivacyExperiments({ stageTab, onStageChange }: { stageTab: 'train' | '
       </Panel>
       {job?.action === 'train' && job.featureStorage?.resultsReady
         ? <PrivacyResults id={job.id} />
-        : <Panel title="攻击结果"><div className="privacy-lab-await"><ExperimentOutlined /><h3>请选择已完成实验</h3><p>训练完成后，在上方选择实验，即可读取保存的攻击特征和逐客户端攻击结果。</p></div></Panel>}
+        : <Panel title="攻击结果"><div className="privacy-lab-await"><ExperimentOutlined /><h3>请选择已完成实验</h3></div></Panel>}
       </div>
     </div>
   </section>;
@@ -193,14 +190,15 @@ function PrivacyLogs({ id }: { id: string }) {
 }
 
 function PrivacyResults({ id }: { id: string }) {
-  const [client, setClient] = useState(1), [plugin, setPlugin] = useState('fedmia_i');
+  const [client, setClient] = useState(1);
+  const plugin = 'fedmia_ii';
   const [result, setResult] = useState<Results>();
   const [error, setError] = useState('');
   useEffect(() => { let alive = true; setResult(undefined); setError(''); void api<Results>(path + `jobs/${id}/results?clientId=${client}`).then(value => { if (alive) setResult(value); }).catch(e => { if (alive) setError((e as Error).message); }); return () => { alive = false; }; }, [id, client]);
   if (error) return <Alert type="error" title={error} />;
   if (!result) return <Empty description="读取已保存攻击结果…" />;
   const metric = result.metrics[plugin];
-  return <Panel title="逐客户端攻击评测" extra={<Space><Select aria-label="攻击评测客户端" value={client} onChange={setClient} options={result.clientIds.map(value => ({ value, label: 'Client ' + value }))} /><Select aria-label="攻击变体" value={plugin} onChange={setPlugin} options={[{ value: 'fedmia_i', label: 'FedMIA-I' }, { value: 'fedmia_ii', label: 'FedMIA-II' }]} /></Space>}>
+  return <Panel title="逐客户端攻击评测" extra={<Space><Select aria-label="攻击评测客户端" value={client} onChange={setClient} options={result.clientIds.map(value => ({ value, label: 'Client ' + value }))} /><Tag>FedMIA-II</Tag></Space>}>
     <Tag>{result.defense ? '有防御' : '无防御'}</Tag><Tag>{result.dataset}</Tag><p className="privacy-lab-note">{result.thresholdPolicy}。使用 {result.rounds.length} 个保存轮次。{result.indexedWarning}</p>
     {result.completeTraining === false && <Alert type="warning" showIcon title="训练曾中断：以下为已保存轮次的攻击结果，并非完整训练结果。" />}
     <div className="privacy-lab-stats"><Stat label="AUC" value={percent(metric.auc)} /><Stat label="TPR@FPR≤1%" value={percent(metric.tprAt1Fpr)} /><Stat label="实际 FPR" value={percent(metric.actualFpr)} /><Stat label="Mix 校准阈值" value={metric.threshold.toFixed(4)} /></div>
