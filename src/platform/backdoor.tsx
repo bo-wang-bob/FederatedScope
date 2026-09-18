@@ -107,7 +107,7 @@ export function BackdoorLab() {
 
   if (loadError) return <Alert className="studio-connection-alert" type="error" showIcon title="后门防御接口不可用" description={loadError} action={<Button icon={<ReloadOutlined />} onClick={() => setRefresh(v => v + 1)}>重试</Button>} />;
   if (!testset) return <div className="studio-loading"><Spin size="large" /></div>;
-  if (!testset.exported) return <div className="studio-empty-state"><SafetyCertificateOutlined /><h2>测试集尚未导出</h2><p>{testset.message || '后端未找到测试集图片目录'}</p><p className="platform-muted">先在服务器执行一次绘图脚本，导出测试集图片后再回到本页。</p></div>;
+  if (!testset.exported) return <div className="studio-empty-state"><SafetyCertificateOutlined /><h2>测试集尚未就绪</h2></div>;
 
   return <div className="backdoor-lab">
     <Card className="platform-panel backdoor-picker" title={<span><ScanOutlined /> 选择测试图片</span>}

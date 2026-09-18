@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { PrivacyLab } from '../platform/privacyLab';
 
@@ -13,12 +13,46 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
+it('shows only FedMIA-II metrics, distribution and sample predictions', async () => {
+  const job = { id: 'b'.repeat(32), request: { ...defaults, name: 'II 展示测试' }, action: 'train',
+    status: 'completed', stage: '完成', metrics: [], clients: {},
+    featureStorage: { files: 6, rounds: [199], directory: 'features', resultsReady: true } };
+  const metric = { auc: .92, tprAt1Fpr: .75, actualFpr: .01, threshold: .65, members: 1, nonmembers: 1 };
+  const result = { dataset: 'MilitaryAircraft3D', defense: false, clientId: 1, clientIds: [1, 2],
+    thresholdPolicy: 'FPR≤1%', rounds: [199], indexedWarning: null,
+    metrics: { fedmia_i: { ...metric, threshold: .1234 }, fedmia_ii: metric },
+    samples: {
+      member: [{ domain: 'aerial', className: 'C-17', scores: { fedmia_i: .1, fedmia_ii: .83 },
+        predictions: { fedmia_i: 'nonmember', fedmia_ii: 'member' } }],
+      nonmember: [{ domain: 'aerial', className: 'F-16', scores: { fedmia_i: .9, fedmia_ii: .2 },
+        predictions: { fedmia_i: 'member', fedmia_ii: 'nonmember' } }],
+    } };
+  vi.spyOn(globalThis, 'fetch').mockImplementation(url => {
+    const path = String(url);
+    return response(path.endsWith('/catalog') ? catalog : path.includes('/results?') ? result : path.endsWith('/jobs') ? [job] : job);
+  });
+  render(<PrivacyLab />);
+  await screen.findByText('尚未找到数据集');
+  fireEvent.click(screen.getByRole('tab', { name: /结果展示/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'II 展示测试' }));
+  expect(await screen.findByText('FedMIA-II')).toBeVisible();
+  expect(screen.queryByText('FedMIA-I', { exact: true })).not.toBeInTheDocument();
+  expect(screen.queryByRole('combobox', { name: '攻击变体' })).not.toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: '攻击评测客户端' })).toBeVisible();
+  expect(screen.getByText('0.6500')).toBeVisible();
+  expect(screen.queryByText('0.1234')).not.toBeInTheDocument();
+  const samples = within(screen.getByRole('region', { name: '训练样本攻击结果' }));
+  expect(samples.getByText('攻击分数：0.8300')).toBeVisible();
+  expect(samples.getByText('成员', { exact: true })).toBeVisible();
+  expect(screen.getByText(/均值差 0.6300/)).toBeVisible();
+}, 15000);
+
 it('opens local experiment results directly without the historical replay entry', async () => {
   const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(url => response(String(url).endsWith('catalog') ? catalog : []));
   render(<PrivacyLab />);
-  await screen.findByText('尚未找到本地数据集');
+  await screen.findByText('尚未找到数据集');
   fireEvent.click(screen.getByRole('tab', { name: /结果展示/ }));
-  expect(screen.getByText('本地特征与攻击结果')).toBeVisible();
+  expect(screen.getByText('实验结果')).toBeVisible();
   expect(screen.queryByText('已有攻击结果')).not.toBeInTheDocument();
   expect(fetcher.mock.calls.some(([url]) => String(url).includes('/privacy/membership'))).toBe(false);
 });
@@ -26,20 +60,22 @@ it('opens local experiment results directly without the historical replay entry'
 it('loads only private catalog and jobs and shows genuine missing resource warning', async () => {
   const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(url => response(String(url).endsWith('catalog') ? catalog : []));
   render(<PrivacyLab />);
-  expect(await screen.findByText('尚未找到本地数据集')).toBeVisible();
+  expect(await screen.findByText('尚未找到数据集')).toBeVisible();
+  expect(screen.queryByText(/云服务器|fedmia_local|已验证的实验配置|无需下载/)).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: /开始训练与攻击/ })).toBeDisabled();
   expect(fetcher.mock.calls.every(([url]) => String(url).startsWith('/api/platform/privacy/experiments/'))).toBe(true);
   expect(screen.queryByText('已有攻击结果')).not.toBeInTheDocument();
 });
 
 it('launches a private preflight with attack and training settings, not ordinary training', async () => {
+  const task = { id: 'a'.repeat(32), request: defaults, action: 'inspect', status: 'queued',
+    stage: '等待启动', clients: {}, metrics: [], events: [], cleanup: { ok: true } };
   const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation((url, options) => {
-    if (options?.method === 'POST') return response({ id: 'a'.repeat(32), request: defaults, action: 'inspect', status: 'queued',
-      stage: '等待启动', clients: {}, metrics: [], events: [], cleanup: { ok: true } });
+    if (options?.method === 'POST' || String(url).endsWith('/jobs/' + task.id)) return response(task);
     return response(String(url).endsWith('catalog') ? catalog : []);
   });
   render(<PrivacyLab />);
-  await screen.findByText('尚未找到本地数据集');
+  await screen.findByText('尚未找到数据集');
   fireEvent.click(screen.getByRole('button', { name: /预检资源与划分/ }));
   await waitFor(() => expect(fetcher.mock.calls.some(([url, init]) => String(url).endsWith('/preflight') && init?.method === 'POST')).toBe(true));
   const call = fetcher.mock.calls.find(([, init]) => init?.method === 'POST')!;

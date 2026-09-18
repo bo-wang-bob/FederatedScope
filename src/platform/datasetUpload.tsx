@@ -51,7 +51,7 @@ export function DatasetUpload({ disabled = false, onUploaded }: { disabled?: boo
     <Modal title="添加数据集 · 自动识别目录" open={open} onCancel={() => !busy && setOpen(false)} maskClosable={!busy} closable={!busy}
       footer={result ? <Button type="primary" onClick={() => setOpen(false)}>完成</Button> : <Space><Button disabled={busy} onClick={() => setOpen(false)}>取消</Button><Button type="primary" loading={busy} disabled={!files.length || classes.length < 2 || !name.trim()} onClick={() => void upload()}>上传并添加</Button></Space>}>
       <div className="dataset-upload">
-        <p>直接选择最外层数据集文件夹，自动识别训练集、测试集和类别。也支持只上传按类别整理的训练文件夹。</p>
+        <p>选择数据集文件夹，子文件夹名称为类别。</p>
         <div className="dataset-folder-example"><span>数据集 /</span><span>　├─ train / 类别名称 / 图片…</span><span>　└─ test 或 val / 类别名称 / 图片…</span></div>
         <input ref={node => { input.current = node; node?.setAttribute('webkitdirectory', ''); }} type="file" multiple hidden
           aria-label="选择训练数据集文件夹" onChange={event => { select(event.target.files); event.target.value = ''; }} />
@@ -59,10 +59,10 @@ export function DatasetUpload({ disabled = false, onUploaded }: { disabled?: boo
           <label htmlFor="upload-dataset-name">数据集名称</label><Input id="upload-dataset-name" value={name} maxLength={120} disabled={busy} onChange={e => setName(e.target.value)} placeholder="例如：飞机分类数据集" /></>}
         {files.length > 0 && <div><strong>{files.length} 张图片 · {classes.length} 个类别</strong><div className="dataset-class-list">{classes.map(c => <Tag key={c}>{c}</Tag>)}</div></div>}
         {layout?.layout === 'split' && <Alert type="success" showIcon title={`已识别：训练 ${layout.trainCount} 张 · 测试 ${layout.testCount} 张${layout.validationCount ? ` · 验证 ${layout.validationCount} 张` : ''}`} description={`保留原始划分；${layout.testSource} 用作测试，不再随机拆分。`} />}
-        <Alert type="info" showIcon title="本地保存，独立缓存" description="有 train/test 或 train/val 时保留现有划分；只有类别文件夹时按固定种子划分 70% 训练、30% 测试。首次预检提取特征，不覆盖已有数据。" />
+        <p>已有训练/测试划分保持不变；未划分时按 7:3 划分。</p>
         {busy && <Progress percent={Math.round(done / files.length * 100)} format={() => `${done}/${files.length}`} />}
         {error && <Alert type="error" showIcon title={error} />}
-        {result && <Alert type="success" showIcon title="数据集已添加" description="已登记到本地数据集列表，等待列表更新后可选择并开始训练预检。" />}
+        {result && <Alert type="success" showIcon title="数据集已添加" />}
       </div>
     </Modal>
   </>;
