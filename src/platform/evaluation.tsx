@@ -40,8 +40,6 @@ export function EvaluationPanel({library,initialModel,initialTestset,onSelection
     </Form>
   </section><aside className="evaluation-preview"><span className="studio-kicker">评测范围</span><h2>{test ? domains.length ? domains.join(' / ') : '全域评测' : '待选择测试集'}</h2>
     <dl>{[['模型',methodLabel(model?.method)],['检查点',model?.kind || '—'],['测试样本',test?.samples?.toLocaleString() || '—'],['类别',test ? classes.length || test.classes.length : '—']].map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-    {(domains.length>0||classes.length>0)&&<small>样本数为完整测试集数量，实际筛选后记录。</small>}
-    <Collapse ghost size="small" items={[{key:'protocol',label:'指标与数据口径',children:<p>重新加载分类器与冻结测试特征，校验模型和测试包版本。总体准确率按样本加权，Macro 指标按出现的真值或预测类别等权。</p>}]} />
     {model&&<Button type="text" onClick={()=>open(model.jobId)}>训练记录 <ArrowRightOutlined/></Button>}
   </aside></div>;
 }
@@ -64,7 +62,6 @@ export function EvaluationResults({ job, library }: { job: Job; library: Library
         { title: '类别', dataIndex: 'classIndex', render: i => `${i}: ${labels[i]}` }, { title: '样本数', dataIndex: 'support' },
         { title: 'Precision', dataIndex: 'precision', render: percent }, { title: 'Recall', dataIndex: 'recall', render: percent }, { title: 'F1', dataIndex: 'f1', render: percent },
       ]} /></div></Card>
-    <Collapse ghost items={[{ key: 'scope', label: '指标口径', children: 'Macro 按当前子集中出现的真值或预测类别计算；类别筛选只筛选真值，不限制预测类别。' }]} />
   </>;
 }
 
@@ -99,7 +96,6 @@ export function ComparisonPanel({jobs,open}:{jobs:Job[];open:(id:string)=>void})
         ...(['accuracy',...(kind==='evaluate'?['macroF1']:[]),'domainMean','worstDomain'] as const).map(metric=>({title:({accuracy:'总体准确率',macroF1:'Macro-F1',domainMean:'分域平均',worstDomain:'最差域'} as Record<string,string>)[metric],render:(_:unknown,job:Job)=>percent((kind==='evaluate'?job.result as EvaluationResult:job.metrics.at(-1))?.[metric as 'accuracy' | 'domainMean' | 'worstDomain'])})),
         {title:kind==='train'?'实际轮次':'样本数',render:(_,job)=>kind==='train'?job.metrics.at(-1)?.round??'—':(job.result as EvaluationResult)?.samples??'—'},
       ]}/></Card>
-      <Collapse ghost items={[{key:'protocol',label:'对比口径与限制',children:'同轮数不等于同计算量，增强会改变训练样本数。独立评测的一致性仅核对测试集与筛选范围，仍需核对训练配置；短轮试跑不能证明稳定提升。'}]}/>
     </>}
   </div>;
 }

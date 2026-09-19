@@ -1,4 +1,6 @@
 /* Model workbench: real samples and predictions. */
+.uploaded-testing{display:flex;flex-direction:column;gap:20px}
+.studio-shell .uploaded-testing .experience-selectors{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto}
 .studio-shell .model-experience{width:100%;min-width:0}
 .studio-shell .experience-selectors{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) 170px;align-items:center;gap:24px;background:var(--studio-panel);border:1px solid var(--studio-line);border-radius:8px;padding:20px 22px}
 .experience-selectors>div{min-width:0}

@@ -149,7 +149,7 @@ function PrivacyDistributionChart({ distributions }: { distributions?: Membershi
   </section>;
 }
 
-function PrivacyMembershipPanel() {
+export function PrivacyMembershipPanel() {
   const [group, setGroup] = useState<'member' | 'nonmember'>('member');
   const [clientId, setClientId] = useState<number>();
   const [payload, setPayload] = useState<MembershipPayload>();
