@@ -24,7 +24,6 @@ export function PrivacyLab() {
         <button role="tab" aria-selected={tab === 'train'} onClick={() => setTab('train')}><ExperimentOutlined /><span>训练实验</span></button>
         <button role="tab" aria-selected={tab === 'results'} onClick={() => setTab('results')}><SafetyCertificateOutlined /><span>结果展示</span></button>
       </div>
-      <span className="privacy-workbench-caption">FedMIA · 隐私评测</span>
     </header>
     <PrivacyExperiments stageTab={tab} onStageChange={setTab} />
   </div>;
@@ -162,8 +161,13 @@ function PrivacyExperiments({ stageTab, onStageChange }: { stageTab: 'train' | '
     <div hidden={stageTab !== 'results'}>
       <div className="privacy-results-stage">
       <Panel title="实验结果">
-        <Table<PrivacyJob> rowKey="id" size="small" dataSource={jobs.filter(item => item.action === 'train')} pagination={{ pageSize: 6 }} columns={[
-          { title: '实验', render: (_, item) => <Button type="link" onClick={() => void open(item.id)}>{item.request.name || item.id.slice(0, 8)}</Button> },
+        <Table<PrivacyJob> rowKey="id" size="small" dataSource={jobs.filter(item => item.action === 'train')} pagination={{ pageSize: 6 }}
+          rowClassName={item => 'privacy-experiment-row' + (job?.id === item.id ? ' is-selected' : '')}
+          onRow={item => ({ tabIndex: 0, 'aria-label': '查看实验 ' + (item.request.name || item.id.slice(0, 8)), 'aria-selected': job?.id === item.id,
+            onClick: () => void open(item.id),
+            onKeyDown: event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void open(item.id); } },
+          })} columns={[
+          { title: '实验', render: (_, item) => <Button type="link" onClick={event => { event.stopPropagation(); void open(item.id); }}>{item.request.name || item.id.slice(0, 8)}</Button> },
           { title: '数据集', render: (_, item) => catalog?.groups.find(g => g.id === item.request.group)?.dataset || item.request.group },
           { title: '防御配置', render: (_, item) => item.request.defense ? '有防御' : '无防御' },
           { title: '已保存特征', render: (_, item) => `${item.featureStorage?.files ?? 0} 个文件` },
@@ -171,7 +175,7 @@ function PrivacyExperiments({ stageTab, onStageChange }: { stageTab: 'train' | '
         ]} />
       </Panel>
       {job?.action === 'train' && job.featureStorage?.resultsReady
-        ? <PrivacyResults id={job.id} />
+        ? <PrivacyResults key={job.id} id={job.id} />
         : <Panel title="攻击结果"><div className="privacy-lab-await"><ExperimentOutlined /><h3>请选择已完成实验</h3></div></Panel>}
       </div>
     </div>
@@ -199,9 +203,8 @@ function PrivacyResults({ id }: { id: string }) {
   if (!result) return <Empty description="读取已保存攻击结果…" />;
   const metric = result.metrics[plugin];
   return <Panel title="逐客户端攻击评测" extra={<Space><Select aria-label="攻击评测客户端" value={client} onChange={setClient} options={result.clientIds.map(value => ({ value, label: 'Client ' + value }))} /><Tag>FedMIA-II</Tag></Space>}>
-    <Tag>{result.defense ? '有防御' : '无防御'}</Tag><Tag>{result.dataset}</Tag><p className="privacy-lab-note">{result.thresholdPolicy}。使用 {result.rounds.length} 个保存轮次。{result.indexedWarning}</p>
-    {result.completeTraining === false && <Alert type="warning" showIcon title="训练曾中断：以下为已保存轮次的攻击结果，并非完整训练结果。" />}
-    <div className="privacy-lab-stats"><Stat label="AUC" value={percent(metric.auc)} /><Stat label="TPR@FPR≤1%" value={percent(metric.tprAt1Fpr)} /><Stat label="实际 FPR" value={percent(metric.actualFpr)} /><Stat label="Mix 校准阈值" value={metric.threshold.toFixed(4)} /></div>
+    {result.completeTraining === false && <Alert type="warning" showIcon title="实验未完成" />}
+    <div className="privacy-lab-stats"><Stat label="AUC" value={percent(metric.auc)} /><Stat label="TPR@FPR≤1%" value={percent(metric.tprAt1Fpr)} /><Stat label="实际 FPR" value={percent(metric.actualFpr)} /><Stat label="校准阈值" value={metric.threshold.toFixed(4)} /></div>
     <ScoreDistribution result={result} plugin={plugin} />
     <Tabs items={['member', 'nonmember'].map(group => ({ key: group, label: group === 'member' ? '客户端训练样本' : '非训练样本', children: <div className="privacy-lab-samples" role="region" tabIndex={0} aria-label={group === 'member' ? '训练样本攻击结果' : '非训练样本攻击结果'}>{result.samples[group].map((sample, index) => <article key={index}>
       <img loading="lazy" src={'/api/platform/' + path + `jobs/${id}/images/${client}/${group}/${index}`} alt={sample.className} />
@@ -218,10 +221,10 @@ function ScoreDistribution({ result, plugin }: { result: Results; plugin: string
     return { group, bins: bins.map(count => count / Math.max(1, values.length)), mean: values.reduce((a, b) => a + b, 0) / Math.max(1, values.length) };
   });
   const max = Math.max(.01, ...histograms.flatMap(item => item.bins));
-  return <div className="privacy-lab-distribution"><header><strong>真实图片攻击分数分布</strong><span>训练 / 非训练均值差 {(histograms[0].mean - histograms[1].mean).toFixed(4)} · 越大越容易区分</span></header>
+  return <div className="privacy-lab-distribution"><header><strong>攻击分数分布</strong><span>均值差 {(histograms[0].mean - histograms[1].mean).toFixed(4)}</span></header>
     <svg viewBox="0 0 600 190" role="img" aria-label="真实图片攻击分数分布"><line x1="35" y1="160" x2="575" y2="160" stroke="#54756c" />
       {histograms.map((item, series) => item.bins.map((height, index) => <rect key={`${series}-${index}`} x={35 + index * 21.6} y={160 - height / max * 130} width={20} height={height / max * 130} fill={series ? '#65c7ac' : '#62afda'} opacity=".6" />))}
       <text x="35" y="182">0.0</text><text x="295" y="182">0.5</text><text x="555" y="182">1.0</text>
-    </svg><footer><span>● 客户端训练样本</span><span>● 非训练样本</span><small>展示分布与 Mix 整体评测样本口径不同</small></footer>
+    </svg><footer><span>● 客户端训练样本</span><span>● 非训练样本</span></footer>
   </div>;
 }

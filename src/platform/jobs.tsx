@@ -59,7 +59,7 @@ export function JobDetail({job,library,stop,rerun}:{job:Job;library:Library;stop
     {training||job.action==='inspect'?<Tabs activeKey={tab} onChange={setTab} items={[
       ...(training||job.action==='inspect'?[{key:'monitor',label:'训练结果',children:<><div className="job-chart-grid"><Panel title="准确率"><Curves points={points}/></Panel><Panel title="本地训练损失"><LossChart points={points}/></Panel></div>
         <Collapse className="job-client-disclosure" items={[{key:'clients',label:'客户端协作 · '+clients.length,children:<><Topology clients={clients}/><Table<Client> size="small" rowKey="id" dataSource={clients} pagination={{pageSize:10}} columns={[{title:'客户端',dataIndex:'id'},{title:'域',dataIndex:'domain'},{title:'样本',dataIndex:'samples'},{title:'状态',dataIndex:'stage',render:terminology},{title:'轮次',dataIndex:'round',render:n=>n==null?'—':n+1},{title:'训练损失',dataIndex:'loss',render:n=>n?.toFixed(4)??'—'},{title:'训练准确率',dataIndex:'accuracy',render:percent}]}/></>}]} /></>},
-      {key:'data',label:'数据分布',children:<Panel title="客户端与类别"><Distribution clients={clients} classes={job.data?.classes || []}/><p className="platform-muted">原始划分；配置抽样后的实际数量保存在实验日志。</p></Panel>}]:[]),
+      {key:'data',label:'数据分布',children:<Panel title="客户端与类别"><Distribution clients={clients} classes={job.data?.classes || []}/></Panel>}]:[]),
       {key:'detail',label:'参数与日志',children:detail},
     ]}/>:<Collapse className="job-client-disclosure" onChange={keys=>setTab(keys.length?'detail':'monitor')} items={[{key:'audit',label:'参数与日志',children:detail}]}/>}
   </div>;
