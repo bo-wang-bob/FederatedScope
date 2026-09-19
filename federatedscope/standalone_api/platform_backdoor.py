@@ -91,6 +91,7 @@ class BackdoorService:
         self.processes = {}
         # 由「启动训练」(platform_backdoor_training) 登记的当前结果组; 没有则为 None
         self.group = None
+        self._group_stamp = None
         self._load_group()
         self._index = None
         self._class_names = None
@@ -164,11 +165,44 @@ class BackdoorService:
         if root and Path(root).is_dir():
             self.data_root = root
 
+    def _sync_group(self):
+        """groups.json 变化时热切换结果组, 训练完成后无需重启服务。
+
+        绝大多数请求只是两次 stat; token 与当前组不同才清空
+        runs/类别名/测试集索引/预测缓存, 由各惰性加载器按新组重建。
+        """
+        marker = self.root / 'groups.json'
+        try:
+            stat = marker.stat()
+            stamp = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            stamp = None
+        if stamp == self._group_stamp:
+            return
+        with self.lock:
+            try:                                # 双检: 等锁期间可能已被刷新
+                stat = marker.stat()
+                stamp = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                stamp = None
+            if stamp == self._group_stamp:
+                return
+            self._group_stamp = stamp
+            self.group = None
+            self._load_group()
+            self._index = None
+            self._class_names = None
+            self._class_names_loaded = False
+            self._predictions = None
+            self._predictions_loaded = False
+            self._precompute_started = False
+
     # ------------------------------------------------------------------ #
     # 实验目录发现
     # ------------------------------------------------------------------ #
     def runs(self):
         """attack / defense 两个 run 目录名。可用 FS_BACKDOOR_RUNS 覆盖。"""
+        self._sync_group()
         group = self.group
         if group and group.get('attack'):
             pair = {'attack': str(group['attack']),
@@ -214,6 +248,7 @@ class BackdoorService:
     # ------------------------------------------------------------------ #
     def _load_index(self):
         """[(id, label), ...]; 测试集图片目录不存在时返回 None。"""
+        self._sync_group()
         if self._index is not None:
             return self._index
         index_file = self.base / 'testset_images' / 'index.csv'
@@ -230,6 +265,7 @@ class BackdoorService:
 
     def class_names(self):
         """类别名。只依赖 numpy/PIL, 不加载 torch。"""
+        self._sync_group()
         if self._class_names_loaded:
             return self._class_names or []
         self._class_names_loaded = True
@@ -313,6 +349,7 @@ class BackdoorService:
     # ------------------------------------------------------------------ #
     def _load_predictions(self):
         """全测试集"带触发器"预测缓存; 未生成时返回 None。"""
+        self._sync_group()
         if self._predictions_loaded:
             return self._predictions
         self._predictions_loaded = True
