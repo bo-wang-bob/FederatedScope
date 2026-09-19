@@ -21,7 +21,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setenv('FS_PLATFORM_UPLOADS', str(tmp_path / 'uploads'))
     source = Path(__file__).resolve().parents[1]
     repo = tmp_path / 'backend'
-    for relative in ('scripts/example_configs/ggeur_final_5models/officehome_cnn', 'scripts/privacy_presets'):
+    for relative in ('scripts/example_configs/ggeur_final_5models/officehome_cnn', 'scripts/example_configs/ggeur_final_5models/officehome_vit', 'scripts/privacy_presets'):
         shutil.copytree(source / relative, repo / relative)
     return DatasetStore(repo)
 
@@ -89,12 +89,13 @@ def test_test_folder_cannot_mix_labelled_and_unlabelled_images(store):
         store.finish(identifier)
 
 
-def test_uploaded_training_uses_real_class_count_and_private_cache(store, tmp_path):
+@pytest.mark.parametrize('method', ['fedavg', 'fedprox', 'heterogeneous_solution'])
+def test_uploaded_training_uses_real_class_count_and_private_cache(store, tmp_path, method):
     value = train_dataset(store)
     base = ConfigFactory(store.repo)
     configs = UploadedConfig(base)
     before, _ = base.build(base.defaults('officehome_cnn', 'fedavg'), tmp_path / 'before')
-    req = configs.normalize(configs.defaults(value['group'], 'fedavg'))
+    req = configs.normalize(configs.defaults(value['group'], method))
     raw, source = configs.build(req, tmp_path / 'training')
     assert raw['data']['type'] == 'domainnet'
     assert raw['model']['num_classes'] == 2
@@ -102,9 +103,15 @@ def test_uploaded_training_uses_real_class_count_and_private_cache(store, tmp_pa
     assert str(value['id']) in raw['ggeur']['feature_cache_dir']
     assert source['datasetFingerprint'] == value['fingerprint']
     assert req['clientCount'] == 3
+    assert raw['ggeur']['feature_extractor'] == 'clip'
+    assert raw['ggeur']['embedding_dim'] == 512
+    assert raw['ggeur']['clip_model'] == 'ViT-B-16'
+    assert raw['ggeur']['clip_model_path'] == 'resources/models/ViT-B-16.pt'
+    assert raw['ggeur']['feature_cache_dir'].replace('\\', '/').endswith('/features/vit-b16')
+    assert source['protocol'].startswith('uploaded-folder-vit')
     after, _ = base.build(base.defaults('officehome_cnn', 'fedavg'), tmp_path / 'before')
     assert before == after
-    assert any(g['id'] == value['group'] for g in configs.catalog()['groups'])
+    assert next(g for g in configs.catalog()['groups'] if g['id'] == value['group'])['backbone'] == 'vit'
 
 
 @pytest.mark.parametrize('defense', [False, True])
@@ -119,6 +126,8 @@ def test_privacy_accepts_same_uploaded_dataset(store, tmp_path, defense):
     assert str(value['id']) in raw['data']['root']
     assert raw['ggeur']['use_feature_cache'] is True
     assert raw['ggeur']['require_complete_feature_cache'] is True
+    assert raw['ggeur']['feature_extractor'] == 'cnn'
+    assert raw['ggeur']['embedding_dim'] == 1024
 
 
 @pytest.mark.parametrize('evaluation_folder', ['test', 'val', 'valid', 'validation'])

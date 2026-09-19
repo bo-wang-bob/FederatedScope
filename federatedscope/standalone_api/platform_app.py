@@ -735,16 +735,25 @@ class PlatformHandler(ApiHandler):
     def _route(self, write):
         path = urlparse(self.path).path.rstrip('/') or '/'
         service = self.context.platform
+        if path == '/api/platform/datasets/import' and write:
+            from .dataset_import import DatasetImporter
+            self._data(DatasetImporter(service.repo).create(self._body()))
+            return
         if path == '/api/platform/datasets':
             from .uploaded_datasets import DatasetStore
             store = DatasetStore(service.repo)
             self._data(store.create(self._body()) if write else store.list())
             return
-        uploaded = re.fullmatch(r'/api/platform/datasets/([a-f0-9]{32})/(files|finish|images/(\d+))', path)
+        uploaded = re.fullmatch(r'/api/platform/datasets/([a-f0-9]{32})/(files|finish|import-next|images/(\d+))', path)
         if uploaded:
             from .uploaded_datasets import DatasetStore, MAX_IMAGE
             store = DatasetStore(service.repo)
             identifier, action, image_index = uploaded.groups()
+            if write and action == 'import-next':
+                from .dataset_import import DatasetImporter
+                self._body()
+                self._data(DatasetImporter(service.repo).next(identifier))
+                return
             if write and action == 'files':
                 query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
                 if set(query) != {'path'} or len(query['path']) != 1:

@@ -9,6 +9,7 @@ import uuid
 
 from .paths import env_path
 from .platform_config import PlatformError
+from .platform_paths import relative_path
 from .repository import JsonRepository
 from .uploaded_images import IMAGE_TYPES, MAX_IMAGE, normalize_image
 
@@ -64,7 +65,7 @@ class DatasetStore:
         JsonRepository._atomic_write(directory / 'dataset.json', value)
         return value
 
-    def put(self, identifier, relative, content):
+    def put(self, identifier, relative, content, server_import=False):
         # Reject Windows drive names, ADS, reserved filenames and escaping paths.
         parts = str(relative).split('/')
         if (not parts or len(parts) > 3 or any(not p or p in ('.', '..') or
@@ -74,6 +75,8 @@ class DatasetStore:
         normalized, image_metadata = normalize_image(content, PurePosixPath(relative).suffix.lower())
         with UPLOAD_LOCK:
             value = self.get(identifier, False)
+            if not server_import and (self.directory(identifier) / '.server-import.json').exists():
+                raise PlatformError('路径导入不能混入浏览器上传文件', 409)
             if value['status'] != 'uploading':
                 raise PlatformError('已登记数据集不可修改；请上传为新版本', 409)
             split_layout = value.get('layout') == 'split'
@@ -128,6 +131,9 @@ class DatasetStore:
                 return value
             if not value['count']:
                 raise PlatformError('请先上传图片')
+            import_plan = self.directory(identifier) / '.server-import.json'
+            if import_plan.is_file() and value['count'] != len(json.loads(import_plan.read_text(encoding='utf-8'))['files']):
+                raise PlatformError('服务器目录尚未导入完成', 409)
             value['items'].sort(key=lambda item: item['path'])
             split_layout = value.get('layout') == 'split'
             if split_layout:
@@ -173,6 +179,8 @@ class DatasetStore:
                 JsonRepository._atomic_write(self.directory(identifier) / 'manifest.json',
                     dict(classes=value['classes'], domains=['uploaded'], records={'uploaded': records}))
             JsonRepository._atomic_write(self.directory(identifier) / 'dataset.json', value)
+            # No absolute source path dependency remains in a registered dataset.
+            import_plan.unlink(missing_ok=True)
             return value
 
     def image(self, identifier, index):
@@ -194,12 +202,16 @@ class DatasetStore:
 
     def configure(self, raw, group):
         value = self.training(group)
-        raw['data'].update(type='domainnet', root=os.path.relpath(self.directory(value['id']) / 'images', self.repo), splits=[0.7, 0., 0.3])
+        raw['data'].update(type='domainnet', root=relative_path(self.repo, self.directory(value['id']) / 'images'), splits=[0.7, 0., 0.3])
         raw['model']['num_classes'] = len(value['classes'])
-        raw['ggeur'].update(domainnet_domains=['uploaded'], domainnet_manifest_path=os.path.relpath(self.directory(value['id']) / 'manifest.json', self.repo), domainnet_shared_classes_only=False,
+        raw['ggeur'].update(domainnet_domains=['uploaded'], domainnet_manifest_path=relative_path(self.repo, self.directory(value['id']) / 'manifest.json'), domainnet_shared_classes_only=False,
             use_feature_cache=True, require_complete_feature_cache=True,
             domain_stratified_sampling=False, domain_sampling_group_num=1,
-            feature_cache_dir=os.path.relpath(self.directory(value['id']) / 'features', self.repo),
-            cnn_checkpoint_path=os.path.relpath(self.repo / 'resources/torch/hub/checkpoints/convnext_base-6075fbad.pth', self.repo),
+            feature_cache_dir=relative_path(self.repo, self.directory(value['id']) / 'features'),
+            cnn_checkpoint_path=relative_path(self.repo, self.repo / 'resources/torch/hub/checkpoints/convnext_base-6075fbad.pth'),
             cnn_backbone='convnext_base', cnn_pretrained=False)
+        if raw['ggeur'].get('feature_extractor') == 'clip':
+            raw['ggeur'].update(clip_model='ViT-B-16', clip_pretrained='openai', embedding_dim=512,
+                clip_model_path=relative_path(self.repo, self.repo / 'resources/models/ViT-B-16.pt'),
+                feature_cache_dir=relative_path(self.repo, self.directory(value['id']) / 'features/vit-b16'))
         return value

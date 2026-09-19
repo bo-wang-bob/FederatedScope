@@ -74,3 +74,24 @@ def test_upload_length_is_validated_before_read(endpoint):
     upload = '/api/platform/datasets/' + 'a' * 32 + '/files?path=bees%2Fa.png'
     assert endpoint(upload, b'', 'application/octet-stream', {'Content-Length': 'wrong'})[0] == 400
     assert endpoint(upload, b'', 'application/octet-stream', {'Content-Length': str(26 * 1024 ** 2)})[0] == 413
+
+
+def test_server_path_import_routes_and_guards(endpoint, tmp_path, monkeypatch):
+    source = tmp_path / 'server-source'
+    source.mkdir()
+    (source / 'one.png').write_bytes(png((1, 2, 3)))
+    monkeypatch.setenv('FS_PLATFORM_IMPORT_ROOTS', json.dumps([str(source)]))
+    body = json.dumps(dict(path=str(source), kind='test')).encode()
+    route = '/api/platform/datasets/import'
+    assert endpoint(route, body, extra={'Origin': 'https://untrusted.example'})[0] == 403
+    assert endpoint(route, body, 'application/octet-stream')[0] == 415
+    status, response = endpoint(route, body)
+    assert status == 200, response
+    identifier = response['data']['id']
+    status, response = endpoint(f'/api/platform/datasets/{identifier}/import-next', b'{}')
+    assert status == 200, response
+    assert response['data'] == dict(count=1, total=1)
+    status, response = endpoint(f'/api/platform/datasets/{identifier}/finish', b'{}')
+    assert status == 200, response
+    assert response['data']['status'] == 'ready'
+    assert response['data']['kind'] == 'test'

@@ -85,7 +85,7 @@ def prepare(spec):
     cfg.merge_from_file(spec['configPath'])
     if spec['request']['group'].startswith('uploaded_'):
         from .uploaded_features import prepare_uploaded
-        prepare_uploaded(cfg, spec['request']['group'])
+        spec['_uploadedFeatureSource'] = prepare_uploaded(cfg, spec['request']['group'])
     setup_seed(cfg.seed)
     data, modified = get_data(cfg.clone())
     cfg.merge_from_other_cfg(modified)
@@ -478,6 +478,8 @@ def train(spec):
         artifact = torch.load(artifact_path, map_location='cpu', weights_only=True)
         artifact['backbone'] = portable_backbone(artifact['backbone'])
         artifact['featureSpace'] = info['featureSpace']
+        if spec.get('_uploadedFeatureSource'):
+            artifact['uploadFeatureSource'] = spec['_uploadedFeatureSource']
         torch.save(artifact, artifact_path)
     checkpoint_manifest = checkpoint.parent / 'checkpoint_manifest.json'
     if checkpoint_manifest.is_file():

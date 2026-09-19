@@ -2,6 +2,24 @@
 
 训练集、测试文件夹、单张图片使用同一上传解码流程。
 
+## 服务器路径导入（Windows / Ubuntu）
+
+操作电脑通过浏览器访问 Ubuntu 服务时，“本机上传”选择操作电脑上的文件；“服务器路径”读取运行后端的服务器磁盘，不会通过浏览器重新传输图片。
+
+在上传训练集、上传测试集、上传单张图片窗口切换到“服务器路径”，分别填写例如 `/data/datasets/train`、`/data/datasets/test`、`/data/datasets/test/001.jpg`。名称可留空，自动取目录/文件名。训练集格式为 `train/类别名/图片`；测试集可为 `test/图片` 或 `test/类别名/图片`。无标签测试输出预测，不计算准确率。
+
+默认允许后端 `resources/datasets`（或 `FS_PLATFORM_DATASETS`）下的路径；相对路径以**后端根目录**为基准。管理员需要导入其他目录时，在启动后端的同一个终端设置实际数据目录，再按原命令启动后端：
+
+```bash
+export FS_PLATFORM_IMPORT_ROOTS='["/data/datasets"]'
+```
+
+多个允许目录写成 JSON 数组；Windows 同样支持，例如 PowerShell：`$env:FS_PLATFORM_IMPORT_ROOTS='["D:/datasets"]'`。使用 systemd 时配置该服务的环境变量并重启。后端运行账号必须对源目录具有读取权限。不要把系统根目录或整个用户目录开放为导入目录；保持平台仅向可信用户开放。
+
+导入会检查目录范围、禁止链接/目录联接，逐张解码、复制原图并生成规范化图片。源文件不修改，不会移动或删除；登记后训练与测试只依赖平台 `resources/uploaded_datasets/<id>/`，打包应一并携带该目录，无需原服务器路径。大目录按单图请求推进，并显示进度；中断后在原窗口重试可从已保存进度继续。未完成导入不会出现在可用数据集列表中；关闭窗口后再次导入会创建新版本。仍需为原图副本与规范化文件预留磁盘空间。
+
+普通上传训练默认使用冻结的 ViT-B/16（本地 resources/models/ViT-B-16.pt），FedAvg、FedProx、本架构均训练分类头。ViT 缓存放在上传目录 features/vit-b16，与原 CNN 缓存隔离。新模型保存权重、数据和预处理指纹；上传测试按所选模型恢复对应骨干，已有 ConvNeXt 模型仍使用 CNN。隐私实验继续使用原 CNN 预设，不因普通训练默认值改变。
+
 支持扩展名：jpg、jpeg、jpe、jfif、png、apng、webp、bmp、dib、tif、tiff、gif、avif、heic、heif、jp2、j2k、ppm、pgm、pbm、pnm、tga，大小写均可。RAW、SVG、PSD、视频不在本接口支持范围内，应先转换为 PNG/JPG；前端会报错，不静默漏掉这些文件。
 
 新上传图片经过真实解码、EXIF 方向校正、第一帧/第一页选择及 RGB 转换（透明部分为白底），作为无元数据的静态 PNG 供预览、特征提取与推理使用。原文件独立保存在对应上传目录的 originals/，清单记录原路径、原文件与规范化文件哈希、实际格式、尺寸和转换版本。已有上传与缓存不做回写转换。

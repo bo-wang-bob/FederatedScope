@@ -2,6 +2,29 @@
 from pathlib import Path
 
 
+def feature_source(checkpoint, training, directory):
+    """Never pick an arbitrary cache after training two different backbones."""
+    import json
+    from .uploaded_features import profile
+    kind = checkpoint.get('backbone', {}).get('feature_extractor')
+    _, dimension, preprocessing = profile(kind)
+    if checkpoint['architecture']['input_dim'] != dimension:
+        raise ValueError('分类头与骨干维度不一致')
+    source = checkpoint.get('uploadFeatureSource')
+    if source is None:
+        if kind != 'cnn':
+            raise ValueError('ViT 模型缺少训练时的特征来源记录，请重新训练')
+        sources = [json.loads(p.read_text(encoding='utf-8'))['source'] for p in (directory / 'features').glob('*.json')]
+        matches = [s for s in sources if s.get('dataset') == training['fingerprint'] and s.get('preprocessing') == preprocessing]
+        unique = {json.dumps(s, sort_keys=True): s for s in matches}
+        if len(unique) != 1:
+            raise ValueError('无法唯一确认旧 CNN 模型的训练特征来源')
+        source = next(iter(unique.values()))
+    if source.get('dataset') != training['fingerprint'] or source.get('preprocessing') != preprocessing:
+        raise ValueError('模型与训练数据或预处理版本不一致')
+    return kind, source
+
+
 def run(spec):
     import torch
     from scripts.test_outline_validation.evaluate_saved_mlp import build_model
@@ -23,14 +46,9 @@ def run(spec):
     model.load_state_dict(checkpoint['state_dict'], strict=True)
     model.eval()
     torch.set_num_threads(2)
-    backbone, weight = extractor(repo)
-    # Upload training always uses this local frozen backbone, checked by preflight.
-    cache_metadata = list((store.directory(training['id']) / 'features').glob('*.json'))
-    if not cache_metadata:
-        raise ValueError('缺少训练时的骨干权重指纹')
-    import json
-    expected = json.loads(cache_metadata[0].read_text(encoding='utf-8'))['source']['weights']
-    if digest(weight) != expected:
+    kind, source = feature_source(checkpoint, training, store.directory(training['id']))
+    backbone, weight = extractor(repo, kind=kind)
+    if digest(weight) != source['weights']:
         raise ValueError('骨干权重与训练时不同，拒绝使用不同特征空间')
     names, rows = spec['classNames'], []
     matrix = np.zeros((len(names), len(names)), dtype=np.int64)
@@ -41,7 +59,7 @@ def run(spec):
             for i, file in zip(indices, files):
                 if digest(file) != value['items'][i]['sha256']:
                     raise ValueError('测试图片内容已改变')
-            logits = model(backbone(tensors(files)).float())
+            logits = model(backbone(tensors(files, getattr(backbone, 'upload_transform', None))).float())
             if logits.shape[1] != len(names) or not torch.isfinite(logits).all():
                 raise ValueError('模型输出类别或数值非法')
             scores = torch.softmax(logits, dim=-1)

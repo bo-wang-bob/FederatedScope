@@ -18,6 +18,10 @@ from PIL import Image
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--report', type=Path)
+    args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     root = Path(tempfile.mkdtemp(prefix='upload-smoke-', dir=repo.parent / '.runtime-temp'))
     with socket.socket() as probe:
@@ -82,11 +86,17 @@ def main():
         report['formats'] = suffixes
         assert training['classes'] == ['Alpha', 'Beta']
         group = next(g for g in api('catalog')['groups'] if g['id'] == training['group'])
+        assert group['backbone'] == 'vit'
+        report['backbone'] = 'ViT-B-16'
         trained = None
         for method in group['methods']:
             request = {**method['defaults'], 'rounds': 1, 'localEpochs': 1, 'batchSize': 8, 'samplesPerClient': 0, 'gpu': -1, 'name': '上传链路验收 ' + method['id']}
             check = job('inspect', request)
             trained = job('train', {**request, 'preflightId': check['id']})
+            import torch
+            saved = torch.load(root / 'state/jobs' / trained['id'] / 'checkpoints/mlp_final.pt', map_location='cpu', weights_only=True)
+            assert saved['backbone']['feature_extractor'] == 'clip' and saved['architecture']['input_dim'] == 512
+            assert saved['uploadFeatureSource']['preprocessing'] == 'openclip-vit-b16-openai-eval-float32-v1'
         model = next(m for m in api('library')['models'] if m['jobId'] == trained['id'] and m['kind'] == 'final')
         samples = api(f'testsets/{trained["id"]}/samples?offset=0&limit=12')
         assert samples['items'] and all(item['imageAvailable'] for item in samples['items'])
@@ -120,7 +130,7 @@ def main():
             process.terminate()
             process.wait(timeout=15)
             log.close()
-            (repo.parent / 'upload-workflow-smoke.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+            (args.report or repo.parent / 'upload-workflow-smoke.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(report, ensure_ascii=False), flush=True)
 
 
