@@ -59,12 +59,17 @@ export interface UploadedPrediction {
     confidence: number; correct: boolean | null; imageUrl: string }[];
 }
 export interface Library { models: LibraryItem[]; testsets: LibraryItem[] }
+export interface BackdoorTestsetInfo {
+  id: string; name: string; count: number; skipped: number; unlabelled: number;
+}
 export interface BackdoorTestset {
   exported: boolean; total: number; maxIds: number; base: string; message?: string;
   classNames: string[];
   domains: { name: string; count: number }[];
   labels: { index: number; name: string; count: number }[];
   runs: { attack: string | null; defense: string | null };
+  /** 当前应用的上传测试集; 未上传时为空 */
+  testset?: BackdoorTestsetInfo | null;
 }
 export interface BackdoorPick { ids: string[]; labels: number[]; total: number; count: number; seed?: number;
   /** 是否按"攻击命中 ∧ 防御拦住"加权抽样（后端有全测试集预测缓存时为 true） */
@@ -97,6 +102,8 @@ export interface BackdoorTrainingDataset { id: string; name: string; classes: nu
 export interface BackdoorTrainingGroup {
   token: string; base: string; baseline: string; attack: string; defense: string;
   dataRoot: string; datasetId: string; datasetName: string; classes: string[]; createdAt: string;
+  testsetId?: string; testsetName?: string; testsetCount?: number; testsetSkipped?: number;
+  testsetUnlabelled?: number; testsetAppliedAt?: string;
 }
 export interface BackdoorTrainingJob {
   id: string; action: string; token: string; datasetId: string; datasetName: string; base: string;
@@ -107,6 +114,7 @@ export interface BackdoorTrainingJob {
 export interface BackdoorTrainingStatus {
   runnable: boolean; datasets: BackdoorTrainingDataset[]; templates: BackdoorTrainingTemplate[];
   missing: string[]; base: string; job: BackdoorTrainingJob | null; group: BackdoorTrainingGroup | null;
+  testsets?: BackdoorTrainingDataset[];
 }
 export const backdoorImageUrl = (id: string) => `/api/platform/backdoor/testset/${id}/image`;
 export const terminal = (status: string) => ['completed', 'failed', 'stopped', 'interrupted'].includes(status);

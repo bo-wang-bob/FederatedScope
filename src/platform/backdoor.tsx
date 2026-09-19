@@ -6,6 +6,7 @@ import { api, backdoorImageUrl, key, terminal, type BackdoorJob, type BackdoorPi
 import { IMAGE_KEYS, imageMeta, readable, type ImageKey } from './backdoorShared';
 import { backdoorCompareHref } from './navigation';
 import { BackdoorTrainingPanel } from './backdoorTraining';
+import { DatasetUpload, type UploadedDataset } from './datasetUpload';
 import './backdoor.css';
 
 const MAX_IDS = 20;
@@ -87,7 +88,17 @@ export function BackdoorLab() {
   const result = job?.status === 'completed' ? job.result : undefined;
   const busy = submitting || !!job && !terminal(job.status);
   const classNames = testset?.classNames || result?.classNames || [];
-  const nameOf = (index: number) => index < classNames.length ? classNames[index] : String(index);
+  const nameOf = (index: number) => index === -1 ? '未标注' : index < classNames.length ? classNames[index] : String(index);
+
+  // 上传测试集后立即应用到当前结果组: 重建挑图/对比用的测试集图片
+  const applyTestset = async (dataset: UploadedDataset) => {
+    if (dataset.kind !== 'test') return;
+    try {
+      await api<{ count: number }>('backdoor/testset/apply', { datasetId: dataset.id });
+      setError('');
+      setRefresh(value => value + 1);
+    } catch (e) { setError(String((e as Error).message || e)); }
+  };
 
   const generate = async () => {
     if (!ids.length || busy) return;
@@ -112,9 +123,25 @@ export function BackdoorLab() {
   return <div className="backdoor-lab">
     <BackdoorTrainingPanel onCompleted={() => setRefresh(value => value + 1)} />
     {!testset ? <div className="studio-loading"><Spin size="large" /></div> : !testset.exported ?
-      <div className="studio-empty-state"><SafetyCertificateOutlined /><h2>测试集尚未导出</h2><p>{testset.message || '还没有可对比的攻防实验结果'}</p><p className="platform-muted">在上方选择数据集并启动训练，完成后会自动导出测试集图片。</p></div> : <>
+      <div className="studio-empty-state">
+        <SafetyCertificateOutlined />
+        {testset.runs.attack ? <>
+          <h2>尚未上传测试集</h2>
+          <p>对比测试将在你上传的测试集上进行，而不是后端自动划分的数据。</p>
+          <p className="platform-muted">请上传按 类别/图片 组织的图片文件夹，类别名需与训练集一致；不上传则无法进行测试。</p>
+          <DatasetUpload kind="test" onSaved={dataset => void applyTestset(dataset)} />
+          {error && <Alert className="backdoor-training-error" type="error" showIcon title={error} />}
+        </> : <>
+          <h2>还没有可测试的实验</h2>
+          <p>{testset.message || '还没有攻防实验结果'}</p>
+          <p className="platform-muted">在上方选择数据集并启动训练，三个攻防实验完成后上传测试集即可开始测试。</p>
+        </>}
+      </div> : <>
     <Card className="platform-panel backdoor-picker" title={<span><ScanOutlined /> 选择测试图片</span>}
-      extra={<Space><Select aria-label="图片数量" value={count} disabled={busy} onChange={setCount} options={[5, 10, 15, 20].map(value => ({ value, label: value + ' 张' }))} />
+      extra={<Space>
+        {testset.testset && <Tag color="blue" title={`测试集 ${testset.testset.name}`}>{testset.testset.name} · {testset.testset.count} 张{testset.testset.skipped ? ` · 跳过 ${testset.testset.skipped}` : ''}{testset.testset.unlabelled ? ` · 未标注 ${testset.testset.unlabelled}` : ''}</Tag>}
+        <DatasetUpload kind="test" onSaved={dataset => void applyTestset(dataset)} />
+        <Select aria-label="图片数量" value={count} disabled={busy} onChange={setCount} options={[5, 10, 15, 20].map(value => ({ value, label: value + ' 张' }))} />
         <Button icon={<ReloadOutlined />} disabled={busy || picking} onClick={reroll}>换一批</Button></Space>}>
       <div className="backdoor-filters">
         <label><span>测试域</span><Select aria-label="测试域" placeholder="全部域" allowClear value={domain} disabled={busy} onChange={value => { setDomain(value); setLabel(undefined); }} options={testset.domains.map(item => ({ value: item.name, label: `${item.name} (${item.count})` }))} /></label>

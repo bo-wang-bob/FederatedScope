@@ -5,7 +5,7 @@ import { api, statusText, type BackdoorTrainingJob, type BackdoorTrainingStatus 
 import { DatasetUpload } from './datasetUpload';
 import './backdoor.css';
 
-const EXPORT_STAGE = '导出测试集';
+const EXPORT_STAGE = '配置测试集';
 const DEFAULT_STAGES = ['干净基线（无攻击）', 'SABRE 后门攻击', 'SABRE 攻击 + multi_metrics 防御'];
 
 // 后门研究的训练面板: 选一个上传的数据集, 依次跑 干净基线 -> SABRE 攻击 -> SABRE+防御,
@@ -127,8 +127,10 @@ export function BackdoorTrainingPanel({ onCompleted }: { onCompleted?: () => voi
     </p>}
     {job?.status === 'failed' && job.error && <Alert className="backdoor-training-error" type="error" showIcon title={job.error}
       action={<Button size="small" onClick={() => void openLogs()}>日志</Button>} />}
-    {!job && safe?.group && <Alert type="success" showIcon title={`当前结果组：${safe.group.datasetName}`}
-      description={'三个实验已完成，下方挑图与对比即使用该结果；重新启动训练会生成新的结果组。'} />}
+    {!job && safe?.group && <Alert type="success" showIcon title={`当前结果组：${safe.group.datasetName}${safe.group.testsetName ? ` · 测试集：${safe.group.testsetName}` : ' · 未上传测试集'}`}
+      description={safe.group.testsetName
+        ? '三个实验已完成，下方挑图与对比即使用该结果与测试集；重新启动训练会生成新的结果组。'
+        : '三个实验已完成；上传测试集后即可开始挑图对比，重新启动训练会生成新的结果组。'} />}
     {!running && !datasets.length && !error && <Alert type="info" showIcon title="还没有可用的数据集"
       description="点击右上角「添加数据集」上传按类别组织的图片文件夹，然后在这里启动三个攻防实验。" />}
     {!running && !!safe?.missing?.length && <Alert type="warning" showIcon title={'缺少实验配置模板：' + safe.missing.join('、')} />}
