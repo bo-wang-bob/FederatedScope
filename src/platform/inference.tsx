@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Collapse, Empty, Modal, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip } from 'antd';
+import { Alert, Button, Card, Empty, Modal, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip } from 'antd';
 import { ArrowLeftOutlined, ArrowRightOutlined, DownloadOutlined, ExpandOutlined, PictureOutlined, ScanOutlined } from '@ant-design/icons';
 import { api, methodLabel, percent, terminology, terminal, type Job, type Library, type Prediction, type SamplePage, type TestSample } from './api';
 import { modelHref } from './navigation';
@@ -21,7 +21,6 @@ export function PredictionPanel({ job, open }: { job?: Job; open?: (id: string) 
       <div className={`experience-ground-truth ${result.correct ? 'matched' : 'mismatched'}`}><div><span>真实标签</span><b>{result.labelName.replaceAll('_', ' ')}</b></div><Tag color={result.correct ? 'success' : 'warning'}>{result.correct ? '预测一致' : '预测不一致'}</Tag></div>
       <div className="experience-ranks"><h3>TOP {result.topK.length}<span>分类分数</span></h3>{result.topK.map((item, index) => <div className="experience-rank" key={item.classIndex}><div><span><i>{String(index + 1).padStart(2, '0')}</i>{item.className.replaceAll('_', ' ')}</span><b>{percent(item.score)}</b></div><div className="experience-rank-track"><span style={{ width: `${item.score * 100}%` }} /></div></div>)}</div>
       <Space wrap>{open && <Button type="link" onClick={() => open(job!.id)}>完整记录 <ArrowRightOutlined /></Button>}<Button type="link" href={`/api/platform/jobs/${job!.id}/export`} icon={<DownloadOutlined />}>导出结果</Button></Space>
-      <Collapse ghost size="small" items={[{ key: 'version', label: '运行详情与来源', children: <div className="experience-version"><div className="experience-runtime"><span>分类器批次计算 <b>{result.inferenceMs.toFixed(1)} ms</b></span><span>加载与推理 <b>{result.elapsedSeconds.toFixed(2)} s</b></span></div>{[['模型 SHA-256', result.checkpointSha256], ['测试特征包 SHA-256', result.testBundleSha256], ['当前原图 SHA-256', result.imageSha256], ['样本清单 SHA-256', result.manifestSha256], ['样本关联方式', result.testProvenance], ['推理口径', result.inferenceContract]].map(([label, value]) => <p key={label}><span>{label}</span><code>{value}</code></p>)}</div> }]} />
     </>}
   </Card>;
 }

@@ -18,8 +18,8 @@ it('shows only FedMIA-II metrics, distribution and sample predictions', async ()
     status: 'completed', stage: '完成', metrics: [], clients: {},
     featureStorage: { files: 6, rounds: [199], directory: 'features', resultsReady: true } };
   const metric = { auc: .92, tprAt1Fpr: .75, actualFpr: .01, threshold: .65, members: 1, nonmembers: 1 };
-  const result = { dataset: 'MilitaryAircraft3D', defense: false, clientId: 1, clientIds: [1, 2],
-    thresholdPolicy: 'FPR≤1%', rounds: [199], indexedWarning: null,
+  const result = { dataset: 'military_cnn', defense: false, clientId: 1, clientIds: [1, 2],
+    thresholdPolicy: 'mix 校准，经验 FPR≤1%；真实图片使用 test 分数', rounds: [199], indexedWarning: 'indexed 截断至影子客户端最短有效长度',
     metrics: { fedmia_i: { ...metric, threshold: .1234 }, fedmia_ii: metric },
     samples: {
       member: [{ domain: 'aerial', className: 'C-17', scores: { fedmia_i: .1, fedmia_ii: .83 },
@@ -45,6 +45,25 @@ it('shows only FedMIA-II metrics, distribution and sample predictions', async ()
   expect(samples.getByText('攻击分数：0.8300')).toBeVisible();
   expect(samples.getByText('成员', { exact: true })).toBeVisible();
   expect(screen.getByText(/均值差 0.6300/)).toBeVisible();
+  expect(screen.queryByText('military_cnn')).not.toBeInTheDocument();
+  expect(screen.queryByText(/mix 校准|indexed 截断|使用 1 个保存轮次|展示分布与 Mix|越大越容易/)).not.toBeInTheDocument();
+}, 15000);
+
+it.each(['实验名称', 'MilitaryAircraft3D', '无防御', '45 个文件', '已完成', 'Enter', ' '])('opens experiment from row target %s', async target => {
+  const job = { id: 'c'.repeat(32), request: { ...defaults, name: '实验名称' }, action: 'train',
+    status: 'completed', stage: '完成', metrics: [], clients: {}, featureStorage: { files: 45, rounds: [1], resultsReady: false } };
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(url => {
+    const path = String(url);
+    return response(path.endsWith('/catalog') ? catalog : path.endsWith('/jobs') ? [job] : job);
+  });
+  render(<PrivacyLab />);
+  await screen.findByText('尚未找到数据集');
+  fireEvent.click(screen.getByRole('tab', { name: /结果展示/ }));
+  const row = await screen.findByRole('row', { name: '查看实验 实验名称' });
+  if (target === 'Enter' || target === ' ') fireEvent.keyDown(row, { key: target });
+  else fireEvent.click(within(row).getByText(target));
+  await waitFor(() => expect(row).toHaveAttribute('aria-selected', 'true'));
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/jobs/' + job.id))).toHaveLength(1);
 }, 15000);
 
 it('opens local experiment results directly without the historical replay entry', async () => {
