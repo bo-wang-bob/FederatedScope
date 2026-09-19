@@ -65,7 +65,7 @@ export function BackdoorTrainingPanel({ onCompleted }: { onCompleted?: () => voi
     if (running || starting || !datasets.length) return;
     setStarting(true); setError('');
     try {
-      const created = await api<BackdoorTrainingJob>('backdoor/training/start', {
+      const created = await api<BackdoorTrainingJob>('backdoor/training', {
         ...(selected ? { datasetId: selected } : {}),
         ...(rounds ? { rounds } : {}),
       });
