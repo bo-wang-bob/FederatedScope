@@ -1,6 +1,12 @@
 # project specific
 doc/build
 
+.workbuddy/
+# local experiment outputs and bulk data
+/.tmp-port/
+/_runs/
+/dataset/
+
 # ml log
 wandb/
 

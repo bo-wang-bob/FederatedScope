@@ -119,6 +119,9 @@ class GGEUREvalServer(GGEURServer):
         splits = tuple(getattr(self._cfg.data, 'splits', (0.7, 0.0, 0.3)))
         train_ratio, val_ratio = splits[0], splits[1]
         seed = getattr(self._cfg, 'seed', 123)
+        # 便携 manifest 的 per-domain records; 仅在 domainnet(上传数据集) 分支
+        # 被赋值, 其余分支保持 None 走原始目录扫描。
+        records_by_domain = None
 
         if 'office' in data_type and 'home' in data_type:
             domains = ['Art', 'Clipart', 'Product', 'Real_World']
@@ -139,6 +142,20 @@ class GGEUREvalServer(GGEURServer):
             dataset_class = DomainNet
             _, classes = discover_domainnet_metadata(data_root, domains, False)
             dataset_kwargs = {'classes': classes}
+        elif 'domainnet' in data_type:
+            # 用户上传的数据集: 没有 <domain>/<class>/ 层级, 只有一份便携
+            # manifest 描述每条样本的路径/标签(/划分)。不传 records 的话
+            # DomainNet 会退回扫描原始目录树并静默得到空数据集 —— 结果是
+            # 测试集导出与 ASR 评估全部失效, 因此这里必须显式带上 records。
+            from federatedscope.cv.dataset.domainnet import DomainNet
+            dataset_class = DomainNet
+            domains = list(getattr(
+                self.ggeur_cfg, 'domainnet_domains', ['uploaded']) or ['uploaded'])
+            bundle = load_manifest(
+                getattr(self.ggeur_cfg, 'domainnet_manifest_path', None),
+                data_root)
+            dataset_kwargs = {'classes': bundle['classes']}
+            records_by_domain = bundle['records']
         else:
             self.a3fl_test_loaded = True
             return
@@ -151,6 +168,9 @@ class GGEUREvalServer(GGEURServer):
         ])
 
         for domain in domains:
+            per_domain_kwargs = dict(dataset_kwargs)
+            if records_by_domain is not None:
+                per_domain_kwargs['records'] = records_by_domain.get(domain, [])
             dataset = dataset_class(root=data_root,
                                     domain=domain,
                                     split='test',
@@ -158,8 +178,10 @@ class GGEUREvalServer(GGEURServer):
                                     train_ratio=train_ratio,
                                     val_ratio=val_ratio,
                                     seed=seed,
-                                    **dataset_kwargs)
+                                    **per_domain_kwargs)
             if len(dataset) == 0:
+                logger.warning(
+                    "Server: test split of domain '%s' is empty, skipped", domain)
                 continue
             self.a3fl_test_loaders[domain] = DataLoader(dataset,
                                                         batch_size=32,
@@ -203,6 +225,41 @@ def load_config(config_yaml_path):
     with open(config_yaml_path, 'r') as f:
         raw = yaml.safe_load(f)
     return _dict_to_ns(raw)
+
+
+def load_manifest(manifest_path, data_root):
+    """读取上传数据集的便携 manifest。
+
+    Returns:
+        dict(classes=[...], domains=[...], records={domain: [record, ...]})
+    找不到或格式不对时返回空结构 —— 调用方据此退化为"无记录"。
+    """
+    empty = dict(classes=[], domains=[], records={})
+    if not manifest_path:
+        return empty
+    candidates = [manifest_path]
+    # 平台写入的多是相对仓库的路径, 这里两者都试一遍
+    try:
+        candidates.append(os.path.join(data_root or '', manifest_path))
+        candidates.append(os.path.join(os.path.dirname(str(data_root) or ''),
+                                       manifest_path))
+    except TypeError:
+        pass
+    for candidate in candidates:
+        if not candidate or not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            continue
+        records = raw.get('records') or {}
+        if records and not isinstance(records, dict):
+            continue
+        return dict(classes=list(raw.get('classes') or []),
+                    domains=list(raw.get('domains') or records.keys()),
+                    records={str(k): v for k, v in records.items()})
+    return empty
 
 
 def find_artifacts(run_dir):

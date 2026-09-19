@@ -1,0 +1,195 @@
+# GGEUR + CNN (ConvNeXt-Base) + SABRE
+#
+# Small runnable test config derived from `ggeur_cnn_convnext.yaml`.
+# Goal:
+# - keep the CNN feature-extractor path
+# - enable SABRE full-image additive backdoor attack
+# - reduce client count / rounds / augmentation cost for quick testing
+
+use_gpu: True
+device: 0
+seed: 42
+verbose: 1
+
+aggregator:
+  robust_rule: ''
+  byzantine_node_num: 0
+  BFT_args: {}
+
+federate:
+  method: 'ggeur'
+  mode: 'standalone'
+  client_num: 15
+  total_round_num: 100
+  sample_client_num: 15
+  master_port: 29501
+
+data:
+  # 模拟"用户上传自己的数据集": 这份数据没有 <域>/<类>/ 的 DomainNet 层级,
+  # 而是已经划分好的 train/ 与 test/ 两份。平台和 here 走同一条通道 --
+  # domainnet + 便携 manifest(带显式 split), DomainNet 见到 split 字段后
+  # 会跳过随机切分, 直接按 manifest 的划分取数据。
+  #   manifest 由 scripts/backdoor/build_uploaded_manifest.py 生成
+  type: 'domainnet'
+  root: 'C:\Users\pc\Desktop\logs\FederatedScope\dataset'
+  splits: [0.7, 0.0, 0.3]
+
+dataloader:
+  batch_size: 16
+  num_workers: 0
+
+model:
+  type: 'ggeur_mlp'
+  num_classes: 20
+
+train:
+  local_update_steps: 1
+  optimizer:
+    type: 'Adam'
+    lr: 0.0001
+
+eval:
+  freq: 1
+
+attack:
+  attack_method: ''
+  attacker_id: [1, 2, 3]
+  inject_round: 0
+  target_label_ind: 0
+  poison_ratio: 0.4
+  scale_poisoning: False
+  aggregate_benign_only: false
+  scale_para: 1.0
+  sabre:
+    # Start after the clean classifier has formed a useful boundary.
+    start_round: 40
+    # Keep attack active through the end of this 50-round run.
+    poison_epochs: 41
+
+    # SABRE objective on the GGEUR MLP head:
+    # weighted clean CE + weighted poison CE
+    #   + anchor_loss_weight * distance(poisoned, clean_anchor)
+    clean_ce_weight: 1.0
+    poison_ce_weight: 2.5
+    anchor_loss_weight: 0.25
+    clean_target_suppression_weight: 2.5
+    clean_target_margin: 0.5
+    constrain_update_to_anchor: True
+    anchor_residual_gamma: 0.65
+
+    # Clean-anchor model trained on clean augmented features each attack round.
+    clean_anchor_lr: 0.0001
+    clean_anchor_epochs: 2
+
+    # Poisoned local optimization.
+    poison_lr: 0.001
+    poison_optimizer: 'Adam'
+    internal_poison_epochs: 5
+    poisoning_per_batch: 12
+    preserve_clean_batches: True
+    trigger_update_interval: 10
+
+    # Full-image additive trigger. Inputs are normalized tensors, so keep
+    # the perturbation small and clip final poisoned images conservatively.
+    trigger_init_mode: 'uniform'
+    trigger_init: 0.0
+    trigger_seed: 42
+    trigger_random_scale: 0.01
+    image_clip_min: -3.0
+    image_clip_max: 3.0
+    max_poison_samples: 0
+    poison_feature_repeat: 1
+
+    # Optional adaptive search for the full-image trigger.
+    trigger_search_steps: 5
+    trigger_search_batches: 2
+    trigger_search_batch_size: 8
+    trigger_search_lr: 0.005
+    trigger_search_clip_min: -0.08
+    trigger_search_clip_max: 0.08
+    trigger_search_proj_norm: 8.0
+    trigger_search_target_margin: 1.0
+    trigger_search_gain_weight: 0.5
+    trigger_search_gain_margin: 0.5
+    trigger_search_l2_weight: 0.0001
+
+adaptive_dp:
+  # 必须关闭: cfg_security 规定 backdoor 模式下不能启用隐私保护。
+  use: false
+  initial_clip: 0.8
+  target_quantile: 0.7
+  ema: 0.9
+  min_clip: 0.05
+  max_clip: 10.0
+  noise_multiplier: 0.01
+  seed: 0
+
+ggeur:
+  use: True
+
+  # Feature extractor (ViT)
+  feature_extractor: 'clip'
+  clip_model: 'ViT-B-16'
+  clip_pretrained: 'openai'
+  clip_model_path: 'C:\Users\pc\sf\FL\open_clip_vitb16.bin'
+  embedding_dim: 512
+
+
+  use_feature_cache: True
+  feature_cache_dir: 'C:\Users\pc\Desktop\logs\FederatedScope\exp\defense_tests\feature_cache'
+  head_only_mode: True
+  headonly_skip_round0_if_augmented_cache_exists: True
+
+  # 单一域名 'uploaded' 表示"用户上传", 与平台的上传数据集完全一致。
+  domainnet_domains: ['uploaded']
+  domainnet_manifest_path: 'C:\Users\pc\Desktop\logs\FederatedScope\dataset\manifest.json'
+  domainnet_shared_classes_only: False
+
+  # Smaller augmentation budget for quick smoke testing.
+  num_generated_per_sample: 0
+  num_generated_per_prototype: 0
+  target_size_per_class: 0
+
+  # Linear head keeps the setup simple.
+  mlp_hidden_dim: 0
+  mlp_dropout: 0.0
+
+  use_cross_client_prototypes: True
+  statistics_round: 0
+
+  #FLAME defense
+  # defense_method: 'flame'
+  # flame_lambda_noise: 0.001
+  # flame_weighted_avg: False
+  # defense_method: 'foolsgold'
+  # foolsgold_debug: true
+  # foolsgold_debug_max_clients: 20
+  # defense_method: multi_krum
+  # multi_krum_num_malicious: 2
+  # multi_krum_debug: true
+  # defense_method: trimmed_mean
+  # trimmed_mean_trim_ratio: 0.25
+  # trimmed_mean_debug: false
+  # defense_method: align_ins
+  # align_ins_debug: true
+  # defense_method: multi_metrics
+  # multi_metrics_adaptive_threshold: true 
+  # multi_metrics_history_smoothing: true   
+  # multi_metrics_keep_ratio: 0.75            
+  # multi_metrics_z_threshold: 1.0
+  # multi_metrics_ema_alpha: 0.6
+
+  # FedProto off
+  use_fedproto: False
+
+  use_lds: True
+  lds_alpha: 0.1
+  lds_seed: 42
+
+  use_fedproto: False
+  use_cnn_distillation: False
+  use_feature_alignment: False
+  use_separated_training: False
+
+outdir: 'exp/defense_tests/sabre1'
+expname: 'vit_newdataset'

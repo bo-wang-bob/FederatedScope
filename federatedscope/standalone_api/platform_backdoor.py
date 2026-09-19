@@ -57,6 +57,19 @@ def read_json(path, default=None):
         return default
 
 
+def _manifest_classes(root):
+    """从上传数据集的便携 manifest 里读类别名; 找不到返回 None。"""
+    if not root:
+        return None
+    base = Path(root)
+    for candidate in (base / 'manifest.json', base.parent / 'manifest.json'):
+        manifest = read_json(candidate)
+        classes = (manifest or {}).get('classes')
+        if isinstance(classes, list) and classes:
+            return [str(item) for item in classes]
+    return None
+
+
 class BackdoorService:
     def __init__(self, repo, state):
         self.repo = Path(repo).resolve()
@@ -76,6 +89,9 @@ class BackdoorService:
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.processes = {}
+        # 由「启动训练」(platform_backdoor_training) 登记的当前结果组; 没有则为 None
+        self.group = None
+        self._load_group()
         self._index = None
         self._class_names = None
         self._class_names_loaded = False
@@ -121,10 +137,44 @@ class BackdoorService:
         return (exp_dirs[0] / 'sabre').resolve()
 
     # ------------------------------------------------------------------ #
+    # 训练结果组 (由 platform_backdoor_training 登记)
+    # ------------------------------------------------------------------ #
+    def _load_group(self):
+        """训练启动器跑完一组实验后写 groups.json, 这里据此切到该组。
+
+        带组的 base 里可能同时存在历史结果 (军机三域) 与新训练结果 (用户上传
+        数据集), 二者类别数不同、data.root 也不同, 必须显式挑选而不是让自动
+        发现把两组混在一起。
+        """
+        value = read_json(self.root / 'groups.json')
+        group = value.get('active') if isinstance(value, dict) else None
+        if not isinstance(group, dict):
+            return
+        token = str(group.get('token') or '')
+        if not re.fullmatch(r'grp[0-9a-f]{8}', token):
+            return
+        attack, defense = group.get('attack'), group.get('defense')
+        for name in (attack, defense):
+            if name is not None and not re.fullmatch(r'[A-Za-z0-9_.-]+', str(name)):
+                return
+        if not attack or not (self.base / str(attack)).is_dir():
+            return
+        self.group = group
+        root = str(group.get('dataRoot') or '')
+        if root and Path(root).is_dir():
+            self.data_root = root
+
+    # ------------------------------------------------------------------ #
     # 实验目录发现
     # ------------------------------------------------------------------ #
     def runs(self):
         """attack / defense 两个 run 目录名。可用 FS_BACKDOOR_RUNS 覆盖。"""
+        group = self.group
+        if group and group.get('attack'):
+            pair = {'attack': str(group['attack']),
+                    'defense': str(group['defense']) if group.get('defense') else None}
+            if (self.base / pair['attack']).is_dir():
+                return pair
         override = os.environ.get('FS_BACKDOOR_RUNS', '')
         if override:
             pairs = dict(item.split('=', 1) for item in override.split(',') if '=' in item)
@@ -183,11 +233,25 @@ class BackdoorService:
         if self._class_names_loaded:
             return self._class_names or []
         self._class_names_loaded = True
+        # 训练组直接带着类别名: 用户上传数据集既不叫 OfficeHome 也不是军机
+        if isinstance(self.group, dict):
+            names = [str(item) for item in (self.group.get('classes') or [])]
+            if names:
+                self._class_names = names
+                return names
         try:
             import yaml
             data_type = ''
             data_root = ''
-            for config in sorted(self.base.glob('*/config.yaml')):
+            configs = sorted(self.base.glob('*/config.yaml'))
+            # 优先读本组的配置, 避免和历史数据集混淆
+            preferred = []
+            for name in filter(None, ((self.group or {}).get(k)
+                                      for k in ('attack', 'defense', 'baseline'))):
+                candidate = self.base / str(name) / 'config.yaml'
+                if candidate.is_file():
+                    preferred.append(candidate)
+            for config in preferred + [c for c in configs if c not in preferred]:
                 with config.open(encoding='utf-8') as stream:
                     loaded = yaml.safe_load(stream) or {}
                 section = loaded.get('data') or {}
@@ -210,6 +274,9 @@ class BackdoorService:
                 _, names = discover_domainnet_metadata(
                     str(root), ['aerial', 'natural', 'recon'], False)
                 self._class_names = list(names)
+            elif 'domainnet' in data_type:
+                # 上传数据集: 类别名来自便携 manifest, 目录本身无域/类层级
+                self._class_names = _manifest_classes(root)
         except Exception:
             self._class_names = None
         return self._class_names or []
@@ -431,7 +498,7 @@ class BackdoorService:
             if not isinstance(font_size, int) or isinstance(font_size, bool) or not 12 <= font_size <= 48:
                 raise PlatformError('字号必须为 12–48 的整数')
             if not Path(self.data_root).is_dir():
-                raise PlatformError('后门研究共享的 OfficeHome 数据集不存在', 409)
+                raise PlatformError('后门研究的数据集根目录不存在，请重新训练或检查 data.root', 409)
             name = str(payload.get('name', '') or '')[:120]
             job_id = uuid.uuid4().hex
             output = self.directory(job_id)

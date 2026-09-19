@@ -142,13 +142,21 @@ def prepare_server(run_dir, device_str, data_root=None):
     cfg.ggeur.feature_extractor = head_data.get(
         'feature_extractor_type', 'cnn')
     if cfg.ggeur.feature_extractor == 'clip':
-        from federatedscope.standalone_api.paths import env_path
-        resources = env_path('FS_PLATFORM_RESOURCES', 'resources', _REPO_ROOT)
-        weights = env_path('FS_BACKDOOR_VIT_WEIGHTS',
-            env_path('FS_PLATFORM_MILITARY_VIT_WEIGHTS', resources / 'models/ViT-B-16.pt', _REPO_ROOT), _REPO_ROOT)
-        if not weights.is_file():
-            raise FileNotFoundError(f'缺少本地 ViT 权重，不联网下载: {weights}')
-        cfg.ggeur.clip_model_path = str(weights)
+        # 优先沿用本次训练实际用的权重文件, 避免"本机没有打包好的公共权重"
+        # 就把本来能跑的评估挡在门外; 只有两者都不存在才报错。
+        configured = str(getattr(cfg.ggeur, 'clip_model_path', '') or '')
+        if configured and os.path.exists(configured):
+            cfg.ggeur.clip_model_path = configured
+        else:
+            from federatedscope.standalone_api.paths import env_path
+            resources = env_path('FS_PLATFORM_RESOURCES', 'resources', _REPO_ROOT)
+            weights = env_path('FS_BACKDOOR_VIT_WEIGHTS',
+                env_path('FS_PLATFORM_MILITARY_VIT_WEIGHTS', resources / 'models/ViT-B-16.pt', _REPO_ROOT), _REPO_ROOT)
+            if not weights.is_file():
+                raise FileNotFoundError(
+                    f'缺少 CLIP 权重，不联网下载: 已尝试 {weights}'
+                    + (f' 与配置里的 {configured}' if configured else ''))
+            cfg.ggeur.clip_model_path = str(weights)
     cfg.ggeur.mlp_hidden_dim = int(head_data.get('mlp_hidden_dim', 0))
     cfg.ggeur.mlp_dropout = float(head_data.get('mlp_dropout', 0.0))
 
@@ -187,6 +195,12 @@ def get_class_names(cfg, num_classes):
                 discover_domainnet_metadata)
             _, names = discover_domainnet_metadata(
                 str(cfg.data.root), ['aerial', 'natural', 'recon'], False)
+        elif 'domainnet' in data_type:
+            # 上传数据集没有固定的类别表, 类别名随 manifest 走
+            from eval import load_manifest
+            bundle = load_manifest(getattr(cfg.ggeur, 'domainnet_manifest_path', None),
+                                   str(cfg.data.root))
+            names = bundle['classes']
     except Exception as e:
         print(f"  [WARN] 类别名加载失败 ({e}), 使用数字标签")
     if names and len(names) >= num_classes:
