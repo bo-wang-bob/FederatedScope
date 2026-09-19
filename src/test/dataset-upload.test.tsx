@@ -86,3 +86,43 @@ it('retries a lost finish response without duplicating the dataset or files', as
   expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/datasets'))).toHaveLength(1);
   expect(fetcher.mock.calls.filter(([url]) => String(url).includes('/files?'))).toHaveLength(1);
 });
+
+it.each(['train', 'test', 'single'] as const)('imports %s from a server path without browser file uploads', async kind => {
+  const id = 'e'.repeat(32), group = kind === 'train' ? 'uploaded_' + id : undefined;
+  const saved = { id, group, kind: kind === 'train' ? 'train' : 'test', count: 1, classes: [] };
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async url => ({ ok: true,
+    json: async () => ({ data: String(url).endsWith('/import') ? { id, total: 1, classes: [] }
+      : String(url).endsWith('/import-next') ? { count: 1, total: 1 } : saved }),
+  }) as Response);
+  const complete = vi.fn();
+  render(<DatasetUpload kind={kind === 'train' ? 'train' : 'test'} single={kind === 'single'} onSaved={complete} />);
+  fireEvent.click(screen.getByRole('button', { name: kind === 'train' ? '上传训练集' : kind === 'test' ? '上传测试集' : '上传单张图片' }));
+  fireEvent.click(screen.getByText('服务器路径'));
+  const path = kind === 'single' ? '/data/test/a.jpg' : `/data/${kind}`;
+  fireEvent.change(screen.getByLabelText(kind === 'single' ? '服务器图片路径' : '服务器文件夹路径'), { target: { value: path } });
+  fireEvent.click(screen.getByRole('button', { name: '导入并添加' }));
+  await waitFor(() => expect(complete).toHaveBeenCalledWith(saved));
+  expect(JSON.parse(fetcher.mock.calls[0][1]!.body as string)).toMatchObject({ path, kind: saved.kind, single: kind === 'single' });
+  expect(fetcher.mock.calls.some(([url]) => String(url).includes('/files?'))).toBe(false);
+  await waitFor(() => expect(screen.getByText('导入完成')).toBeVisible());
+});
+
+it('retries server imports using the same id after a lost progress response', async () => {
+  const id = 'f'.repeat(32);
+  let progresses = 0;
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+    if (String(url).endsWith('/import-next') && progresses++ === 0) throw new Error('连接中断');
+    return { ok: true, json: async () => ({ data: String(url).endsWith('/import') ? { id, total: 1, classes: [] }
+      : String(url).endsWith('/import-next') ? { count: 1, total: 1 } : { id, count: 1, classes: [] } }) } as Response;
+  });
+  render(<DatasetUpload kind="test" />);
+  fireEvent.click(screen.getByRole('button', { name: '上传测试集' }));
+  fireEvent.click(screen.getByText('服务器路径'));
+  fireEvent.change(screen.getByLabelText('服务器文件夹路径'), { target: { value: '/data/test' } });
+  fireEvent.click(screen.getByRole('button', { name: '导入并添加' }));
+  await screen.findByText('连接中断');
+  expect(screen.getByLabelText('服务器文件夹路径')).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: '导入并添加' }));
+  await screen.findByText('导入完成');
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/import'))).toHaveLength(1);
+});

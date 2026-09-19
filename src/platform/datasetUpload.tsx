@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from 'react';
-import { Alert, Button, Input, Modal, Progress, Space, Tag } from 'antd';
+import { Alert, Button, Input, Modal, Progress, Segmented, Space, Tag } from 'antd';
 import { FolderOpenOutlined, PictureOutlined, UploadOutlined } from '@ant-design/icons';
 import { api } from './api';
 import { inspectDatasetFolder } from './datasetLayout';
@@ -17,11 +17,14 @@ export function DatasetUpload({ disabled = false, kind = 'train', single = false
   const [name, setName] = useState(''), [error, setError] = useState('');
   const [busy, setBusy] = useState(false), [done, setDone] = useState(0), [result, setResult] = useState<UploadedDataset>();
   const [classes, setClasses] = useState<string[]>([]);
+  const [source, setSource] = useState<'browser' | 'server'>('browser');
+  const [serverPath, setServerPath] = useState(''), [importTotal, setImportTotal] = useState(0);
   const input = useRef<HTMLInputElement>(null), createdId = useRef<string | undefined>(undefined), uploadedCount = useRef(0);
   const nameId = useId();
+  const pathId = useId();
   const isSingle = kind === 'test' && single;
   const title = kind === 'train' ? '上传训练集' : isSingle ? '上传单张图片' : '上传测试集';
-  const reset = () => { setFiles([]); setName(''); setError(''); setResult(undefined); setDone(0); setClasses([]); createdId.current = undefined; uploadedCount.current = 0; };
+  const reset = () => { setFiles([]); setName(''); setServerPath(''); setImportTotal(0); setError(''); setResult(undefined); setDone(0); setClasses([]); createdId.current = undefined; uploadedCount.current = 0; };
   const select = (list: FileList | null) => {
     reset();
     let next: File[];
@@ -47,15 +50,29 @@ export function DatasetUpload({ disabled = false, kind = 'train', single = false
   const upload = async () => {
     setBusy(true); setDone(uploadedCount.current); setError('');
     try {
-      // Reuse the upload on retry; per-file writes and finish are idempotent.
-      if (!createdId.current) createdId.current = (await api<UploadedDataset>('datasets', { name: name.trim(), kind, layout: 'classes' })).id;
-      for (let i = uploadedCount.current; i < files.length; i++) {
-        const file = files[i];
-        const response = await fetch(`/api/platform/datasets/${createdId.current}/files?path=${encodeURIComponent(relative(file))}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file, signal: AbortSignal.timeout(90000) });
-        const value = await response.json();
-        if (!response.ok) throw new Error(`${relative(file)}：${value.error?.message || '上传失败'}`);
-        uploadedCount.current = i + 1; setDone(i + 1);
+      if (source === 'server') {
+        let total = importTotal;
+        if (!createdId.current) {
+          const plan = await api<{ id: string; total: number; classes: string[] }>('datasets/import', {
+            name: name.trim(), kind, path: serverPath.trim(), single: isSingle,
+          });
+          createdId.current = plan.id; total = plan.total; setImportTotal(total); setClasses(plan.classes);
+        }
+        while (uploadedCount.current < total) {
+          const progress = await api<{ count: number; total: number }>(`datasets/${createdId.current}/import-next`, {});
+          uploadedCount.current = progress.count; setDone(progress.count);
+        }
+      } else {
+        // Reuse the upload on retry; per-file writes and finish are idempotent.
+        if (!createdId.current) createdId.current = (await api<UploadedDataset>('datasets', { name: name.trim(), kind, layout: 'classes' })).id;
+        for (let i = uploadedCount.current; i < files.length; i++) {
+          const file = files[i];
+          const response = await fetch(`/api/platform/datasets/${createdId.current}/files?path=${encodeURIComponent(relative(file))}`,
+            { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file, signal: AbortSignal.timeout(90000) });
+          const value = await response.json();
+          if (!response.ok) throw new Error(`${relative(file)}：${value.error?.message || '上传失败'}`);
+          uploadedCount.current = i + 1; setDone(i + 1);
+        }
       }
       const saved = await api<UploadedDataset>(`datasets/${createdId.current}/finish`, {});
       setResult(saved);
@@ -65,19 +82,21 @@ export function DatasetUpload({ disabled = false, kind = 'train', single = false
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };
+  const total = source === 'server' ? importTotal : files.length;
   return <>
     <Button aria-label={title} icon={isSingle ? <PictureOutlined /> : <UploadOutlined />} disabled={disabled} onClick={() => { reset(); setOpen(true); }}>{title}</Button>
     <Modal title={title} open={open} onCancel={() => !busy && setOpen(false)} maskClosable={!busy} closable={!busy}
-      footer={result ? <Button aria-label="完成" type="primary" onClick={() => setOpen(false)}>完成</Button> : <Space><Button disabled={busy} onClick={() => setOpen(false)}>取消</Button><Button type="primary" loading={busy} disabled={busy || !files.length || !name.trim()} onClick={() => void upload()}>上传并添加</Button></Space>}>
+      footer={result ? <Button aria-label="完成" type="primary" onClick={() => setOpen(false)}>完成</Button> : <Space><Button disabled={busy} onClick={() => setOpen(false)}>取消</Button><Button type="primary" loading={busy} disabled={busy || (source === 'server' ? !serverPath.trim() : !files.length || !name.trim())} onClick={() => void upload()}>{source === 'server' ? '导入并添加' : '上传并添加'}</Button></Space>}>
       <div className="dataset-upload">
         <input ref={node => { input.current = node; if (!isSingle) node?.setAttribute('webkitdirectory', ''); }} type="file" multiple={!isSingle} accept={imageAccept} hidden
           aria-label={isSingle ? '选择测试图片' : kind === 'train' ? '选择训练数据集文件夹' : '选择测试数据集文件夹'} onChange={event => { select(event.target.files); event.target.value = ''; }} />
-        {!result && <><Button block size="large" icon={isSingle ? <PictureOutlined /> : <FolderOpenOutlined />} disabled={busy} onClick={() => input.current?.click()}>{isSingle ? '选择图片' : '选择文件夹'}</Button>
+        {!result && <><Segmented block aria-label="数据来源" value={source} disabled={busy} options={[{ label: '本机上传', value: 'browser' }, { label: '服务器路径', value: 'server' }]} onChange={value => { reset(); setSource(value as 'browser' | 'server'); }} />
+          {source === 'server' ? <><label htmlFor={pathId}>{isSingle ? '服务器图片路径' : '服务器文件夹路径'}</label><Input id={pathId} value={serverPath} disabled={busy || !!createdId.current} placeholder={isSingle ? '/data/images/sample.jpg' : '/data/datasets/train'} onChange={e => setServerPath(e.target.value)} /></> : <Button block size="large" icon={isSingle ? <PictureOutlined /> : <FolderOpenOutlined />} disabled={busy} onClick={() => input.current?.click()}>{isSingle ? '选择图片' : '选择文件夹'}</Button>}
           <label htmlFor={nameId}>{isSingle ? '名称' : '数据集名称'}</label><Input id={nameId} value={name} maxLength={120} disabled={busy || !!createdId.current} onChange={e => setName(e.target.value)} /></>}
-        {files.length > 0 && <div><strong>{files.length} 张图片{classes.length > 0 ? ` · ${classes.length} 个类别` : ''}</strong><div className="dataset-class-list">{classes.map(c => <Tag key={c}>{c}</Tag>)}</div></div>}
-        {busy && <Progress percent={Math.round(done / files.length * 100)} format={() => `${done}/${files.length}`} />}
+        {total > 0 && <div><strong>{total} 张图片{classes.length > 0 ? ` · ${classes.length} 个类别` : ''}</strong><div className="dataset-class-list">{classes.map(c => <Tag key={c}>{c}</Tag>)}</div></div>}
+        {busy && <Progress percent={total ? Math.round(done / total * 100) : 0} format={() => total ? `${done}/${total}` : '读取目录'} />}
         {error && <Alert type="error" showIcon title={error} />}
-        {result && <Alert type="success" showIcon title="上传完成" />}
+        {result && <Alert type="success" showIcon title={source === 'server' ? '导入完成' : '上传完成'} />}
       </div>
     </Modal>
   </>;
