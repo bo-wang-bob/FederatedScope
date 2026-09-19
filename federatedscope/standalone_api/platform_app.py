@@ -22,6 +22,7 @@ import zipfile
 
 from .app import ApiHandler
 from .platform_backdoor import BackdoorService
+from .platform_backdoor_training import BackdoorTrainingService
 from .platform_config import PlatformError, sha256
 from .platform_service import PlatformService
 from .platform_privacy import PrivacyService
@@ -693,6 +694,27 @@ class PlatformHandler(ApiHandler):
 
     def _backdoor(self, write, path, backdoor):
         """后门研究: 测试集浏览、随机挑图、clean/triggered/defense 三连图生成。"""
+        # 启动训练 (用上传的数据集跑 baseline / attack / defense 三个实验)
+        training = re.fullmatch(
+            r'/api/platform/backdoor/training(?:/([a-f0-9]{32})(?:/(logs|stop))?)?', path)
+        if training:
+            service = self.context.training
+            job_id, action = training.groups()
+            body = self._body() if write else None
+            if job_id is None:
+                if write:
+                    self._data(service.start(body), 202)
+                else:
+                    self._data(service.status())
+                return
+            if not write:
+                self._data(service.logs(job_id) if action == 'logs'
+                            else service.get(job_id))
+                return
+            if action == 'stop':
+                self._data(service.stop(job_id))
+                return
+            raise PlatformError('接口不存在', 404)
         if not write:
             if path == '/api/platform/backdoor/testset':
                 self._data(backdoor.testset())
@@ -721,6 +743,9 @@ class PlatformHandler(ApiHandler):
         else:
             if path == '/api/platform/backdoor/pick':
                 self._data(backdoor.pick(self._body()))
+                return
+            if path == '/api/platform/backdoor/testset/apply':
+                self._data(self.context.training.apply_testset(self._body()))
                 return
             if path == '/api/platform/backdoor/jobs':
                 self._data(backdoor.create(self._body()), 202)
@@ -908,8 +933,10 @@ def create_server(host='127.0.0.1', port=8001, state=None):
     root = resolve_path(repo, state or 'exp/platform')
     service = PlatformService(repo, root)
     backdoor = BackdoorService(repo, root)
+    training = BackdoorTrainingService(repo, root, backdoor.root, backdoor.base)
     privacy = PrivacyService(repo, root)
-    context = type('PlatformContext', (), {'platform': service, 'backdoor': backdoor, 'privacy': privacy,
+    context = type('PlatformContext', (), {'platform': service, 'backdoor': backdoor,
+        'training': training, 'privacy': privacy,
         'fedmia_cache': {}, 'fedmia_cache_lock': threading.RLock(),
         'frontend_dist': resolve_path(repo, os.environ.get('FEDERATEDSCOPE_FRONTEND_DIST', '../frontend/dist'))})()
     handler = type('BoundPlatformHandler', (PlatformHandler,), {'context': context})

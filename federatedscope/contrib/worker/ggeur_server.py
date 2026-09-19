@@ -34,6 +34,7 @@ from federatedscope.core.sampler import Sampler
 from federatedscope.core.workers.server import Server
 from federatedscope.core.auxiliaries.optimizer_builder import get_optimizer
 from federatedscope.core.auxiliaries.utils import param2tensor
+from federatedscope.attack.auxiliary.a3fl_utils import parse_attacker_ids
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +266,314 @@ class GGEURServer(Server):
                 self.hierarchical_subserver_id_base + 1,
                 self.hierarchical_subserver_id_base +
                 self.hierarchical_subserver_num)
+
+        # ===== Backdoor attack / defense hooks (ported from saber_cnn) =====
+        # Every hook below is gated on cfg.attack.attack_method == 'sabre'
+        # (or ggeur.defense_method == 'multi_metrics'), so configurations that
+        # do not opt in keep the exact previous behaviour.
+        _attack_method = str(
+            getattr(config.attack, 'attack_method', '')).lower()
+        self.sabre_enabled = _attack_method == 'sabre'
+        self.sabre_cfg = getattr(config.attack, 'sabre', None)
+        self.sabre_attacker_ids = set(
+            parse_attacker_ids(config.attack.attacker_id))
+        self.latest_sabre_meta = None
+        # Trigger relayed to every malicious client so they stay aligned.
+        self.sabre_shared_trigger = None
+        # Per-client EMA of multi_metrics anomaly scores (history smoothing).
+        self.multi_metrics_score_history = {}
+
+    # ------------------------------------------------------------------
+    # SABRE attack hooks (ported from the saber_cnn attack branch)
+    # ------------------------------------------------------------------
+
+    def _is_sabre_active_round(self, round_idx):
+        if not getattr(self, 'sabre_enabled', False) or self.sabre_cfg is None:
+            return False
+        start_round = int(getattr(
+            self.sabre_cfg, 'start_round',
+            getattr(self._cfg.attack, 'inject_round', 0)))
+        if int(round_idx) < start_round:
+            return False
+        poison_epochs = int(getattr(self.sabre_cfg, 'poison_epochs', 0))
+        if poison_epochs <= 0:
+            return True
+        return int(round_idx) < start_round + poison_epochs
+
+    def _get_sabre_active_attacker_ids(self, round_idx):
+        if not self._is_sabre_active_round(round_idx):
+            return []
+        return sorted(int(cid) for cid in self.sabre_attacker_ids)
+
+    def _attach_shared_trigger_payload(self, model_para, attack_name,
+                                       shared_trigger):
+        if shared_trigger is None:
+            return model_para
+        if not isinstance(model_para, dict) or 'mlp' not in model_para:
+            model_para = {'mlp': model_para}
+        shared_trigger = copy.deepcopy(shared_trigger)
+        payload = model_para.get(attack_name, {})
+        if not isinstance(payload, dict):
+            payload = {}
+        payload['shared_trigger'] = shared_trigger
+        model_para[attack_name] = payload
+        model_para[f'{attack_name}_shared_trigger'] = shared_trigger
+        return model_para
+
+    def _attach_sabre_payload(self, model_para):
+        """Relay the shared backdoor trigger along the broadcast model."""
+        if not getattr(self, 'sabre_enabled', False):
+            return model_para
+        return self._attach_shared_trigger_payload(
+            model_para, 'sabre', self.sabre_shared_trigger)
+
+    def _update_shared_trigger(self, active_updates, attack_name,
+                               shared_attr):
+        for meta in active_updates:
+            if not isinstance(meta, dict):
+                continue
+            trigger = meta.get('trigger', None)
+            mask = meta.get('mask', None)
+            if trigger is None or mask is None:
+                continue
+            try:
+                trigger = param2tensor(trigger)
+                mask = param2tensor(mask)
+            except Exception as exc:
+                logger.debug(
+                    f"Server: Could not restore {attack_name.upper()} "
+                    f"shared trigger from client "
+                    f"{meta.get('client_id', 'unknown')}: {exc}")
+                continue
+            if not isinstance(trigger, torch.Tensor) or \
+                    not isinstance(mask, torch.Tensor):
+                continue
+            shared_trigger = {
+                'trigger':
+                trigger.detach().cpu(),
+                'mask':
+                mask.detach().cpu(),
+                'source_client_id':
+                int(meta.get('client_id', -1)),
+                'source_round':
+                int(meta.get('round', self.state)),
+            }
+            if 'target_label' in meta:
+                shared_trigger['target_label'] = int(meta.get('target_label'))
+            if 'trigger_mode' in meta:
+                shared_trigger['trigger_mode'] = meta.get('trigger_mode')
+            setattr(self, shared_attr, shared_trigger)
+            nonzero = int(mask.detach().cpu().ne(0).sum().item())
+            logger.info(
+                f"Server: Updated {attack_name.upper()} shared trigger "
+                f"from client {int(meta.get('client_id', -1))} "
+                f"for round {int(meta.get('round', self.state))} "
+                f"(mask_nonzero={nonzero})")
+            return
+
+    def _update_sabre_shared_trigger(self, active_sabre):
+        if not getattr(self, 'sabre_enabled', False):
+            return
+        self._update_shared_trigger(
+            active_sabre, 'sabre', 'sabre_shared_trigger')
+
+    def _extract_sabre_metadata(self, valid_params, valid_senders):
+        """Peel SABRE payloads off the received updates.
+
+        Returns ``(cleaned_params, metas, senders)``; aggregation only ever
+        sees the model weights afterwards.
+        """
+        metas = []
+        cleaned = []
+        senders = []
+        for (sample_size, params), sender in zip(valid_params, valid_senders):
+            if isinstance(params, dict) and 'sabre' in params:
+                metas.append(params.get('sabre'))
+                params = copy.deepcopy(params)
+                params.pop('sabre', None)
+                params.pop('sabre_shared_trigger', None)
+            cleaned.append((sample_size, params))
+            senders.append(sender)
+        return cleaned, metas, senders
+
+    def _record_sabre_round(self, sabre_metas, round_idx):
+        active_sabre = [
+            meta for meta in sabre_metas
+            if isinstance(meta, dict) and meta.get('active', False)
+        ]
+        self.latest_sabre_meta = active_sabre[0] if active_sabre else None
+        self._update_sabre_shared_trigger(active_sabre)
+        if getattr(self, 'sabre_enabled', False):
+            logger.info(
+                f"Server: Round {round_idx} received "
+                f"{len(sabre_metas)} SABRE metadata payloads, "
+                f"active={len(active_sabre)}, "
+                f"shared_trigger="
+                f"{'yes' if self.sabre_shared_trigger is not None else 'no'}")
+
+    def _should_run_attack_eval(self, round_idx):
+        """Whether to run the (expensive) trigger/ASR evaluation this round.
+
+        Controlled by ``cfg.ggeur.attack_eval_freq`` (default 1 = every
+        round); the final round is always evaluated.  Plain MLP test accuracy
+        is unaffected and still follows its own schedule.
+        """
+        freq = int(getattr(self.ggeur_cfg, 'attack_eval_freq', 1))
+        if freq <= 1:
+            return True
+        if int(round_idx) >= int(self._total_round_num) - 1:
+            return True
+        return int(round_idx) % freq == 0
+
+    def _extract_features_for_images(self, images):
+        features = None
+        if self.feature_extractor_type == 'cnn' and \
+                self.cnn_extractor is not None:
+            features = self.cnn_extractor(images)
+        elif self.feature_extractor_type == 'timm' and \
+                self.timm_extractor is not None:
+            features = self.timm_extractor(images)
+        elif self.clip_model is not None:
+            features = self.clip_model.encode_image(images)
+        if features is None:
+            raise RuntimeError('No usable feature extractor on the server')
+        if features.dim() > 2:
+            features = features.view(features.size(0), -1)
+        return features.float()
+
+    def _evaluate_sabre_on_test_sets(self):
+        """Apply the shared SABRE trigger to server-side test images.
+
+        Returns ``{'asr', 'non_target_asr', 'clean_target_rate'}`` keyed by
+        domain (plus a global ``'average'`` entry).  Fully self-contained:
+        any failure degrades to empty dicts instead of breaking the round.
+        """
+        empty = {'asr': {}, 'non_target_asr': {}, 'clean_target_rate': {}}
+        if self.global_mlp is None:
+            return empty
+        trigger_info = getattr(self, 'sabre_shared_trigger', None)
+        if not isinstance(trigger_info, dict):
+            return empty
+        trigger = trigger_info.get('trigger', None)
+        mask = trigger_info.get('mask', None)
+        if not isinstance(trigger, torch.Tensor) or \
+                not isinstance(mask, torch.Tensor):
+            return empty
+
+        try:
+            if not self.test_images_loaded:
+                self._load_test_images()
+            if not self.test_image_loaders:
+                return empty
+            self._load_feature_extractor()
+        except Exception as exc:
+            logger.debug(
+                f"Server: Skipping SABRE ASR evaluation ({exc})")
+            return empty
+
+        target_label = int(trigger_info.get(
+            'target_label', self._cfg.attack.target_label_ind))
+        clip_min = float(getattr(self.sabre_cfg, 'image_clip_min', -3.0))
+        clip_max = float(getattr(self.sabre_cfg, 'image_clip_max', 3.0))
+        trigger = trigger.to(self.device).float()
+        mask = mask.to(self.device).float()
+
+        asr = {}
+        non_target_asr = {}
+        clean_target_rate = {}
+        self.global_mlp.eval()
+        try:
+            with torch.no_grad():
+                for domain, loader in self.test_image_loaders.items():
+                    poison_hit = poison_total = 0
+                    non_target_hit = non_target_total = 0
+                    clean_hit = clean_total = 0
+                    for images, labels in loader:
+                        images = images.to(self.device)
+                        labels = labels.to(self.device)
+                        clean_pred = self.global_mlp(
+                            self._extract_features_for_images(
+                                images)).argmax(dim=1)
+                        poisoned = torch.clamp(images + trigger * mask,
+                                               clip_min, clip_max)
+                        poison_pred = self.global_mlp(
+                            self._extract_features_for_images(
+                                poisoned)).argmax(dim=1)
+
+                        eligible = labels != target_label
+                        if int(eligible.sum().item()) > 0:
+                            poison_hit += int(
+                                poison_pred[eligible].eq(
+                                    target_label).sum().item())
+                            poison_total += int(eligible.sum().item())
+                            non_target_hit += int(
+                                clean_pred[eligible].eq(
+                                    target_label).sum().item())
+                            non_target_total += int(eligible.sum().item())
+                        clean_total += int(labels.numel())
+                        clean_hit += int(
+                            clean_pred.eq(target_label).sum().item())
+
+                    if poison_total > 0:
+                        asr[domain] = poison_hit / float(poison_total)
+                        non_target_asr[domain] = non_target_hit / float(
+                            non_target_total)
+                    if clean_total > 0:
+                        clean_target_rate[domain] = clean_hit / float(
+                            clean_total)
+        except Exception as exc:
+            logger.warning(
+                f"Server: SABRE ASR evaluation failed: {exc}")
+            return empty
+
+        for table in (asr, non_target_asr, clean_target_rate):
+            if table:
+                table['average'] = sum(table.values()) / len(table)
+        return {
+            'asr': asr,
+            'non_target_asr': non_target_asr,
+            'clean_target_rate': clean_target_rate,
+        }
+
+    def _log_sabre_asr(self, round_idx):
+        if not getattr(self, 'sabre_enabled', False):
+            return
+        if self.latest_sabre_meta is None:
+            return
+        if not self._should_run_attack_eval(round_idx):
+            logger.debug(
+                f"Server: Round {round_idx} skipped SABRE ASR evaluation "
+                "(attack_eval_freq)")
+            return
+
+        sabre_eval = self._evaluate_sabre_on_test_sets()
+        poison_results = sabre_eval.get('asr', {})
+        non_target_results = sabre_eval.get('non_target_asr', {})
+        clean_target_results = sabre_eval.get('clean_target_rate', {})
+        attacker_id = int(self.latest_sabre_meta.get('client_id', -1))
+        if not poison_results:
+            logger.info(
+                f"Server: Round {round_idx} skipped SABRE ASR logging "
+                "because evaluation returned no results")
+            return
+
+        def _fmt(table):
+            return ', '.join(f"{key}: {value:.4f}"
+                             for key, value in table.items())
+
+        logger.info(
+            f"Server: Round {round_idx} SABRE ASR "
+            f"(attacker {attacker_id}) - {_fmt(poison_results)}")
+        if non_target_results:
+            logger.info(
+                f"Server: Round {round_idx} SABRE non-target ASR "
+                f"(attacker {attacker_id}) - {_fmt(non_target_results)}")
+        if clean_target_results:
+            target_label = int(self.latest_sabre_meta.get(
+                'target_label', self._cfg.attack.target_label_ind))
+            logger.info(
+                f"Server: Round {round_idx} SABRE clean target rate "
+                f"(target {target_label}) - {_fmt(clean_target_results)}")
 
     def _resolve_min_clients(self, name):
         value = int(getattr(self.ggeur_cfg, name, 0))
@@ -2087,6 +2396,10 @@ class GGEURServer(Server):
                     'fedproto_global_prototypes': prototype_payload,
                 }
 
+        # Backdoor experiments piggyback the shared trigger on the broadcast so
+        # that every malicious client optimizes against the same pattern.
+        model_para = self._attach_sabre_payload(model_para)
+
         # Broadcast to active training clients only. In strict mode this is all
         # configured clients; in fault-tolerance validation it is the quorum
         # that completed statistics and augmentation.
@@ -2659,8 +2972,15 @@ class GGEURServer(Server):
         # Collect all model parameters
         all_params = self.msg_buffer['train'][round_idx]
 
-        # Filter out empty updates
-        valid_params = [(s, p) for s, p, _ in all_params if s > 0 and p is not None]
+        # Filter out empty updates, keeping the sender id alongside so the
+        # defense hooks can attribute every update to a client.
+        valid_idx = [
+            index for index, entry in enumerate(all_params)
+            if entry[0] > 0 and entry[1] is not None
+        ]
+        valid_params = [(all_params[index][0], all_params[index][1])
+                        for index in valid_idx]
+        valid_senders = [all_params[index][2] for index in valid_idx]
 
         if not valid_params:
             logger.warning("Server: No valid model parameters received")
@@ -2674,27 +2994,51 @@ class GGEURServer(Server):
                 self._finish()
             return
 
+        # Backdoor metadata rides along with the uploaded parameters; strip it
+        # before any aggregation touches the weights.
+        if getattr(self, 'sabre_enabled', False):
+            valid_params, sabre_metas, valid_senders = \
+                self._extract_sabre_metadata(valid_params, valid_senders)
+            self._record_sabre_round(sabre_metas, round_idx)
+
         # Compute sample weights
         sample_sizes = [s for s, p in valid_params]
         total_samples = sum(sample_sizes)
 
         # Handle separated training mode
         if self.use_separated_training:
-            self._perform_separated_fedavg(valid_params, total_samples, round_idx)
+            self._perform_separated_fedavg(valid_params, total_samples,
+                                           round_idx, valid_senders)
         else:
             # Check if we're in CNN distillation mode
             first_params = valid_params[0][1]
             is_combined_params = isinstance(first_params, dict) and 'mlp' in first_params
 
             if is_combined_params:
-                # Aggregate MLP and CNN separately
+                # Aggregate MLP and CNN separately.  The sender ids ride
+                # along so robust rules can attribute each update.
+                tagged = [(size, params, sender)
+                          for (size, params), sender
+                          in zip(valid_params, valid_senders)]
                 mlp_aggregated = self._aggregate_model_params(
-                    [(s, p['mlp']) for s, p in valid_params if p.get('mlp') is not None],
-                    total_samples
+                    [(size, params['mlp'], sender)
+                     for size, params, sender in tagged
+                     if isinstance(params, dict) and
+                     params.get('mlp') is not None],
+                    total_samples,
+                    base_params=self.global_mlp.state_dict()
+                    if self.global_mlp is not None else None,
+                    aggregation_name='mlp'
                 )
                 cnn_aggregated = self._aggregate_model_params(
-                    [(s, p['cnn']) for s, p in valid_params if p.get('cnn') is not None],
-                    total_samples
+                    [(size, params['cnn'], sender)
+                     for size, params, sender in tagged
+                     if isinstance(params, dict) and
+                     params.get('cnn') is not None],
+                    total_samples,
+                    base_params=self.global_cnn.state_dict()
+                    if self.global_cnn is not None else None,
+                    aggregation_name='cnn'
                 )
 
                 # Update global MLP (FedAvg or FedOpt)
@@ -2715,7 +3059,15 @@ class GGEURServer(Server):
                         logger.debug(f"Server: Could not load CNN params: {e}")
             else:
                 # Standard mode: only MLP
-                mlp_aggregated = self._aggregate_model_params(valid_params, total_samples)
+                mlp_aggregated = self._aggregate_model_params(
+                    [(size, params, sender)
+                     for (size, params), sender
+                     in zip(valid_params, valid_senders)],
+                    total_samples,
+                    base_params=self.global_mlp.state_dict()
+                    if self.global_mlp is not None else None,
+                    aggregation_name='mlp'
+                )
 
                 if mlp_aggregated and self.global_mlp is not None:
                     try:
@@ -2738,6 +3090,14 @@ class GGEURServer(Server):
             if test_results:
                 acc_str = ', '.join([f"{k}: {v:.4f}" for k, v in test_results.items()])
                 logger.info(f"Server: Round {round_idx} MLP Test Accuracy - {acc_str}")
+        # Backdoor: apply the relayed trigger to the server-side test set and
+        # report ASR.  Wrapped so a failure here can never break the round.
+        try:
+            if should_eval:
+                self._log_sabre_asr(round_idx)
+        except Exception as exc:  # pragma: no cover - defensive only
+            logger.warning(
+                f"Server: Round {round_idx} SABRE ASR logging failed: {exc}")
         terminal_client_eval_only = bool(getattr(
             self.ggeur_cfg, 'terminal_client_eval_only', False))
         should_eval_clients = (
@@ -2808,6 +3168,13 @@ class GGEURServer(Server):
         self._complete_training_round(round_idx)
 
     def _complete_training_round(self, round_idx):
+        # Capture the peak (last-attack-round) MLP head snapshot: at this
+        # point global_mlp holds the aggregated model for `round_idx`, and
+        # the trigger has already been relayed. The final-round model erodes
+        # the backdoor during the clean rounds after the attack stops, so
+        # ASR must be measured on this peak snapshot.
+        self._save_peak_artifacts(round_idx)
+
         # Move to next round
         self.state = round_idx + 1
 
@@ -3026,19 +3393,36 @@ class GGEURServer(Server):
         if self.fedopt_annealing and self.fedopt_scheduler is not None:
             self.fedopt_scheduler.step()
 
-    def _perform_separated_fedavg(self, valid_params, total_samples, round_idx):
+    def _perform_separated_fedavg(self, valid_params, total_samples,
+                                  round_idx, valid_senders=None):
         """Perform FedAvg for separated training mode"""
         first_params = valid_params[0][1]
+        senders = valid_senders if valid_senders is not None else \
+            [None] * len(valid_params)
+        tagged = [(size, params, sender)
+                  for (size, params), sender in zip(valid_params, senders)]
 
         if self.training_phase == 'classifier':
             # Phase 1: Aggregate classifier parameters
             if isinstance(first_params, dict) and 'classifier' in first_params:
                 classifier_aggregated = self._aggregate_model_params(
-                    [(s, p['classifier']) for s, p in valid_params if p.get('classifier') is not None],
-                    total_samples
+                    [(size, params['classifier'], sender)
+                     for size, params, sender in tagged
+                     if isinstance(params, dict) and
+                     params.get('classifier') is not None],
+                    total_samples,
+                    base_params=self.global_mlp.state_dict()
+                    if self.global_mlp is not None else None,
+                    aggregation_name='classifier'
                 )
             else:
-                classifier_aggregated = self._aggregate_model_params(valid_params, total_samples)
+                classifier_aggregated = self._aggregate_model_params(
+                    tagged,
+                    total_samples,
+                    base_params=self.global_mlp.state_dict()
+                    if self.global_mlp is not None else None,
+                    aggregation_name='classifier'
+                )
 
             if classifier_aggregated and self.global_mlp is not None:
                 try:
@@ -3051,8 +3435,14 @@ class GGEURServer(Server):
             # Phase 2: Aggregate only CNN backbone parameters (classifier is frozen)
             if isinstance(first_params, dict) and 'cnn_backbone' in first_params:
                 cnn_aggregated = self._aggregate_model_params(
-                    [(s, p['cnn_backbone']) for s, p in valid_params if p.get('cnn_backbone') is not None],
-                    total_samples
+                    [(size, params['cnn_backbone'], sender)
+                     for size, params, sender in tagged
+                     if isinstance(params, dict) and
+                     params.get('cnn_backbone') is not None],
+                    total_samples,
+                    base_params=self.global_cnn.state_dict()
+                    if self.global_cnn is not None else None,
+                    aggregation_name='cnn_backbone'
                 )
 
                 if cnn_aggregated and self.global_cnn is not None:
@@ -3083,66 +3473,314 @@ class GGEURServer(Server):
         except Exception:
             return None
 
+    def _is_multi_metrics_enabled(self):
+        """Whether GGEUR should use multi-metrics for model updates."""
+        ggeur_method = str(
+            getattr(self.ggeur_cfg, 'defense_method', '')).lower()
+        agg_method = str(getattr(self._cfg.aggregator, 'robust_rule',
+                                 '')).lower() if hasattr(
+                                     self._cfg, 'aggregator') else ''
+        aliases = ('multi_metrics', 'multi-metrics', 'multimetrics',
+                   'multi_metric', 'multi_metrics_adaptive')
+        return ggeur_method in aliases or agg_method in aliases
+
+    def _is_multi_metrics_stats_enabled(self):
+        """Statistics-phase filtering is deliberately NOT wired in.
+
+        The flag is kept so existing configs validate; nothing calls it, so
+        the round-0 statistics aggregation stays untouched.
+        """
+        explicit = bool(getattr(self.ggeur_cfg,
+                                'multi_metrics_stats_defense', False))
+        if explicit:
+            return True
+        return bool(getattr(self.ggeur_cfg,
+                            'multi_metrics_stats_enabled', False))
+
+    def _multi_metrics_should_target_model(self, aggregation_name):
+        targets = getattr(self.ggeur_cfg, 'multi_metrics_target_models',
+                          ['mlp', 'classifier', 'model'])
+        if isinstance(targets, str):
+            targets = [item.strip() for item in targets.split(',')]
+        targets = {str(item).lower() for item in targets}
+        return 'all' in targets or str(aggregation_name).lower() in targets
+
+    @staticmethod
+    def _unpack_param_entry(entry):
+        """Accept ``(size, params)`` or ``(size, params, sender)`` tuples."""
+        if len(entry) >= 3:
+            return entry[0], entry[1], entry[2]
+        return entry[0], entry[1], None
+
+    @staticmethod
+    def _to_param_tensor(param):
+        if isinstance(param, torch.Tensor):
+            return param
+        try:
+            restored = param2tensor(param)
+            if isinstance(restored, torch.Tensor):
+                return restored
+            return torch.tensor(restored)
+        except Exception as e:
+            logger.debug(
+                f"Server: Cannot convert model parameter to tensor ({e})")
+            return None
+
+    def _collect_update_vectors(self, valid_params, base_params,
+                                aggregation_name):
+        """Flatten every client update relative to ``base_params``."""
+        first_params = valid_params[0][1]
+        vector_keys = []
+        base_tensors = {}
+        shapes = {}
+        dtypes = {}
+        devices = {}
+
+        for key, value in first_params.items():
+            if isinstance(value, dict) or key not in base_params:
+                continue
+            base_tensor = self._to_param_tensor(base_params[key])
+            value_tensor = self._to_param_tensor(value)
+            if base_tensor is None or value_tensor is None:
+                continue
+            if not torch.is_floating_point(base_tensor) or \
+                    not torch.is_floating_point(value_tensor):
+                continue
+            vector_keys.append(key)
+            base_tensors[key] = base_tensor.detach().to(self.device).float()
+            shapes[key] = base_tensor.shape
+            dtypes[key] = base_tensor.dtype
+            devices[key] = base_tensor.device
+
+        if not vector_keys:
+            logger.warning(
+                f"Server: {aggregation_name} found no floating parameters "
+                "for robust aggregation")
+            return None
+
+        update_vectors = []
+        retained_valid_params = []
+        for sample_size, params, sender in valid_params:
+            pieces = []
+            usable = True
+            for key in vector_keys:
+                if key not in params:
+                    usable = False
+                    break
+                tensor = self._to_param_tensor(params[key])
+                if tensor is None:
+                    usable = False
+                    break
+                tensor = tensor.detach().to(self.device).float()
+                pieces.append((tensor - base_tensors[key]).reshape(-1))
+            if usable:
+                update_vectors.append(torch.cat(pieces))
+                retained_valid_params.append((sample_size, params, sender))
+
+        if not update_vectors:
+            return None
+
+        return {
+            'vector_keys': vector_keys,
+            'base_tensors': base_tensors,
+            'shapes': shapes,
+            'dtypes': dtypes,
+            'devices': devices,
+            'update_tensor': torch.stack(update_vectors, dim=0),
+            'retained_valid_params': retained_valid_params,
+        }
+
+    def _fedavg_model_params_no_defense(self, valid_params, total_samples):
+        """Plain weighted FedAvg over already-filtered updates."""
+        if not valid_params or total_samples <= 0:
+            return None
+
+        normalized_valid_params = [
+            self._unpack_param_entry(entry) for entry in valid_params
+        ]
+        first_params = normalized_valid_params[0][1]
+        if not isinstance(first_params, dict):
+            return None
+
+        aggregated_params = {}
+        for key in first_params.keys():
+            param_tensor = first_params[key]
+            if isinstance(param_tensor, dict):
+                continue
+            param_tensor = self._to_param_tensor(param_tensor)
+            if param_tensor is None:
+                continue
+            aggregated_params[key] = torch.zeros_like(param_tensor).float()
+
+        for sample_size, params, _ in normalized_valid_params:
+            weight = sample_size / total_samples
+            for key in aggregated_params.keys():
+                if key not in params or isinstance(params[key], dict):
+                    continue
+                param_tensor = self._to_param_tensor(params[key])
+                if param_tensor is None:
+                    continue
+                aggregated_params[key] += weight * param_tensor.float()
+
+        return aggregated_params
+
     def _multi_metrics_aggregate_model_params(
             self, valid_params, base_params, aggregation_name='model'):
-        """Reject high-divergence updates, then FedAvg retained clients.
+        """Multi-metrics robust aggregation for GGEUR state_dict payloads.
 
-        This compatibility implementation retains the three indicators used
-        by the standalone defense (L1, L2 and cosine distance). Distributed
-        accuracy runs do not enable this path.
+        Follows Huang et al. (ICCV 2023): build each client feature from the
+        Manhattan norm, Euclidean norm and cosine similarity of its update,
+        whiten the pairwise distance indicators with the inverse covariance,
+        discard the high-divergence clients, and FedAvg what remains.
         """
-        min_clients = max(4, int(getattr(
-            self.ggeur_cfg, 'multi_metrics_min_clients', 4)))
+        min_clients = int(getattr(self.ggeur_cfg,
+                                  'multi_metrics_min_clients', 4))
+        min_clients = max(4, min_clients)
         if len(valid_params) < min_clients:
+            logger.info(
+                f"Server: Multi-metrics for {aggregation_name} needs at "
+                f"least {min_clients} updates for whitening; using FedAvg "
+                "fallback")
             return None
 
-        vectors = []
-        retained = []
-        for sample_size, parameters, sender in valid_params:
-            pieces = []
-            for key, base_value in base_params.items():
-                if key not in parameters:
-                    continue
-                local = self._multi_metrics_tensor(parameters[key])
-                base = self._multi_metrics_tensor(base_value)
-                if local is None or base is None or \
-                        not torch.is_floating_point(local):
-                    continue
-                pieces.append((local.detach().float().cpu() -
-                               base.detach().float().cpu()).reshape(-1))
-            if pieces:
-                vectors.append(torch.cat(pieces))
-                retained.append((sample_size, parameters, sender))
-        if len(vectors) < min_clients:
+        vector_info = self._collect_update_vectors(
+            valid_params, base_params, f"Multi-metrics {aggregation_name}")
+        if vector_info is None:
             return None
 
-        updates = torch.stack(vectors)
-        l1 = torch.norm(updates, p=1, dim=1)
-        l2 = torch.norm(updates, p=2, dim=1)
-        centered = updates - updates.median(dim=0).values
-        reference = centered.mean(dim=0)
-        eps = max(float(getattr(
-            self.ggeur_cfg, 'multi_metrics_cov_eps', 1e-6)), 1e-12)
-        cosine_distance = 1.0 - F.cosine_similarity(
-            centered, reference.unsqueeze(0).expand_as(centered), dim=1,
-            eps=eps)
-        features = torch.stack((l1, l2, cosine_distance), dim=1)
-        median = features.median(dim=0).values
-        mad = (features - median).abs().median(dim=0).values
-        scale = torch.where(mad > eps, mad * 1.4826,
-                            torch.ones_like(mad))
-        scores = torch.norm((features - median).abs() / scale, dim=1)
+        update_tensor = vector_info['update_tensor'].float()
+        retained_valid_params = vector_info['retained_valid_params']
+        n_users = len(retained_valid_params)
+        if n_users < min_clients:
+            logger.info(
+                f"Server: Multi-metrics for {aggregation_name} has fewer "
+                f"than {min_clients} usable updates; using FedAvg fallback")
+            return None
 
-        keep_ratio = max(0.0, min(1.0, float(getattr(
-            self.ggeur_cfg, 'multi_metrics_keep_ratio', 0.5))))
-        keep_num = max(1, min(len(retained),
-                              int(math.ceil(len(retained) * keep_ratio))))
-        keep_indices = torch.topk(
-            scores, keep_num, largest=False).indices.tolist()
-        selected = [retained[index] for index in keep_indices]
-        total_samples = sum(item[0] for item in selected)
+        eps = max(
+            float(getattr(self.ggeur_cfg, 'multi_metrics_cov_eps', 1e-6)),
+            1e-12)
+        base_vector = torch.cat([
+            vector_info['base_tensors'][key].reshape(-1)
+            for key in vector_info['vector_keys']
+        ]).to(self.device).float()
+        client_vectors = update_tensor + base_vector.view(1, -1)
+
+        manhattan = torch.norm(update_tensor, p=1, dim=1)
+        euclidean = torch.norm(update_tensor, p=2, dim=1)
+        base_norm = torch.norm(base_vector, p=2) + eps
+        client_norms = torch.norm(client_vectors, p=2, dim=1) + eps
+        cosine = torch.sum(client_vectors * base_vector.view(1, -1),
+                           dim=1) / (base_norm * client_norms)
+        features = torch.stack([manhattan, euclidean, cosine], dim=1)
+
+        indicators = torch.sum(
+            torch.abs(features.unsqueeze(1) - features.unsqueeze(0)), dim=1)
+        cov = self._multi_metrics_covariance(indicators, eps)
+        inv_cov = torch.pinverse(cov)
+        raw_scores = torch.sum((indicators @ inv_cov) * indicators, dim=1)
+        scores = torch.sqrt(torch.clamp(raw_scores, min=0.0))
+        scores = torch.where(torch.isfinite(scores), scores,
+                             torch.full_like(scores, float('inf')))
+
+        client_ids = [
+            int(sender) if sender is not None else None
+            for _, _, sender in retained_valid_params
+        ]
+
+        # --- Historical EMA smoothing ---
+        history_smoothing = bool(getattr(self.ggeur_cfg,
+                                         'multi_metrics_history_smoothing',
+                                         False))
+        ema_alpha = max(
+            0.01,
+            min(1.0,
+                float(getattr(self.ggeur_cfg, 'multi_metrics_ema_alpha',
+                              0.5))))
+        if history_smoothing:
+            smoothed = scores.clone()
+            for idx, cid in enumerate(client_ids):
+                if cid is None:
+                    continue
+                cur = float(scores[idx].item())
+                prev = self.multi_metrics_score_history.get(cid)
+                ema = ema_alpha * cur + (
+                    1.0 - ema_alpha) * prev if prev is not None else cur
+                self.multi_metrics_score_history[cid] = ema
+                smoothed[idx] = ema
+            sel_scores = smoothed
+        else:
+            sel_scores = scores
+
+        # --- Adaptive threshold or fixed keep_ratio ---
+        adaptive_threshold = bool(getattr(self.ggeur_cfg,
+                                          'multi_metrics_adaptive_threshold',
+                                          False))
+        z_threshold = float(getattr(self.ggeur_cfg,
+                                    'multi_metrics_z_threshold', 2.0))
+        keep_ratio = max(
+            0.0,
+            min(1.0,
+                float(getattr(self.ggeur_cfg, 'multi_metrics_keep_ratio',
+                              0.5))))
+        keep_num = max(1, min(int(math.ceil(n_users * keep_ratio)), n_users))
+
+        if adaptive_threshold:
+            sel_np = sel_scores.detach().cpu().float().numpy()
+            thr = float(sel_np.mean() + z_threshold * sel_np.std())
+            keep_mask = sel_scores <= thr
+            keep_indices_list = torch.where(
+                keep_mask)[0].detach().cpu().tolist()
+            if len(keep_indices_list) < keep_num:
+                keep_indices = torch.topk(sel_scores,
+                                          keep_num,
+                                          largest=False).indices
+                keep_indices_list = keep_indices.detach().cpu().tolist()
+            cutoff_score = thr
+        else:
+            keep_indices = torch.topk(sel_scores,
+                                      keep_num,
+                                      largest=False).indices
+            keep_indices_list = keep_indices.detach().cpu().tolist()
+            sel_np = sel_scores.detach().cpu().float().numpy()
+            cutoff_score = float(sel_np[keep_indices_list[-1]]) \
+                if keep_indices_list else float('inf')
+
+        selected_params = [
+            retained_valid_params[idx] for idx in keep_indices_list
+        ]
+        selected_total_samples = sum(s for s, _, _ in selected_params)
+        if selected_total_samples <= 0:
+            return None
+
+        kept_client_ids = [client_ids[idx] for idx in keep_indices_list]
+        kept_set = set(keep_indices_list)
+        dropped_client_ids = [
+            client_ids[i] for i in range(n_users) if i not in kept_set
+        ]
+
+        scores_np = scores.detach().cpu().float().numpy()
+        features_np = features.detach().cpu().float().numpy()
+        logger.info(
+            f"Server: Multi-metrics {aggregation_name} "
+            f"client_ids={client_ids}, kept={kept_client_ids}, "
+            f"dropped={dropped_client_ids}, "
+            f"mode={'adaptive' if adaptive_threshold else 'ratio'}"
+            f"{'+ema' if history_smoothing else ''}, "
+            f"keep_num={len(keep_indices_list)}/{n_users}, "
+            f"eps={eps:.2e}, cutoff_score={cutoff_score:.4f}, "
+            f"score_min={float(scores_np.min()):.4f}, "
+            f"score_max={float(scores_np.max()):.4f}, "
+            f"score_mean={float(scores_np.mean()):.4f}, "
+            f"score_median={float(np.median(scores_np)):.4f}, "
+            f"feat_manhattan_mean="
+            f"{float(features_np[:, 0].mean()):.4f}, "
+            f"feat_euclidean_mean="
+            f"{float(features_np[:, 1].mean()):.4f}, "
+            f"feat_cosine_mean={float(features_np[:, 2].mean()):.4f}")
+
         return self._fedavg_model_params_no_defense(
-            selected, total_samples)
+            selected_params, selected_total_samples)
 
     def _multi_metrics_filter_statistics(self, statistics_buffer):
         """Filter anomalous covariance/prototype statistics robustly."""
@@ -3195,13 +3833,28 @@ class GGEURServer(Server):
             for index in keep_indices
         }
 
-    def _aggregate_model_params(self, params_list, total_samples):
-        """Helper function to aggregate model parameters using weighted average"""
+    def _aggregate_model_params(self,
+                                params_list,
+                                total_samples,
+                                base_params=None,
+                                aggregation_name='model'):
+        """Aggregate model parameters with FedAvg or a configured defense.
+
+        ``base_params`` is the *previous* global state dict of the model being
+        aggregated; it is only consulted when a robust rule (currently
+        ``multi_metrics``) is enabled, so plain FedAvg keeps its original
+        behaviour even if callers start passing it.
+        """
         if not params_list:
             return None
 
         # Filter valid params
-        valid_params = [(s, p) for s, p in params_list if s > 0 and p is not None]
+        valid_params = [
+            (s, p, sender)
+            for s, p, sender in
+            (self._unpack_param_entry(entry) for entry in params_list)
+            if s > 0 and p is not None
+        ]
         if not valid_params:
             return None
 
@@ -3210,17 +3863,20 @@ class GGEURServer(Server):
             logger.warning(f"Server: Expected dict for model params, got {type(first_params)}, skipping aggregation")
             return None
 
-        def _to_tensor(param):
-            if isinstance(param, torch.Tensor):
-                return param
-            try:
-                restored = param2tensor(param)
-                if isinstance(restored, torch.Tensor):
-                    return restored
-                return torch.tensor(restored)
-            except Exception as e:
-                logger.debug(f"Server: Cannot convert model parameter to tensor ({e})")
-                return None
+        if self._is_multi_metrics_enabled() and \
+                self._multi_metrics_should_target_model(aggregation_name):
+            if base_params is not None:
+                multi_metrics_result = \
+                    self._multi_metrics_aggregate_model_params(
+                        valid_params,
+                        base_params,
+                        aggregation_name=aggregation_name)
+                if multi_metrics_result is not None:
+                    return multi_metrics_result
+            logger.warning(
+                f"Server: Multi-metrics requested for {aggregation_name}, "
+                "but no usable base parameters were available; falling back "
+                "to FedAvg")
 
         aggregated_params = {}
 
@@ -3230,7 +3886,7 @@ class GGEURServer(Server):
                 # Nested dict (e.g. combined params accidentally passed in); skip
                 logger.debug(f"Server: Skipping nested dict value for key '{key}' during aggregation setup")
                 continue
-            param_tensor = _to_tensor(param_tensor)
+            param_tensor = self._to_param_tensor(param_tensor)
             if param_tensor is None:
                 logger.debug(f"Server: Cannot convert key '{key}' to tensor, skipping")
                 continue
@@ -3240,7 +3896,7 @@ class GGEURServer(Server):
             return None
 
         # Weighted average — only iterate over keys validated from first_params
-        for sample_size, params in valid_params:
+        for sample_size, params, _ in valid_params:
             weight = sample_size / total_samples
             for key in aggregated_params.keys():
                 if key not in params:
@@ -3248,10 +3904,15 @@ class GGEURServer(Server):
                 param_tensor = params[key]
                 if isinstance(param_tensor, dict):
                     continue
-                param_tensor = _to_tensor(param_tensor)
+                param_tensor = self._to_param_tensor(param_tensor)
                 if param_tensor is None:
                     continue
-                aggregated_params[key] += weight * param_tensor.float()
+                # Clients normally upload CPU parameters, but a custom training
+                # path may return GPU tensors. Align to the accumulator instead
+                # of assuming every update shares one device.
+                param_tensor = param_tensor.float().to(
+                    aggregated_params[key].device)
+                aggregated_params[key] += weight * param_tensor
 
         return aggregated_params
 
@@ -3344,6 +4005,12 @@ class GGEURServer(Server):
         seed = (int(self._cfg.seed) if configured_split_seed < 0
                 else configured_split_seed)
 
+        dataset_class = None
+        dataset_kwargs = {}
+        # Portable records keyed by domain; only set for dataset classes that
+        # accept a ``records`` argument (currently only DomainNet).
+        records_by_domain = None
+
         # Determine domains based on dataset type
         if 'pacs' in data_type:
             domains = ['photo', 'art_painting', 'cartoon', 'sketch']
@@ -3361,20 +4028,41 @@ class GGEURServer(Server):
             domains, classes = self._get_domainnet_eval_metadata()
             dataset_class = DomainNet
             dataset_kwargs = {'classes': classes}
+            # Uploaded datasets have no <domain>/<class>/ layout; they are
+            # described by a portable manifest. Without these records the
+            # constructor falls back to scanning the raw directory tree and
+            # silently yields nothing, which disables image-level evaluations
+            # such as the SABRE ASR probe.
+            records_by_domain = self._get_domainnet_eval_records()
         else:
             logger.warning(f"Server: Unknown dataset type {data_type} for CNN evaluation")
             return
 
         from torchvision import transforms
+        # Mirror the normalization used by `_load_test_data` so that the
+        # images fed to the feature extractor here match what the cached
+        # features were computed from. Otherwise image-level evaluations
+        # (e.g. applying the SABRE trigger) are run off-distribution.
+        if data_type in ('digits-3domain', 'digits_3domain', 'digit3',
+                         'digit-three-domain') and str(getattr(
+                             self.ggeur_cfg, 'feature_extractor',
+                             'clip')).lower() != 'clip':
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
+        else:
+            mean = [0.48145466, 0.4578275, 0.40821073]
+            std = [0.26862954, 0.26130258, 0.27577711]
         transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                               std=[0.229, 0.224, 0.225])
+            transforms.Normalize(mean=mean, std=std)
         ])
 
         for domain in domains:
             try:
+                per_domain_kwargs = dict(dataset_kwargs)
+                if records_by_domain is not None:
+                    per_domain_kwargs['records'] = records_by_domain[domain]
                 test_dataset = dataset_class(
                     root=data_root,
                     domain=domain,
@@ -3383,7 +4071,7 @@ class GGEURServer(Server):
                     train_ratio=train_ratio,
                     val_ratio=val_ratio,
                     seed=seed,
-                    **dataset_kwargs
+                    **per_domain_kwargs
                 )
 
                 if len(test_dataset) > 0:
@@ -3495,11 +4183,171 @@ class GGEURServer(Server):
             return total
         return 0
 
+    # ------------------------------------------------------------------
+    # Artifact persistence (for offline standalone evaluation / comparison)
+    # ------------------------------------------------------------------
+
+    def _persist_artifacts(self, suffix, round_idx, kind):
+        """Shared save of the trained MLP head (+ sabre trigger).
+
+        Only the trained components are persisted; the frozen pretrained
+        feature extractor (CLIP/CNN/timm) is intentionally NOT saved and
+        is reloaded from its original checkpoint during standalone eval.
+
+        suffix: filename token ('final' or 'peak').
+        kind:   metadata artifact_kind ('final' or 'peak').
+        round_idx: the round whose aggregated global_mlp is being saved.
+        Returns True if the MLP head was saved.
+        """
+        if self.global_mlp is None:
+            logger.warning(
+                f"Server: global_mlp is None, skip saving {kind} artifacts")
+            return False
+
+        # After logging setup, cfg.outdir is rewritten to {outdir}/{expname}
+        # (or a sub_exp_<ts> subdir) and holds exp_print.log + config.yaml.
+        # Save the trained artifacts in this same directory so they live
+        # alongside this run's logs.
+        save_dir = getattr(self._cfg, 'outdir', 'exp')
+        os.makedirs(save_dir, exist_ok=True)
+        expname = getattr(self._cfg, 'expname', 'ggeur_run')
+
+        seed = int(getattr(self._cfg, 'seed', 42))
+        # Prefer the embedding dim inferred from client reports (matches the
+        # actual built MLP) over the cfg default.
+        embedding_dim = int(getattr(self, 'inferred_embedding_dim', 0) or 0)
+        if embedding_dim == 0:
+            try:
+                embedding_dim = int(self._get_embedding_dim())
+            except Exception:
+                embedding_dim = int(
+                    getattr(self.ggeur_cfg, 'embedding_dim', 0))
+        num_classes = int(self._cfg.model.num_classes)
+        mlp_hidden_dim = int(self.ggeur_cfg.mlp_hidden_dim)
+        mlp_dropout = float(self.ggeur_cfg.mlp_dropout)
+
+        # --- MLP head (the trained classifier) ---
+        head_path = os.path.join(
+            save_dir, f"{expname}_seed{seed}_{suffix}_mlp_head.pt")
+        head_payload = {
+            'state_dict': copy.deepcopy(self.global_mlp.state_dict()),
+            'seed': seed,
+            'final_round': int(round_idx),
+            'artifact_kind': kind,
+            'embedding_dim': embedding_dim,
+            'num_classes': num_classes,
+            'mlp_hidden_dim': mlp_hidden_dim,
+            'mlp_dropout': mlp_dropout,
+            'feature_extractor_type': self.feature_extractor_type,
+            'clip_model': getattr(self.ggeur_cfg, 'clip_model', None),
+            'clip_pretrained': getattr(
+                self.ggeur_cfg, 'clip_pretrained', None),
+            'clip_model_path': getattr(
+                self.ggeur_cfg, 'clip_model_path', None),
+            'head_only_mode': bool(self.head_only_mode),
+        }
+        torch.save(head_payload, head_path)
+        logger.info(
+            f"Server: Saved {kind} MLP head (round {round_idx}) to "
+            f"{head_path}")
+
+        # --- Attack trigger (sabre) ---
+        # An optimized trigger must be paired with the MLP head for
+        # standalone ASR evaluation.
+        trig = getattr(self, 'sabre_shared_trigger', None)
+        if trig is not None and isinstance(trig.get('trigger'),
+                                           torch.Tensor):
+            trig_path = os.path.join(
+                save_dir,
+                f"{expname}_seed{seed}_sabre_{suffix}_trigger.pt")
+            mask = trig.get('mask')
+            torch.save({
+                'trigger': trig['trigger'].detach().cpu(),
+                'mask': mask.detach().cpu()
+                if isinstance(mask, torch.Tensor) else None,
+                'target_label': int(trig.get(
+                    'target_label',
+                    getattr(self._cfg.attack, 'target_label_ind', 0))),
+                'trigger_mode': trig.get('trigger_mode', 'sabre'),
+                'attack_name': 'sabre',
+                'source_client_id': int(trig.get('source_client_id', -1)),
+                'source_round': int(trig.get('source_round', round_idx)),
+                'seed': seed,
+                'embedding_dim': embedding_dim,
+                'num_classes': num_classes,
+                'artifact_kind': kind,
+                'mlp_head_file': os.path.basename(head_path),
+            }, trig_path)
+            logger.info(
+                f"Server: Saved {kind} sabre trigger (round {round_idx}) to "
+                f"{trig_path}")
+        return True
+
+    def _save_trained_artifacts(self):
+        """Save the FINAL (end-of-training) MLP head + trigger for offline
+        cross-seed evaluation. Called from _finish()."""
+        self._persist_artifacts(
+            suffix='final', round_idx=self.state, kind='final')
+
+    def _save_peak_artifacts(self, round_idx):
+        """Save a PEAK snapshot at the last attack round, where the backdoor
+        is strongest.
+
+        The SABRE attack stops after ``start_round + poison_epochs`` rounds;
+        the subsequent clean rounds erode the trigger->target mapping in the
+        MLP head. The final-round model therefore understates ASR. To measure
+        ASR comparable to per-round (eval.freq=1) runs, the MLP head must be
+        captured at the last attack round (peak backdoor). Cheap (state_dict
+        copy only), no test eval, so compatible with eval.freq=0. Saved at
+        most once per run.
+        """
+        if getattr(self, '_peak_artifacts_saved', False):
+            return
+        if not getattr(self, 'sabre_enabled', False):
+            return
+        last_attack_rounds = self._get_last_attack_rounds()
+        if not last_attack_rounds:
+            return
+        if int(round_idx) not in last_attack_rounds:
+            return
+        if self._persist_artifacts(
+                suffix='peak', round_idx=round_idx, kind='peak'):
+            self._peak_artifacts_saved = True
+
+    def _get_last_attack_rounds(self):
+        """Return the list of last attack rounds (inclusive) for the enabled
+        attack.  Used to decide when to snapshot the peak (strongest
+        backdoor) MLP head.
+
+        This lineage only implements the SABRE training-phase attack; other
+        attack methods added later should be appended here following the
+        same ``start_round + poison_epochs - 1`` rule.
+        """
+        lasts = []
+        if getattr(self, 'sabre_enabled', False) and \
+                self.sabre_cfg is not None:
+            start_round = int(getattr(
+                self.sabre_cfg, 'start_round',
+                getattr(self._cfg.attack, 'inject_round', 0)))
+            if start_round < 0:
+                start_round = int(
+                    getattr(self._cfg.attack, 'inject_round', 0))
+            poison_epochs = int(getattr(self.sabre_cfg, 'poison_epochs', 0))
+            if poison_epochs > 0:
+                lasts.append(int(start_round + poison_epochs - 1))
+        return sorted(set(lasts))
+
     def _finish(self):
         """Finish FL training"""
         self.is_finish = True
         logger.info("="*60)
         logger.info(f"Server: Training finished after {self.state} rounds")
+
+        # Save trained artifacts (MLP head + sabre trigger) for offline
+        # evaluation. Only trained components are saved; the frozen
+        # pretrained feature extractor is reloaded from its original
+        # checkpoint during standalone evaluation.
+        self._save_trained_artifacts()
 
         # Print MLP/Classifier final results
         if self.test_accuracies_history:
@@ -3788,7 +4636,14 @@ class GGEURServer(Server):
             return
 
         total_prompt_samples = sum(s for s, _ in prompt_params)
-        aggregated = self._aggregate_model_params(prompt_params, total_prompt_samples)
+        prompt_base = None
+        if self.global_prompt_ctx is not None:
+            prompt_base = {'ctx': self.global_prompt_ctx.detach().clone()}
+        aggregated = self._aggregate_model_params(
+            prompt_params,
+            total_prompt_samples,
+            base_params=prompt_base,
+            aggregation_name='prompt')
         if aggregated and 'ctx' in aggregated:
             self.global_prompt_ctx = aggregated['ctx'].to(self.device)
             logger.info(f"Server: Aggregated prompt ctx from {len(prompt_params)} clients "

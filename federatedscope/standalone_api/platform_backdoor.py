@@ -57,6 +57,19 @@ def read_json(path, default=None):
         return default
 
 
+def _manifest_classes(root):
+    """从上传数据集的便携 manifest 里读类别名; 找不到返回 None。"""
+    if not root:
+        return None
+    base = Path(root)
+    for candidate in (base / 'manifest.json', base.parent / 'manifest.json'):
+        manifest = read_json(candidate)
+        classes = (manifest or {}).get('classes')
+        if isinstance(classes, list) and classes:
+            return [str(item) for item in classes]
+    return None
+
+
 class BackdoorService:
     def __init__(self, repo, state):
         self.repo = Path(repo).resolve()
@@ -76,6 +89,10 @@ class BackdoorService:
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.processes = {}
+        # 由「启动训练」(platform_backdoor_training) 登记的当前结果组; 没有则为 None
+        self.group = None
+        self._group_stamp = None
+        self._load_group()
         self._index = None
         self._class_names = None
         self._class_names_loaded = False
@@ -121,10 +138,77 @@ class BackdoorService:
         return (exp_dirs[0] / 'sabre').resolve()
 
     # ------------------------------------------------------------------ #
+    # 训练结果组 (由 platform_backdoor_training 登记)
+    # ------------------------------------------------------------------ #
+    def _load_group(self):
+        """训练启动器跑完一组实验后写 groups.json, 这里据此切到该组。
+
+        带组的 base 里可能同时存在历史结果 (军机三域) 与新训练结果 (用户上传
+        数据集), 二者类别数不同、data.root 也不同, 必须显式挑选而不是让自动
+        发现把两组混在一起。
+        """
+        value = read_json(self.root / 'groups.json')
+        group = value.get('active') if isinstance(value, dict) else None
+        if not isinstance(group, dict):
+            return
+        token = str(group.get('token') or '')
+        if not re.fullmatch(r'grp[0-9a-f]{8}', token):
+            return
+        attack, defense = group.get('attack'), group.get('defense')
+        for name in (attack, defense):
+            if name is not None and not re.fullmatch(r'[A-Za-z0-9_.-]+', str(name)):
+                return
+        if not attack or not (self.base / str(attack)).is_dir():
+            return
+        self.group = group
+        root = str(group.get('dataRoot') or '')
+        if root and Path(root).is_dir():
+            self.data_root = root
+
+    def _sync_group(self):
+        """groups.json 变化时热切换结果组, 训练完成后无需重启服务。
+
+        绝大多数请求只是两次 stat; token 与当前组不同才清空
+        runs/类别名/测试集索引/预测缓存, 由各惰性加载器按新组重建。
+        """
+        marker = self.root / 'groups.json'
+        try:
+            stat = marker.stat()
+            stamp = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            stamp = None
+        if stamp == self._group_stamp:
+            return
+        with self.lock:
+            try:                                # 双检: 等锁期间可能已被刷新
+                stat = marker.stat()
+                stamp = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                stamp = None
+            if stamp == self._group_stamp:
+                return
+            self._group_stamp = stamp
+            self.group = None
+            self._load_group()
+            self._index = None
+            self._class_names = None
+            self._class_names_loaded = False
+            self._predictions = None
+            self._predictions_loaded = False
+            self._precompute_started = False
+
+    # ------------------------------------------------------------------ #
     # 实验目录发现
     # ------------------------------------------------------------------ #
     def runs(self):
         """attack / defense 两个 run 目录名。可用 FS_BACKDOOR_RUNS 覆盖。"""
+        self._sync_group()
+        group = self.group
+        if group and group.get('attack'):
+            pair = {'attack': str(group['attack']),
+                    'defense': str(group['defense']) if group.get('defense') else None}
+            if (self.base / pair['attack']).is_dir():
+                return pair
         override = os.environ.get('FS_BACKDOOR_RUNS', '')
         if override:
             pairs = dict(item.split('=', 1) for item in override.split(',') if '=' in item)
@@ -164,6 +248,7 @@ class BackdoorService:
     # ------------------------------------------------------------------ #
     def _load_index(self):
         """[(id, label), ...]; 测试集图片目录不存在时返回 None。"""
+        self._sync_group()
         if self._index is not None:
             return self._index
         index_file = self.base / 'testset_images' / 'index.csv'
@@ -180,14 +265,29 @@ class BackdoorService:
 
     def class_names(self):
         """类别名。只依赖 numpy/PIL, 不加载 torch。"""
+        self._sync_group()
         if self._class_names_loaded:
             return self._class_names or []
         self._class_names_loaded = True
+        # 训练组直接带着类别名: 用户上传数据集既不叫 OfficeHome 也不是军机
+        if isinstance(self.group, dict):
+            names = [str(item) for item in (self.group.get('classes') or [])]
+            if names:
+                self._class_names = names
+                return names
         try:
             import yaml
             data_type = ''
             data_root = ''
-            for config in sorted(self.base.glob('*/config.yaml')):
+            configs = sorted(self.base.glob('*/config.yaml'))
+            # 优先读本组的配置, 避免和历史数据集混淆
+            preferred = []
+            for name in filter(None, ((self.group or {}).get(k)
+                                      for k in ('attack', 'defense', 'baseline'))):
+                candidate = self.base / str(name) / 'config.yaml'
+                if candidate.is_file():
+                    preferred.append(candidate)
+            for config in preferred + [c for c in configs if c not in preferred]:
                 with config.open(encoding='utf-8') as stream:
                     loaded = yaml.safe_load(stream) or {}
                 section = loaded.get('data') or {}
@@ -210,6 +310,9 @@ class BackdoorService:
                 _, names = discover_domainnet_metadata(
                     str(root), ['aerial', 'natural', 'recon'], False)
                 self._class_names = list(names)
+            elif 'domainnet' in data_type:
+                # 上传数据集: 类别名来自便携 manifest, 目录本身无域/类层级
+                self._class_names = _manifest_classes(root)
         except Exception:
             self._class_names = None
         return self._class_names or []
@@ -218,17 +321,27 @@ class BackdoorService:
         rows = self._load_index()
         names = self.class_names()
         runs = self.runs()
+        meta = read_json(self.base / 'testset_images' / 'meta.json') or {}
+        testset_info = None
+        if meta.get('testsetId'):
+            testset_info = dict(id=str(meta['testsetId']),
+                                name=str(meta.get('testsetName') or ''),
+                                count=int(meta.get('count') or 0),
+                                skipped=int(meta.get('skipped') or 0),
+                                unlabelled=int(meta.get('unlabelled') or 0))
         if rows is None:
             return dict(exported=False, total=0, classNames=names, domains=[], labels=[], runs=runs,
-                        base=str(self.base), message=f'未找到测试集导出: {self.base / "testset_images"}')
+                        base=str(self.base), testset=testset_info,
+                        message='未上传测试集：请按 类别/图片 组织上传测试集后开始测试')
         domains, labels = {}, {}
         for image_id, label in rows:
             domain = image_id.rsplit('_', 1)[0]
             domains[domain] = domains.get(domain, 0) + 1
             labels[label] = labels.get(label, 0) + 1
         return dict(exported=True, total=len(rows), classNames=names,
+                    testset=testset_info,
                     domains=[dict(name=name, count=count) for name, count in sorted(domains.items())],
-                    labels=[dict(index=index, name=names[index] if index < len(names) else str(index),
+                    labels=[dict(index=index, name=names[index] if 0 <= index < len(names) else ('未标注' if index < 0 else str(index)),
                                  count=count) for index, count in sorted(labels.items())],
                     runs=runs, base=str(self.base), maxIds=MAX_IDS)
 
@@ -246,6 +359,7 @@ class BackdoorService:
     # ------------------------------------------------------------------ #
     def _load_predictions(self):
         """全测试集"带触发器"预测缓存; 未生成时返回 None。"""
+        self._sync_group()
         if self._predictions_loaded:
             return self._predictions
         self._predictions_loaded = True
@@ -254,6 +368,28 @@ class BackdoorService:
                 and isinstance(cache.get('targetLabel'), int)):
             self._predictions = cache
         return self._predictions
+
+    def _testset_manifest(self):
+        """当前组的上传测试集 (manifest 路径, 图片根); 未配置返回 None。
+
+        testsetId 由训练服务 (_apply_testset) 写入 groups.json,
+        manifest 与图片都在上传数据集自己的目录里。
+        """
+        self._sync_group()
+        testset_id = (self.group or {}).get('testsetId') \
+            if isinstance(self.group, dict) else None
+        if not testset_id:
+            return None
+        from .uploaded_datasets import DatasetStore
+        try:
+            store = DatasetStore(self.repo)
+            directory = store.directory(testset_id)
+            manifest = directory / 'test_manifest.json'
+            if not manifest.is_file():
+                return None
+            return manifest, directory / 'images'
+        except PlatformError:
+            return None
 
     def _start_precompute(self):
         """缓存缺失时后台生成一次 (不阻塞挑图, 失败也不影响本次随机抽样)。"""
@@ -270,6 +406,12 @@ class BackdoorService:
                    ','.join(f'{key}={value}' for key, value in runs.items() if value)]
         if self.data_root:
             command += ['--data-root', str(self.data_root)]
+        # 用户上传的测试集: 预计算也必须覆盖同一批图片
+        manifest = self._testset_manifest()
+        if manifest:
+            command += ['--test-manifest', str(manifest[0])]
+            if manifest[1]:
+                command += ['--data-root', str(manifest[1])]
         log = self.root / 'precompute.log'
 
         def _worker():
@@ -304,7 +446,7 @@ class BackdoorService:
             raise PlatformError('请求必须是 JSON 对象')
         rows = self._load_index()
         if rows is None:
-            raise PlatformError('测试集尚未导出, 请先运行一次绘图脚本以生成测试集图片', 409)
+            raise PlatformError('尚未配置测试集, 请先上传测试集（按 类别/图片 组织）', 409)
         count = payload.get('count', MAX_IDS)
         if not isinstance(count, int) or isinstance(count, bool):
             raise PlatformError('图片数量非法')
@@ -431,7 +573,7 @@ class BackdoorService:
             if not isinstance(font_size, int) or isinstance(font_size, bool) or not 12 <= font_size <= 48:
                 raise PlatformError('字号必须为 12–48 的整数')
             if not Path(self.data_root).is_dir():
-                raise PlatformError('后门研究共享的 OfficeHome 数据集不存在', 409)
+                raise PlatformError('后门研究的数据集根目录不存在，请重新训练或检查 data.root', 409)
             name = str(payload.get('name', '') or '')[:120]
             job_id = uuid.uuid4().hex
             output = self.directory(job_id)
@@ -442,6 +584,11 @@ class BackdoorService:
             spec = dict(base=str(self.base), runs={k: v for k, v in runs.items() if v},
                         ids=ids, output=str(output), device=self.device,
                         dataRoot=self.data_root, fontSize=font_size)
+            # 用户上传的测试集: 三连对比整体改用它 (不再用训练时的内部划分)
+            manifest = self._testset_manifest()
+            if manifest:
+                spec.update(testManifest=str(manifest[0]),
+                            testRoot=str(manifest[1]))
             JsonRepository._atomic_write(output / 'spec.json', spec)
             job = dict(id=job_id, action='backdoor', ids=ids, name=name,
                        runs=spec['runs'], base=str(self.base), device=self.device,
@@ -459,7 +606,10 @@ class BackdoorService:
                 if job['status'] != 'queued':
                     return
                 env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'OMP_NUM_THREADS': '2',
-                       'MPLCONFIGDIR': str(output / 'mpl')}
+                       # 共享 mpl 缓存: 逐任务的空目录会触发 fontlist 重建,
+                       # 重建结束要删 .matplotlib-lock, 会被宿主 safe-delete
+                       # 拦截挂死 (见 platform_backdoor_training._mpl_dir)。
+                       'MPLCONFIGDIR': str(self.root.parent / 'mpl')}
                 with (output / 'runner.log').open('wb') as log:
                     proc = subprocess.Popen(
                         [sys.executable, str(self.repo / 'scripts' / 'backdoor' / 'run_group.py'),

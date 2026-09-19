@@ -10,9 +10,14 @@ def wrap_attacker_trainer(base_trainer, config):
 
     '''
     attack_method = config.attack.attack_method.lower()
-    if attack_method == 'cerberus':
-        # GGEUR implements CERBERUS inside its custom client training path.
-        # No generic trainer wrapper is needed here.
+    # 注意: 参考仓库写成 `if attack_method == 'cerberus' or 'sabre'`, 这是个
+    # 恒真条件 (非空字符串永远为真), 会连带屏蔽下面所有 trainer 包装。
+    # 这里按"GGEUR 在自己的 client 训练路径里实现了 CERBERUS/SABRE,
+    # 不需要通用 wrapper"的原意写成本集合判断, 不扩散那个 bug。
+    if attack_method in ('cerberus', 'sabre'):
+        # GGEUR implements CERBERUS/SABRE inside its custom client training
+        # path (GGEURClient._train_head_for_round). No generic trainer
+        # wrapper is needed here.
         return base_trainer
     if attack_method == 'gan_attack':
         from federatedscope.attack.trainer import wrap_GANTrainer

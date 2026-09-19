@@ -31,6 +31,7 @@ from federatedscope.core.message import Message, b64serializer
 from federatedscope.core.auxiliaries.utils import param2tensor
 from federatedscope.core.workers.client import Client
 from federatedscope.register import register_worker
+from federatedscope.attack.auxiliary.a3fl_utils import parse_attacker_ids
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +330,26 @@ class GGEURClient(Client):
         self.fail_after_stage = str(
             getattr(self.ggeur_cfg, 'fail_after_stage', '') or '')
         self.fail_on_round = int(getattr(self.ggeur_cfg, 'fail_on_round', -1))
+
+        # ===== SABRE Mode =====
+        # Full-image additive backdoor on the GGEUR feature-head path. The
+        # malicious client optimizes a shared full-image trigger, converts it
+        # into poisoned CLIP/CNN features, and trains the head with a
+        # clean-anchored objective so the update stays close to a benign one.
+        attack_method = str(
+            getattr(config.attack, 'attack_method', '')).lower()
+        self.sabre_enabled = attack_method == 'sabre'
+        self.sabre_cfg = getattr(config.attack, 'sabre', None)
+        self.sabre_attacker_ids = set(
+            parse_attacker_ids(config.attack.attacker_id))
+        self.sabre_is_attacker = (
+            self.sabre_enabled and self.ID in self.sabre_attacker_ids)
+        self.sabre_trigger = None
+        self.sabre_mask = None
+        self.sabre_latest_meta = {
+            'active': False,
+            'client_id': int(self.ID)
+        }
 
         # Security experiments remain a standalone-only compatibility path.
         # Keep their state client-local so the distributed accuracy runtime
@@ -3790,7 +3811,13 @@ class GGEURClient(Client):
                         # Save global ctx for FedProx proximal term
                         self.global_prompt_ctx = ctx_tensor.to(self.device).detach().clone()
                 except Exception as e:
-                    logger.debug(f"Client {self.ID}: Could not load prompt ctx: {e}")
+                    logger.debug(
+                        f"Client {self.ID}: Could not load prompt ctx: {e}")
+
+        # Attacks may piggyback a server-relayed shared trigger on the
+        # broadcast so that every malicious client stays aligned.
+        if getattr(self, 'sabre_enabled', False):
+            self._extract_shared_attack_trigger(content, 'sabre')
 
         # Update MLP with global model parameters
         if mlp_para is not None and self.mlp_classifier is not None:
@@ -3813,8 +3840,10 @@ class GGEURClient(Client):
             except Exception as e:
                 logger.debug(f"Client {self.ID}: Could not load CNN state dict: {e}")
 
-        # Train MLP on augmented features
-        mlp_sample_size, mlp_model_para, mlp_results = self._train_on_augmented_data()
+        # Train MLP on augmented features (SABRE hijacks this step on the
+        # malicious clients once its schedule becomes active).
+        mlp_sample_size, mlp_model_para, mlp_results = self._train_head_for_round(
+            round_idx)
 
         # MOON: save current local model as previous model for next round
         if self.use_moon and self.mlp_classifier is not None:
@@ -3889,6 +3918,17 @@ class GGEURClient(Client):
                 self.fedproto_local_prototypes)
             combined_para['fedproto_local_counts'] = copy.deepcopy(
                 self.fedproto_local_counts)
+
+        # Adversarial metadata rides along with the uploaded parameters so the
+        # server can relay the shared trigger / record the attack round.
+        if getattr(self, 'sabre_enabled', False):
+            if isinstance(combined_para, dict) and 'mlp' in combined_para:
+                combined_para['sabre'] = copy.deepcopy(self.sabre_latest_meta)
+            elif combined_para is not None:
+                combined_para = {
+                    'mlp': combined_para,
+                    'sabre': copy.deepcopy(self.sabre_latest_meta),
+                }
 
         # Send model parameters
         self.comm_manager.send(
@@ -4815,6 +4855,891 @@ class GGEURClient(Client):
         if was_training:
             self.mlp_classifier.train()
         return prototypes, prototype_counts
+
+    # ===== SABRE backdoor attack =====
+    # Ported from the attack feature branch (saber_cnn). Every helper below
+    # guards on ``sabre_enabled``/``sabre_is_attacker``, so the default clean
+    # training path is byte-for-byte unchanged unless the attack is turned on
+    # through cfg.attack.attack_method == 'sabre'.
+
+    def _get_sabre_start_round(self):
+        start_round = int(getattr(self.sabre_cfg, 'start_round', -1))
+        if start_round >= 0:
+            return start_round
+        return int(getattr(self._cfg.attack, 'inject_round', 0))
+
+    def _is_sabre_active_round(self, round_idx):
+        if not self.sabre_enabled or self.sabre_cfg is None:
+            return False
+        start_round = self._get_sabre_start_round()
+        if int(round_idx) < start_round:
+            return False
+        poison_epochs = int(getattr(self.sabre_cfg, 'poison_epochs', 0))
+        if poison_epochs <= 0:
+            return True
+        return int(round_idx) < start_round + poison_epochs
+
+    def _should_sabre_attack(self, round_idx):
+        return (self.sabre_is_attacker and
+                self._is_sabre_active_round(round_idx))
+
+    def _get_sabre_trigger_update_interval(self):
+        return max(
+            1, int(getattr(self.sabre_cfg, 'trigger_update_interval', 1)))
+
+    def _should_update_sabre_trigger(self, round_idx):
+        if self.sabre_trigger is None or self.sabre_mask is None:
+            return True
+
+        update_interval = self._get_sabre_trigger_update_interval()
+        start_round = self._get_sabre_start_round()
+        active_offset = int(round_idx) - int(start_round)
+        return active_offset % update_interval == 0
+
+    def _ensure_sabre_trigger(self, sample_image):
+        if self.sabre_trigger is not None and self.sabre_mask is not None:
+            return
+        if sample_image.dim() != 3:
+            raise ValueError(
+                'SABRE requires image tensor with shape [C, H, W].')
+
+        channels, height, width = sample_image.shape
+        shape = (1, channels, height, width)
+        init_mode = str(getattr(self.sabre_cfg, 'trigger_init_mode',
+                                'uniform')).lower()
+        trigger_init = float(getattr(self.sabre_cfg, 'trigger_init', 0.0))
+        random_scale = float(
+            getattr(self.sabre_cfg, 'trigger_random_scale', 0.01))
+        seed = int(getattr(self.sabre_cfg, 'trigger_seed', 0)) + \
+            int(self.ID) * 1009
+
+        if init_mode in ('uniform', 'random_uniform'):
+            generator = torch.Generator(device='cpu')
+            generator.manual_seed(seed)
+            trigger = torch.empty(shape).uniform_(
+                -random_scale, random_scale, generator=generator)
+        elif init_mode in ('normal', 'gaussian', 'random_normal'):
+            generator = torch.Generator(device='cpu')
+            generator.manual_seed(seed)
+            trigger = torch.randn(
+                shape, generator=generator) * random_scale
+        else:
+            trigger = torch.full(shape, trigger_init)
+
+        self.sabre_trigger = trigger.to(self.device)
+        self.sabre_mask = torch.ones_like(self.sabre_trigger)
+
+    def _apply_sabre_trigger(self, images, trigger=None, mask=None):
+        trigger = self.sabre_trigger if trigger is None else trigger
+        mask = self.sabre_mask if mask is None else mask
+        if trigger is None or mask is None:
+            return images
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+        clip_min = float(getattr(self.sabre_cfg, 'image_clip_min', -3.0))
+        clip_max = float(getattr(self.sabre_cfg, 'image_clip_max', 3.0))
+        delta = trigger.to(images.device) * mask.to(images.device)
+        return torch.clamp(images + delta, clip_min, clip_max)
+
+    def _extractor_forward(self, images, allow_input_grad=False):
+        """Forward images through the frozen backbone.
+
+        ``allow_input_grad`` re-runs the backbone without the inference-mode
+        guard so gradients can flow back into the input image, which is
+        required for optimizing an additive trigger.
+        """
+        if self.feature_extractor_type == 'cnn':
+            if allow_input_grad and self.cnn_extractor is not None and \
+                    getattr(self.cnn_extractor, 'freeze', False):
+                features = self.cnn_extractor.backbone(images)
+                if features.dim() > 2:
+                    features = features.view(features.size(0), -1)
+                return features
+            return self.cnn_extractor(images)
+        if self.feature_extractor_type == 'timm':
+            if allow_input_grad and self.timm_extractor is not None and \
+                    getattr(self.timm_extractor, 'freeze', False):
+                features = self.timm_extractor.backbone(images)
+                if features.dim() > 2:
+                    features = features.view(features.size(0), -1)
+                return features
+            return self.timm_extractor(images)
+        return self.clip_model.encode_image(images)
+
+    def _get_train_dataset_base(self):
+        """Return (dataset, indices) of the raw local training images."""
+        train_data = self.trainer.ctx.data.get('train', None)
+        if train_data is None:
+            train_data = self.data.get('train', None)
+        if train_data is None:
+            return None, None
+
+        dataset = train_data.dataset if hasattr(
+            train_data, 'dataset') else train_data
+        from torch.utils.data import Subset
+        if isinstance(dataset, Subset):
+            return dataset.dataset, list(dataset.indices)
+        return dataset, list(range(len(dataset)))
+
+    def _extract_shared_attack_trigger(self, content, attack_name):
+        """Restore the single trigger the server relays to all attackers."""
+        if not isinstance(content, dict):
+            return
+
+        payload = content.get(attack_name, None)
+        shared_trigger = content.get(f'{attack_name}_shared_trigger', None)
+        if shared_trigger is None and isinstance(payload, dict):
+            shared_trigger = payload.get('shared_trigger', None)
+        if not isinstance(shared_trigger, dict):
+            return
+
+        trigger = shared_trigger.get('trigger', None)
+        mask = shared_trigger.get('mask', None)
+        if trigger is None or mask is None:
+            return
+        try:
+            trigger = param2tensor(trigger)
+            mask = param2tensor(mask)
+        except Exception as exc:
+            logger.debug(
+                f"Client {self.ID}: Could not restore shared "
+                f"{attack_name.upper()} trigger: {exc}")
+            return
+        if not isinstance(trigger, torch.Tensor) or \
+                not isinstance(mask, torch.Tensor):
+            return
+        if tuple(trigger.shape) != tuple(mask.shape):
+            logger.debug(
+                f"Client {self.ID}: Ignored shared {attack_name.upper()} "
+                f"trigger with mismatched trigger/mask shapes "
+                f"{tuple(trigger.shape)} vs {tuple(mask.shape)}")
+            return
+
+        setattr(self, f'{attack_name}_trigger',
+                trigger.to(self.device).float())
+        setattr(self, f'{attack_name}_mask', mask.to(self.device).float())
+        source_client = shared_trigger.get('source_client_id', 'unknown')
+        source_round = shared_trigger.get('source_round', 'unknown')
+        logger.info(
+            f"Client {self.ID}: Loaded shared {attack_name.upper()} trigger "
+            f"from client {source_client}, round {source_round}")
+
+    def _optimize_sabre_trigger(self, base_dataset, candidate_indices,
+                                round_idx):
+        """Gradient-search a full-image additive trigger toward target."""
+        if self.mlp_classifier is None or self.sabre_trigger is None or \
+                self.sabre_mask is None or base_dataset is None or \
+                not candidate_indices:
+            return
+
+        target_label = int(self._cfg.attack.target_label_ind)
+        steps = max(
+            0, int(getattr(self.sabre_cfg, 'trigger_search_steps', 0)))
+        if steps <= 0:
+            return
+
+        batch_size = max(
+            1,
+            int(getattr(self.sabre_cfg, 'trigger_search_batch_size', 8)))
+        max_batches = max(
+            1, int(getattr(self.sabre_cfg, 'trigger_search_batches', 2)))
+        lr = float(getattr(self.sabre_cfg, 'trigger_search_lr', 0.01))
+        clip_min = float(
+            getattr(self.sabre_cfg, 'trigger_search_clip_min', -0.05))
+        clip_max = float(
+            getattr(self.sabre_cfg, 'trigger_search_clip_max', 0.05))
+        proj_norm = float(
+            getattr(self.sabre_cfg, 'trigger_search_proj_norm', 4.0))
+        target_margin = float(
+            getattr(self.sabre_cfg, 'trigger_search_target_margin', 1.0))
+        gain_weight = float(
+            getattr(self.sabre_cfg, 'trigger_search_gain_weight', 0.5))
+        gain_margin = float(
+            getattr(self.sabre_cfg, 'trigger_search_gain_margin', 0.5))
+        l2_weight = float(
+            getattr(self.sabre_cfg, 'trigger_search_l2_weight', 1e-4))
+
+        search_indices = []
+        for base_idx in candidate_indices:
+            try:
+                _, label = base_dataset[base_idx]
+            except Exception:
+                continue
+            label_value = int(label.item()) if torch.is_tensor(
+                label) else int(label)
+            if label_value != target_label:
+                search_indices.append(base_idx)
+            if len(search_indices) >= batch_size * max_batches:
+                break
+        if not search_indices:
+            search_indices = list(
+                candidate_indices[:batch_size * max_batches])
+        if not search_indices:
+            return
+
+        self._load_feature_extractor()
+        for module, extractor_type in ((self.clip_model, 'clip'),
+                                       (self.cnn_extractor, 'cnn'),
+                                       (self.timm_extractor, 'timm')):
+            if module is not None and \
+                    self.feature_extractor_type == extractor_type:
+                module.eval()
+
+        extractor_modules = [
+            module for module in
+            (self.clip_model, self.cnn_extractor, self.timm_extractor)
+            if module is not None
+        ]
+        saved_requires_grad = []
+        for module in extractor_modules:
+            for param in module.parameters():
+                saved_requires_grad.append((param, param.requires_grad))
+                param.requires_grad_(False)
+        for param in self.mlp_classifier.parameters():
+            saved_requires_grad.append((param, param.requires_grad))
+            param.requires_grad_(False)
+
+        trigger_base = self.sabre_trigger.detach().clone()
+        trigger = trigger_base.clone().requires_grad_(True)
+        mask = self.sabre_mask.detach()
+        optimizer = torch.optim.Adam([trigger], lr=lr)
+        criterion = nn.CrossEntropyLoss()
+
+        total_loss = 0.0
+        total_ce = 0.0
+        total_margin = 0.0
+        total_gain = 0.0
+        total_batches = 0
+        try:
+            for step in range(steps):
+                offset = (step * batch_size) % len(search_indices)
+                if offset + batch_size <= len(search_indices):
+                    batch_indices = search_indices[offset:offset +
+                                                   batch_size]
+                else:
+                    tail = len(search_indices) - offset
+                    batch_indices = search_indices[offset:] + \
+                        search_indices[:batch_size - tail]
+
+                images = []
+                labels = []
+                for base_idx in batch_indices:
+                    image, label = base_dataset[base_idx]
+                    images.append(image)
+                    labels.append(
+                        int(label.item()) if torch.is_tensor(label) else
+                        int(label))
+                images = torch.stack(images).to(self.device)
+                labels = torch.as_tensor(labels,
+                                         dtype=torch.long,
+                                         device=self.device)
+                target_labels = torch.full_like(labels, target_label)
+
+                optimizer.zero_grad()
+                poisoned_images = self._apply_sabre_trigger(
+                    images, trigger=trigger, mask=mask)
+                poison_features = self._extractor_forward(
+                    poisoned_images, allow_input_grad=True).float()
+                poison_logits = self.mlp_classifier(poison_features)
+                poison_ce = criterion(poison_logits, target_labels)
+
+                target_logits = poison_logits[:, target_label]
+                other_logits = poison_logits.clone()
+                if 0 <= target_label < other_logits.size(1):
+                    other_logits[:, target_label] = -1e9
+                max_other_logits = other_logits.max(dim=1).values
+                target_margin_loss = F.relu(max_other_logits - target_logits +
+                                            target_margin).mean()
+
+                with torch.no_grad():
+                    clean_features = self._extractor_forward(images).float()
+                    clean_logits = self.mlp_classifier(clean_features)
+                    clean_target_logits = clean_logits[:, target_label]
+                gain_loss = F.relu(gain_margin -
+                                   (target_logits - clean_target_logits
+                                    )).mean()
+                l2_loss = torch.norm(trigger * mask, p=2)
+                loss = poison_ce + target_margin_loss + \
+                    gain_weight * gain_loss + l2_weight * l2_loss
+                loss.backward()
+                optimizer.step()
+
+                with torch.no_grad():
+                    trigger.mul_(mask).add_(trigger_base * (1.0 - mask))
+                    trigger.clamp_(clip_min, clip_max)
+                    if proj_norm > 0:
+                        delta = trigger * mask
+                        delta_norm = torch.norm(delta, p=2)
+                        if delta_norm > proj_norm:
+                            delta = delta * (proj_norm /
+                                             (delta_norm + 1e-12))
+                            trigger.copy_(delta)
+                            trigger.mul_(mask).add_(
+                                trigger_base * (1.0 - mask))
+
+                total_loss += loss.item()
+                total_ce += poison_ce.item()
+                total_margin += target_margin_loss.item()
+                total_gain += gain_loss.item()
+                total_batches += 1
+
+            self.sabre_trigger = trigger.detach()
+        finally:
+            for param, requires_grad in saved_requires_grad:
+                param.requires_grad_(requires_grad)
+
+        if total_batches <= 0:
+            return
+
+        eval_images = []
+        eval_labels = []
+        for base_idx in search_indices[:batch_size]:
+            image, label = base_dataset[base_idx]
+            eval_images.append(image)
+            eval_labels.append(
+                int(label.item()) if torch.is_tensor(label) else int(label))
+        eval_images = torch.stack(eval_images).to(self.device)
+        eval_labels = torch.as_tensor(eval_labels,
+                                      dtype=torch.long,
+                                      device=self.device)
+        with torch.no_grad():
+            clean_features = self._extractor_forward(eval_images).float()
+            clean_logits = self.mlp_classifier(clean_features)
+            poisoned_images = self._apply_sabre_trigger(eval_images)
+            poison_features = self._extractor_forward(
+                poisoned_images).float()
+            poison_logits = self.mlp_classifier(poison_features)
+            clean_preds = torch.argmax(clean_logits, dim=1)
+            poison_preds = torch.argmax(poison_logits, dim=1)
+            clean_target_rate = clean_preds.eq(target_label).float().mean()
+            poison_target_rate = poison_preds.eq(
+                target_label).float().mean()
+            target_gain = (poison_logits[:, target_label] -
+                           clean_logits[:, target_label]).mean()
+            eval_target_labels = torch.full_like(eval_labels, target_label)
+            eval_ce = criterion(poison_logits, eval_target_labels)
+
+        trigger_norm = torch.norm(
+            self.sabre_trigger * self.sabre_mask, p=2).item()
+        self.sabre_latest_meta.update({
+            'trigger_search_steps':
+            int(steps),
+            'trigger_search_batches':
+            int(max_batches),
+            'trigger_search_loss':
+            float(total_loss / total_batches),
+            'trigger_search_ce':
+            float(total_ce / total_batches),
+            'trigger_search_margin':
+            float(total_margin / total_batches),
+            'trigger_search_gain_loss':
+            float(total_gain / total_batches),
+            'trigger_search_eval_ce':
+            float(eval_ce.item()),
+            'trigger_search_clean_target_rate':
+            float(clean_target_rate.item()),
+            'trigger_search_poison_target_rate':
+            float(poison_target_rate.item()),
+            'trigger_search_target_logit_gain':
+            float(target_gain.item()),
+            'trigger_norm':
+            float(trigger_norm),
+        })
+        logger.info(
+            f"Client {self.ID}: SABRE trigger search round {round_idx} "
+            f"steps={steps}, batches={max_batches}, "
+            f"loss={total_loss / total_batches:.4f}, "
+            f"CE={total_ce / total_batches:.4f}, "
+            f"poison_target_rate={poison_target_rate.item():.4f}, "
+            f"clean_target_rate={clean_target_rate.item():.4f}, "
+            f"target_logit_gain={target_gain.item():.4f}, "
+            f"trigger_norm={trigger_norm:.4f}")
+
+    def _build_sabre_poison_feature_pool(self, round_idx):
+        """Build the poisoned feature/label tensors used by SABRE training."""
+        if self.mlp_classifier is None:
+            return None, None
+
+        target_label = int(self._cfg.attack.target_label_ind)
+        base_dataset, subset_indices = self._get_train_dataset_base()
+        poison_ratio = float(getattr(self._cfg.attack, 'poison_ratio', 0.1))
+
+        if base_dataset is None or not subset_indices:
+            if self.augmented_features is None or len(
+                    self.augmented_features) == 0:
+                logger.warning(
+                    f"Client {self.ID}: SABRE could not find local data "
+                    "for poisoned feature construction")
+                return None, None
+            poison_count = max(
+                1, int(len(self.augmented_features) * poison_ratio))
+            poison_count = min(poison_count, len(self.augmented_features))
+            rng = np.random.RandomState(
+                int(self._cfg.seed) + int(round_idx) + int(self.ID) * 1009)
+            selected = rng.choice(len(self.augmented_features),
+                                  size=poison_count,
+                                  replace=False)
+            poison_features = torch.from_numpy(
+                self.augmented_features[selected]).float()
+            poison_labels = torch.full((poison_count, ),
+                                       target_label,
+                                       dtype=torch.long)
+            return poison_features, poison_labels
+
+        poison_count = max(1, int(len(subset_indices) * poison_ratio))
+        max_poison = int(getattr(self.sabre_cfg, 'max_poison_samples', 0))
+        if max_poison > 0:
+            poison_count = min(poison_count, max_poison)
+        poison_count = min(poison_count, len(subset_indices))
+        rng = np.random.RandomState(
+            int(self._cfg.seed) + int(round_idx) + int(self.ID) * 1009)
+        selected_indices = rng.choice(subset_indices,
+                                      size=poison_count,
+                                      replace=False).tolist()
+
+        self._load_feature_extractor()
+        first_image, _ = base_dataset[selected_indices[0]]
+        self._ensure_sabre_trigger(first_image.to(self.device))
+        trigger_update_interval = self._get_sabre_trigger_update_interval()
+        optimize_trigger = self._should_update_sabre_trigger(round_idx)
+        self.sabre_latest_meta.update({
+            'trigger_update_interval':
+            int(trigger_update_interval),
+            'trigger_optimized':
+            bool(optimize_trigger),
+        })
+        if optimize_trigger:
+            self._optimize_sabre_trigger(base_dataset, selected_indices,
+                                         round_idx)
+        else:
+            logger.info(
+                f"Client {self.ID}: Reusing SABRE trigger in round "
+                f"{round_idx}; optimization interval="
+                f"{trigger_update_interval}")
+        self.sabre_latest_meta.update({
+            'trigger':
+            self.sabre_trigger.detach().cpu(),
+            'mask':
+            self.sabre_mask.detach().cpu(),
+            'trigger_mode':
+            'additive_full_image',
+        })
+
+        for module, extractor_type in ((self.clip_model, 'clip'),
+                                       (self.cnn_extractor, 'cnn'),
+                                       (self.timm_extractor, 'timm')):
+            if module is not None and \
+                    self.feature_extractor_type == extractor_type:
+                module.eval()
+
+        poison_features = []
+        batch_size = max(
+            1, int(getattr(self.ggeur_cfg, 'extract_batch_size', 64)))
+        with torch.no_grad():
+            for start in range(0, len(selected_indices), batch_size):
+                batch_indices = selected_indices[start:start + batch_size]
+                images = []
+                for base_idx in batch_indices:
+                    image, _ = base_dataset[base_idx]
+                    images.append(image)
+                images = torch.stack(images).to(self.device)
+                poisoned_images = self._apply_sabre_trigger(images)
+                features = self._extractor_forward(poisoned_images).float()
+                poison_features.append(features.detach().cpu())
+
+        if not poison_features:
+            return None, None
+
+        poison_features = torch.cat(poison_features, dim=0)
+        poison_labels = torch.full((poison_features.shape[0], ),
+                                   target_label,
+                                   dtype=torch.long)
+        repeat = max(
+            1, int(getattr(self.sabre_cfg, 'poison_feature_repeat', 1)))
+        if repeat > 1:
+            poison_features = poison_features.repeat((repeat, 1))
+            poison_labels = poison_labels.repeat(repeat)
+
+        self.sabre_latest_meta.update({
+            'poisoned_samples':
+            int(poison_features.shape[0]),
+            'target_label':
+            int(target_label),
+            'trigger_norm':
+            float(
+                torch.norm(self.sabre_trigger * self.sabre_mask,
+                           p=2).item()),
+            'trigger_linf':
+            float(
+                torch.max(
+                    torch.abs(self.sabre_trigger *
+                              self.sabre_mask)).item()),
+        })
+        return poison_features, poison_labels
+
+    def _train_sabre_clean_anchor(self):
+        """Train a short benign reference model used as the anchor."""
+        anchor_model = copy.deepcopy(self.mlp_classifier)
+        anchor_model.train()
+
+        clean_lr = float(
+            getattr(self.sabre_cfg, 'clean_anchor_lr',
+                    getattr(self.sabre_cfg, 'poison_lr',
+                            self._cfg.train.optimizer.lr)))
+        clean_epochs = max(
+            1, int(getattr(self.sabre_cfg, 'clean_anchor_epochs', 1)))
+
+        optimizer = torch.optim.Adam(anchor_model.parameters(), lr=clean_lr)
+        criterion = nn.CrossEntropyLoss()
+        for _ in range(clean_epochs):
+            for features, labels in self.augmented_loader:
+                features = features.to(self.device)
+                labels = labels.to(self.device)
+                optimizer.zero_grad()
+                outputs = anchor_model(features)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+        anchor_state = {
+            name: param.detach().clone()
+            for name, param in anchor_model.named_parameters()
+            if param.requires_grad
+        }
+        return anchor_state
+
+    def _sabre_anchor_distance(self, anchor_state):
+        """Squared distance between the current head and the clean anchor."""
+        distance = torch.tensor(0.0, device=self.device)
+        for name, param in self.mlp_classifier.named_parameters():
+            if not param.requires_grad or name not in anchor_state:
+                continue
+            anchor_param = anchor_state[name].to(param.device)
+            distance = distance + torch.norm(param - anchor_param, p=2)**2
+        return distance
+
+    def _sample_sabre_poison_batch(self, poison_features, poison_labels,
+                                   batch_size):
+        pool_size = poison_features.shape[0]
+        if pool_size == 0:
+            return None, None
+
+        poison_per_batch = int(
+            getattr(self.sabre_cfg, 'poisoning_per_batch', 0))
+        if poison_per_batch <= 0:
+            poison_ratio = float(
+                getattr(self._cfg.attack, 'poison_ratio', 0.1))
+            poison_per_batch = max(1, int(batch_size * poison_ratio))
+        poison_per_batch = min(max(1, poison_per_batch), batch_size)
+
+        replace = pool_size < poison_per_batch
+        indices = np.random.choice(pool_size,
+                                   size=poison_per_batch,
+                                   replace=replace)
+        poison_x = poison_features[indices].to(self.device)
+        poison_y = poison_labels[indices].to(self.device)
+        return poison_x, poison_y
+
+    def _train_sabre_on_augmented_data(self, round_idx):
+        """Clean-anchored poisoned training of the GGEUR head."""
+        if self.augmented_loader is None or self.mlp_classifier is None:
+            return 0, {}, {}
+
+        # The clean path moves the head back to CPU after every round (see the
+        # tail of _train_on_augmented_data) so standalone clients do not
+        # accumulate GPU-resident state dicts. Restore it before both the
+        # anchor build and the poisoned optimization use it.
+        self.mlp_classifier = self.mlp_classifier.to(self.device)
+
+        self.sabre_latest_meta = {
+            'active': True,
+            'client_id': int(self.ID),
+            'round': int(round_idx),
+            'target_label': int(self._cfg.attack.target_label_ind),
+        }
+
+        poison_features, poison_labels = \
+            self._build_sabre_poison_feature_pool(round_idx)
+        if poison_features is None or poison_labels is None:
+            logger.warning(
+                f"Client {self.ID}: SABRE poison pool is empty; "
+                "falling back to clean augmented training")
+            self.sabre_latest_meta['active'] = False
+            return self._train_on_augmented_data()
+
+        anchor_state = self._train_sabre_clean_anchor()
+        poison_lr = float(
+            getattr(self.sabre_cfg, 'poison_lr',
+                    self._cfg.train.optimizer.lr))
+        optimizer_name = str(
+            getattr(self.sabre_cfg, 'poison_optimizer', 'adam')).lower()
+        if optimizer_name == 'sgd':
+            optimizer = torch.optim.SGD(self.mlp_classifier.parameters(),
+                                        lr=poison_lr)
+        else:
+            optimizer = torch.optim.Adam(self.mlp_classifier.parameters(),
+                                         lr=poison_lr)
+
+        criterion = nn.CrossEntropyLoss()
+        anchor_loss_weight = float(
+            getattr(self.sabre_cfg, 'anchor_loss_weight', 0.01))
+        clean_ce_weight = float(
+            getattr(self.sabre_cfg, 'clean_ce_weight', 1.0))
+        poison_ce_weight = float(
+            getattr(self.sabre_cfg, 'poison_ce_weight', 1.0))
+        clean_target_suppression_weight = float(
+            getattr(self.sabre_cfg, 'clean_target_suppression_weight', 0.0))
+        clean_target_margin = float(
+            getattr(self.sabre_cfg, 'clean_target_margin', 0.5))
+        target_label = int(self._cfg.attack.target_label_ind)
+        internal_epochs = max(
+            1, int(getattr(self.sabre_cfg, 'internal_poison_epochs', 1)))
+        preserve_clean_batches = bool(
+            getattr(self.sabre_cfg, 'preserve_clean_batches', True))
+
+        self.mlp_classifier.train()
+        total_loss = 0.0
+        total_ce_loss = 0.0
+        total_clean_ce_loss = 0.0
+        total_poison_ce_loss = 0.0
+        total_clean_target_suppression_loss = 0.0
+        total_anchor_loss = 0.0
+        total_correct = 0
+        total_samples = 0
+        total_clean_correct = 0
+        total_clean_samples = 0
+        total_poison_correct = 0
+        total_poison_samples = 0
+        total_clean_target_predictions = 0
+
+        for _ in range(internal_epochs):
+            for clean_features, clean_labels in self.augmented_loader:
+                clean_features = clean_features.to(self.device)
+                clean_labels = clean_labels.to(self.device)
+                poison_x, poison_y = self._sample_sabre_poison_batch(
+                    poison_features, poison_labels, clean_features.size(0))
+                if poison_x is None:
+                    continue
+
+                optimizer.zero_grad()
+                if preserve_clean_batches:
+                    clean_outputs = self.mlp_classifier(clean_features)
+                    poison_outputs = self.mlp_classifier(poison_x)
+                    clean_ce_loss = criterion(clean_outputs, clean_labels)
+                    poison_ce_loss = criterion(poison_outputs, poison_y)
+                    ce_loss = (clean_ce_weight * clean_ce_loss +
+                               poison_ce_weight * poison_ce_loss)
+                    outputs = torch.cat(
+                        [poison_outputs, clean_outputs], dim=0)
+                    labels = torch.cat([poison_y, clean_labels], dim=0)
+                    clean_pred = torch.argmax(clean_outputs, dim=1)
+                    poison_pred = torch.argmax(poison_outputs, dim=1)
+                    clean_eval_labels = clean_labels
+                    clean_outputs_for_suppression = clean_outputs
+                else:
+                    features = clean_features.clone()
+                    labels = clean_labels.clone()
+                    poison_num = poison_x.size(0)
+                    features[:poison_num] = poison_x
+                    labels[:poison_num] = poison_y
+                    outputs = self.mlp_classifier(features)
+                    poison_ce_loss = criterion(outputs[:poison_num],
+                                               labels[:poison_num])
+                    if poison_num < outputs.size(0):
+                        clean_ce_loss = criterion(outputs[poison_num:],
+                                                  labels[poison_num:])
+                    else:
+                        clean_ce_loss = torch.tensor(0.0,
+                                                     device=self.device)
+                    ce_loss = (clean_ce_weight * clean_ce_loss +
+                               poison_ce_weight * poison_ce_loss)
+                    poison_pred = torch.argmax(outputs[:poison_num], dim=1)
+                    clean_pred = torch.argmax(outputs[poison_num:], dim=1)
+                    clean_eval_labels = labels[poison_num:]
+                    clean_outputs_for_suppression = outputs[poison_num:]
+
+                clean_target_suppression_loss = torch.tensor(
+                    0.0, device=self.device)
+                if clean_target_suppression_weight > 0.0 and \
+                        clean_outputs_for_suppression.numel() > 0 and \
+                        0 <= target_label < \
+                        clean_outputs_for_suppression.size(1):
+                    non_target_mask = clean_eval_labels != target_label
+                    if non_target_mask.any():
+                        non_target_outputs = clean_outputs_for_suppression[
+                            non_target_mask]
+                        non_target_labels = clean_eval_labels[
+                            non_target_mask]
+                        target_logits = non_target_outputs[:, target_label]
+                        true_logits = non_target_outputs.gather(
+                            1,
+                            non_target_labels.view(-1, 1)).squeeze(1)
+                        clean_target_suppression_loss = F.relu(
+                            target_logits - true_logits +
+                            clean_target_margin).mean()
+
+                anchor_loss = self._sabre_anchor_distance(anchor_state)
+                loss = ce_loss + anchor_loss_weight * anchor_loss + \
+                    clean_target_suppression_weight * \
+                    clean_target_suppression_loss
+                loss.backward()
+                optimizer.step()
+
+                batch_size = outputs.size(0)
+                total_loss += loss.item() * batch_size
+                total_ce_loss += ce_loss.item() * batch_size
+                total_clean_ce_loss += clean_ce_loss.item() * batch_size
+                total_poison_ce_loss += poison_ce_loss.item() * batch_size
+                total_clean_target_suppression_loss += \
+                    clean_target_suppression_loss.item() * batch_size
+                total_anchor_loss += anchor_loss.item() * batch_size
+                _, predicted = torch.max(outputs, 1)
+                total_correct += (predicted == labels).sum().item()
+                total_samples += batch_size
+                total_poison_correct += (poison_pred == poison_y).sum(
+                ).item()
+                total_poison_samples += poison_y.numel()
+                if clean_pred.numel() > 0:
+                    total_clean_correct += (clean_pred == clean_eval_labels
+                                            ).sum().item()
+                    total_clean_target_predictions += clean_pred.eq(
+                        target_label).sum().item()
+                    total_clean_samples += clean_pred.numel()
+
+        avg_loss = total_loss / total_samples if total_samples > 0 else 0
+        avg_ce_loss = total_ce_loss / total_samples \
+            if total_samples > 0 else 0
+        avg_clean_ce_loss = (total_clean_ce_loss / total_samples
+                             if total_samples > 0 else 0)
+        avg_poison_ce_loss = (total_poison_ce_loss / total_samples
+                              if total_samples > 0 else 0)
+        avg_clean_target_suppression_loss = (
+            total_clean_target_suppression_loss / total_samples
+            if total_samples > 0 else 0)
+        avg_anchor_loss = (total_anchor_loss / total_samples
+                           if total_samples > 0 else 0)
+        accuracy = total_correct / total_samples if total_samples > 0 else 0
+        clean_accuracy = (total_clean_correct / total_clean_samples
+                          if total_clean_samples > 0 else 0)
+        poison_accuracy = (total_poison_correct / total_poison_samples
+                           if total_poison_samples > 0 else 0)
+        clean_target_rate = (total_clean_target_predictions /
+                             total_clean_samples
+                             if total_clean_samples > 0 else 0)
+
+        logger.info(
+            f"Client {self.ID}: SABRE train loss={avg_loss:.4f} "
+            f"(CE={avg_ce_loss:.4f}, clean_CE={avg_clean_ce_loss:.4f}, "
+            f"poison_CE={avg_poison_ce_loss:.4f}, "
+            f"clean_target_supp={avg_clean_target_suppression_loss:.4f}, "
+            f"anchor={avg_anchor_loss:.4f}), accuracy={accuracy:.4f}, "
+            f"clean_acc={clean_accuracy:.4f}, "
+            f"clean_target_rate={clean_target_rate:.4f}, "
+            f"poison_acc={poison_accuracy:.4f}")
+
+        model_para = copy.deepcopy(self.mlp_classifier.state_dict())
+        if bool(getattr(self.sabre_cfg, 'constrain_update_to_anchor',
+                        False)):
+            gamma = float(
+                getattr(self.sabre_cfg, 'anchor_residual_gamma', 0.5))
+            gamma = min(1.0, max(0.0, gamma))
+            constrained_para = copy.deepcopy(model_para)
+            for name, value in model_para.items():
+                if name not in anchor_state or not isinstance(
+                        value, torch.Tensor):
+                    continue
+                anchor_value = anchor_state[name].to(value.device)
+                if tuple(anchor_value.shape) != tuple(value.shape):
+                    continue
+                constrained_para[name] = anchor_value + gamma * (
+                    value - anchor_value)
+            model_para = constrained_para
+            logger.info(
+                f"Client {self.ID}: SABRE constrained update to "
+                f"clean anchor with gamma={gamma:.4f}")
+
+        # Match the clean path exactly: parameters travel to the server on CPU
+        # so sequential standalone clients do not accumulate GPU-resident
+        # state dicts, and aggregation never mixes CUDA/CPU tensors.
+        model_para = {
+            key: value.detach().cpu().clone()
+            for key, value in model_para.items()
+            if isinstance(value, torch.Tensor)
+        }
+        self.mlp_classifier = self.mlp_classifier.cpu()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        self.sabre_latest_meta.update({
+            'anchor_loss_weight':
+            float(anchor_loss_weight),
+            'clean_ce_weight':
+            float(clean_ce_weight),
+            'poison_ce_weight':
+            float(poison_ce_weight),
+            'clean_target_suppression_weight':
+            float(clean_target_suppression_weight),
+            'clean_target_margin':
+            float(clean_target_margin),
+            'anchor_loss':
+            float(avg_anchor_loss),
+            'train_loss':
+            float(avg_loss),
+            'train_clean_ce_loss':
+            float(avg_clean_ce_loss),
+            'train_poison_ce_loss':
+            float(avg_poison_ce_loss),
+            'train_clean_target_suppression_loss':
+            float(avg_clean_target_suppression_loss),
+            'train_acc':
+            float(accuracy),
+            'train_clean_acc':
+            float(clean_accuracy),
+            'train_clean_target_rate':
+            float(clean_target_rate),
+            'train_poison_acc':
+            float(poison_accuracy),
+        })
+
+        clean_weight_samples = total_clean_samples
+        if internal_epochs > 0:
+            clean_weight_samples = int(
+                round(float(total_clean_samples) / float(internal_epochs)))
+        clean_weight_samples = max(1, clean_weight_samples)
+        self.sabre_latest_meta['aggregation_sample_size'] = int(
+            clean_weight_samples)
+        results = {
+            'train_loss': avg_loss,
+            'train_ce_loss': avg_ce_loss,
+            'train_clean_ce_loss': avg_clean_ce_loss,
+            'train_poison_ce_loss': avg_poison_ce_loss,
+            'train_clean_target_suppression_loss':
+            avg_clean_target_suppression_loss,
+            'train_sabre_anchor_loss': avg_anchor_loss,
+            'train_acc': accuracy,
+            'train_clean_acc': clean_accuracy,
+            'train_clean_target_rate': clean_target_rate,
+            'train_poison_acc': poison_accuracy,
+            'train_total': total_samples,
+            'aggregation_sample_size': int(clean_weight_samples),
+        }
+        return clean_weight_samples, model_para, results
+
+    def _train_head_for_round(self, round_idx):
+        """Dispatch the per-round head training (SABRE attackers vs clean)."""
+        if self.sabre_enabled and self._should_sabre_attack(round_idx):
+            logger.info(
+                f"Client {self.ID}: Round {round_idx} - SABRE attack "
+                "training")
+            return self._train_sabre_on_augmented_data(round_idx)
+
+        if self.sabre_enabled:
+            self.sabre_latest_meta = {
+                'active': False,
+                'client_id': int(self.ID),
+                'round': int(round_idx),
+            }
+        return self._train_on_augmented_data()
 
     def _train_on_augmented_data(self):
         """Train MLP classifier on augmented features with optional FedProto/FedProx regularization"""

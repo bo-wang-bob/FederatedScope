@@ -73,7 +73,7 @@ def _run_all(server, images, trig_path, batch):
 
 
 def run(base, runs, device='cuda', data_root=None, batch=DEFAULT_BATCH,
-        output=None, verbose=True):
+        output=None, verbose=True, test_manifest=None):
     base = os.path.abspath(base)
     attack_name_dir = runs.get('attack')
     if not attack_name_dir:
@@ -85,6 +85,10 @@ def run(base, runs, device='cuda', data_root=None, batch=DEFAULT_BATCH,
     head0 = torch.load(find_artifacts(attack_dir)[0], map_location='cpu')
     num_classes = int(head0['num_classes'])
     class_names = get_class_names(cfg, num_classes)
+
+    # 1.5) 用户上传的测试集: 整体替换训练时的内部测试划分
+    if test_manifest:
+        server.a3fl_test_override = (test_manifest, data_root)
 
     # 2) 整个测试集
     pairs, domain_sizes = _enumerate_testset(server)
@@ -159,10 +163,13 @@ def main():
     parser.add_argument('--data-root', default=None, help='覆盖 config.yaml 的 data.root')
     parser.add_argument('--batch', type=int, default=DEFAULT_BATCH)
     parser.add_argument('--output', default=None)
+    parser.add_argument('--test-manifest', dest='test_manifest', default=None,
+                        help='用户上传测试集的 manifest (整体替换内部测试划分)')
     args = parser.parse_args()
 
     runs = dict(item.split('=', 1) for item in args.runs.split(',') if '=' in item)
-    run(args.base, runs, args.device, args.data_root, args.batch, args.output)
+    run(args.base, runs, args.device, args.data_root, args.batch, args.output,
+        test_manifest=args.test_manifest)
     print('完成。')
 
 

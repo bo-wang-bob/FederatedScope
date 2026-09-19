@@ -61,7 +61,9 @@ def setup_font(font_size):
 
 
 def _label_text(idx, class_names):
-    """标签索引 → 展示文本; 索引越界时回退为数字。"""
+    """标签索引 → 展示文本; -1 表示未标注, 索引越界时回退为数字。"""
+    if idx == -1:
+        return '?'
     if 0 <= idx < len(class_names):
         return str(class_names[idx])
     return str(idx)
@@ -142,13 +144,21 @@ def prepare_server(run_dir, device_str, data_root=None):
     cfg.ggeur.feature_extractor = head_data.get(
         'feature_extractor_type', 'cnn')
     if cfg.ggeur.feature_extractor == 'clip':
-        from federatedscope.standalone_api.paths import env_path
-        resources = env_path('FS_PLATFORM_RESOURCES', 'resources', _REPO_ROOT)
-        weights = env_path('FS_BACKDOOR_VIT_WEIGHTS',
-            env_path('FS_PLATFORM_MILITARY_VIT_WEIGHTS', resources / 'models/ViT-B-16.pt', _REPO_ROOT), _REPO_ROOT)
-        if not weights.is_file():
-            raise FileNotFoundError(f'缺少本地 ViT 权重，不联网下载: {weights}')
-        cfg.ggeur.clip_model_path = str(weights)
+        # 优先沿用本次训练实际用的权重文件, 避免"本机没有打包好的公共权重"
+        # 就把本来能跑的评估挡在门外; 只有两者都不存在才报错。
+        configured = str(getattr(cfg.ggeur, 'clip_model_path', '') or '')
+        if configured and os.path.exists(configured):
+            cfg.ggeur.clip_model_path = configured
+        else:
+            from federatedscope.standalone_api.paths import env_path
+            resources = env_path('FS_PLATFORM_RESOURCES', 'resources', _REPO_ROOT)
+            weights = env_path('FS_BACKDOOR_VIT_WEIGHTS',
+                env_path('FS_PLATFORM_MILITARY_VIT_WEIGHTS', resources / 'models/ViT-B-16.pt', _REPO_ROOT), _REPO_ROOT)
+            if not weights.is_file():
+                raise FileNotFoundError(
+                    f'缺少 CLIP 权重，不联网下载: 已尝试 {weights}'
+                    + (f' 与配置里的 {configured}' if configured else ''))
+            cfg.ggeur.clip_model_path = str(weights)
     cfg.ggeur.mlp_hidden_dim = int(head_data.get('mlp_hidden_dim', 0))
     cfg.ggeur.mlp_dropout = float(head_data.get('mlp_dropout', 0.0))
 
@@ -187,6 +197,12 @@ def get_class_names(cfg, num_classes):
                 discover_domainnet_metadata)
             _, names = discover_domainnet_metadata(
                 str(cfg.data.root), ['aerial', 'natural', 'recon'], False)
+        elif 'domainnet' in data_type:
+            # 上传数据集没有固定的类别表, 类别名随 manifest 走
+            from eval import load_manifest
+            bundle = load_manifest(getattr(cfg.ggeur, 'domainnet_manifest_path', None),
+                                   str(cfg.data.root))
+            names = bundle['classes']
     except Exception as e:
         print(f"  [WARN] 类别名加载失败 ({e}), 使用数字标签")
     if names and len(names) >= num_classes:
@@ -211,8 +227,49 @@ def sample_test_images(server, n, sample_seed):
     return images, labels, ids
 
 
+def _load_test_override(server, manifest_path, data_root):
+    """用用户上传的测试集替换 server 的测试划分。
+
+    manifest 由后端 (_apply_testset) 生成: 每条 record 显式带
+    split='test', DomainNet 会按 manifest 过滤而不再做比例划分,
+    因此上传的测试集整体进入 loader, 与训练时的内部划分无关。
+    loader 的 domain 名沿用 manifest 的 domains (如 'uploaded'),
+    保证 _enumerate_testset 生成的编号与导出浏览图一致。
+    """
+    from torchvision import transforms
+    from federatedscope.cv.dataset.domainnet import DomainNet
+    from eval import load_manifest
+    bundle = load_manifest(manifest_path, data_root)
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
+    ])
+    from torch.utils.data import DataLoader
+    loaders = {}
+    for domain, records in (bundle.get('records') or {}).items():
+        if not records:
+            continue
+        dataset = DomainNet(root=data_root, domain=domain, split='test',
+                            transform=transform, classes=bundle['classes'],
+                            records=records)
+        loaders[domain] = DataLoader(dataset, batch_size=32, shuffle=False,
+                                     num_workers=0)
+    if not loaders:
+        raise RuntimeError(f"测试集 manifest 无可用记录: {manifest_path}")
+    server.a3fl_test_loaders = loaders
+    server.a3fl_test_loaded = True
+
+
 def _enumerate_testset(server):
-    """加载测试集, 返回 ([(domain, ds, idx), ...], {domain: size})。"""
+    """加载测试集, 返回 ([(domain, ds, idx), ...], {domain: size})。
+
+    server 上挂有 a3fl_test_override (manifest 路径, 数据根) 时,
+    用用户上传的测试集整体替换训练时的内部测试划分。
+    """
+    override = getattr(server, 'a3fl_test_override', None)
+    if override:
+        _load_test_override(server, override[0], override[1])
     server._load_a3fl_test_loaders()
     if not server.a3fl_test_loaders:
         raise RuntimeError("测试集加载失败 (数据类型不支持?)")
