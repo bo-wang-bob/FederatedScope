@@ -54,3 +54,22 @@
   .backdoor-thumbnails{grid-template-columns:repeat(5,minmax(0,1fr))}
   .backdoor-figures{grid-template-columns:1fr}
 }
+
+/* 攻防实验训练面板: 上传数据集 -> 启动三个实验 -> 导出测试集。 */
+.backdoor-training .ant-card-body{padding:20px 22px 22px}
+.backdoor-training-form{display:flex;align-items:flex-end;gap:20px;flex-wrap:wrap}
+.backdoor-training-form label{display:grid;gap:8px;min-width:200px}
+.backdoor-training-form label>span{color:#a9bdca;font-size:12px;letter-spacing:.04em}
+.backdoor-training-form .ant-select{min-width:230px}
+.backdoor-training-form .ant-input-number{width:130px}
+.backdoor-training-actions{display:flex;gap:12px;margin-left:auto}
+.backdoor-training-stage{list-style:none;display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 0;padding:0}
+.backdoor-training-stage li{display:flex;align-items:center;padding:5px 14px;border-radius:999px;border:1px solid var(--studio-line);
+  background:var(--studio-raised);color:#93a9b6;font-size:12.5px;letter-spacing:.02em}
+.backdoor-training-stage li.active{color:#9fd3e8;border-color:#3f6b78;background:#1d2c36}
+.backdoor-training-stage li.done{color:#9fc194;border-color:#4a6b45}
+.backdoor-training-stage li.fail{color:#e59a8c;border-color:#7a4a42}
+.backdoor-training-meta{margin:12px 0 0;color:#a9bdca;font-size:12.5px}
+.backdoor-training-error{margin-top:14px}
+.backdoor-training-logs{max-height:60vh;overflow:auto;margin:0;padding:14px;border-radius:6px;background:#0d141a;
+  color:#c3d6e0;font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word}

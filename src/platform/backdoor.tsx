@@ -5,6 +5,7 @@ import { ArrowRightOutlined, ExpandOutlined, ReloadOutlined, SafetyCertificateOu
 import { api, backdoorImageUrl, key, terminal, type BackdoorJob, type BackdoorPick, type BackdoorTestset } from './api';
 import { IMAGE_KEYS, imageMeta, readable, type ImageKey } from './backdoorShared';
 import { backdoorCompareHref } from './navigation';
+import { BackdoorTrainingPanel } from './backdoorTraining';
 import './backdoor.css';
 
 const MAX_IDS = 20;
@@ -106,10 +107,12 @@ export function BackdoorLab() {
   };
 
   if (loadError) return <Alert className="studio-connection-alert" type="error" showIcon title="后门防御接口不可用" description={loadError} action={<Button icon={<ReloadOutlined />} onClick={() => setRefresh(v => v + 1)}>重试</Button>} />;
-  if (!testset) return <div className="studio-loading"><Spin size="large" /></div>;
-  if (!testset.exported) return <div className="studio-empty-state"><SafetyCertificateOutlined /><h2>测试集尚未就绪</h2></div>;
 
+  // 训练面板常驻顶部: 上传数据集 -> 启动三个实验 -> 自动导出测试集, 完成后刷新本页测试集。
   return <div className="backdoor-lab">
+    <BackdoorTrainingPanel onCompleted={() => setRefresh(value => value + 1)} />
+    {!testset ? <div className="studio-loading"><Spin size="large" /></div> : !testset.exported ?
+      <div className="studio-empty-state"><SafetyCertificateOutlined /><h2>测试集尚未导出</h2><p>{testset.message || '还没有可对比的攻防实验结果'}</p><p className="platform-muted">在上方选择数据集并启动训练，完成后会自动导出测试集图片。</p></div> : <>
     <Card className="platform-panel backdoor-picker" title={<span><ScanOutlined /> 选择测试图片</span>}
       extra={<Space><Select aria-label="图片数量" value={count} disabled={busy} onChange={setCount} options={[5, 10, 15, 20].map(value => ({ value, label: value + ' 张' }))} />
         <Button icon={<ReloadOutlined />} disabled={busy || picking} onClick={reroll}>换一批</Button></Space>}>
@@ -152,5 +155,6 @@ export function BackdoorLab() {
     <Modal open={!!expanded} title={expanded ? imageMeta[expanded].title : ''} onCancel={() => setExpanded(undefined)} footer={null} width={1100} className="design-modal">
       {expanded && job?.images?.[expanded] && <div className="backdoor-full-frame"><img src={job.images[expanded]} alt={imageMeta[expanded].title} /></div>}
     </Modal>
+    </>}
   </div>;
 }
