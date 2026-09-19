@@ -330,10 +330,27 @@ class BackdoorTrainingService:
             with self.lock:
                 self.process = None
 
+    def _mpl_dir(self):
+        """共享的 matplotlib 配置目录 (含字体缓存)。
+
+        matplotlib 在缓存缺失时会扫描系统字体重建 fontlist, 结束时
+        删除 .matplotlib-lock 锁文件——该删除会被宿主 safe-delete 拦截
+        (删除额度耗尽后训练子进程直接挂死)。共享目录里预置好
+        fontlist-v330.json 后 matplotlib 直接复用, 全程零删除操作。
+        """
+        shared = self.state_root / 'mpl'
+        shared.mkdir(parents=True, exist_ok=True)
+        if not (shared / 'fontlist-v330.json').is_file():
+            # 从历史任务的缓存复制 (复制不是删除, 不会被拦截)
+            for cached in sorted(self.root.glob('*/mpl/fontlist-v330.json')):
+                shutil.copyfile(cached, shared / 'fontlist-v330.json')
+                break
+        return str(shared)
+
     def _spawn(self, job_id, spec, log_path):
         env = {**os.environ, 'PYTHONUNBUFFERED': '1',
                'PYTHONIOENCODING': 'utf-8', 'OMP_NUM_THREADS': '2',
-               'MPLCONFIGDIR': str(log_path.parent / 'mpl')}
+               'MPLCONFIGDIR': self._mpl_dir()}
         with log_path.open('ab') as log:
             log.write(f'\n=== {now()} {spec["label"]} ===\n'.encode('utf-8'))
             proc = subprocess.Popen(
@@ -412,7 +429,7 @@ class BackdoorTrainingService:
             raise PlatformError(f'缺少导出脚本: {script}', 500)
         env = {**os.environ, 'PYTHONUNBUFFERED': '1',
                'PYTHONIOENCODING': 'utf-8',
-               'MPLCONFIGDIR': str(log_path.parent / 'mpl')}
+               'MPLCONFIGDIR': self._mpl_dir()}
         with log_path.open('ab') as log:
             log.write(f'\n=== {now()} export testset ===\n'.encode('utf-8'))
             code = subprocess.call(

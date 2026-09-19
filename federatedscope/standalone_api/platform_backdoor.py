@@ -563,7 +563,10 @@ class BackdoorService:
                 if job['status'] != 'queued':
                     return
                 env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'OMP_NUM_THREADS': '2',
-                       'MPLCONFIGDIR': str(output / 'mpl')}
+                       # 共享 mpl 缓存: 逐任务的空目录会触发 fontlist 重建,
+                       # 重建结束要删 .matplotlib-lock, 会被宿主 safe-delete
+                       # 拦截挂死 (见 platform_backdoor_training._mpl_dir)。
+                       'MPLCONFIGDIR': str(self.root.parent / 'mpl')}
                 with (output / 'runner.log').open('wb') as log:
                     proc = subprocess.Popen(
                         [sys.executable, str(self.repo / 'scripts' / 'backdoor' / 'run_group.py'),
