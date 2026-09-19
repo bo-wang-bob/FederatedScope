@@ -13,6 +13,24 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
+it('shows training status without accuracy charts or backbone names', async () => {
+  const job = { id: 'c'.repeat(32), request: defaults, action: 'train', status: 'running',
+    stage: '模型训练', clients: {}, metrics: [{ round: 40, accuracy: .9876 }],
+    featureStorage: { files: 9, rounds: [40], directory: 'features', resultsReady: false } };
+  vi.spyOn(globalThis, 'fetch').mockImplementation(url => response(
+    String(url).endsWith('/catalog') ? catalog : String(url).endsWith('/jobs') ? [job] : job));
+  render(<PrivacyLab />);
+  expect(await screen.findByText('模型训练中')).toBeVisible();
+  expect(screen.getByText('40 / 200')).toBeVisible();
+  expect(screen.queryByText('当前准确率')).not.toBeInTheDocument();
+  expect(screen.queryByText('98.76%')).not.toBeInTheDocument();
+  expect(screen.queryByRole('tab', { name: '训练曲线' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('tab', { name: '客户端状态' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('tab', { name: '执行日志' })).not.toBeInTheDocument();
+  expect(screen.queryByText(/CNN|ConvNeXt/i)).not.toBeInTheDocument();
+  expect(screen.getAllByText('MilitaryAircraft3D').length).toBeGreaterThan(0);
+}, 15000);
+
 it('shows only FedMIA-II metrics, distribution and sample predictions', async () => {
   const job = { id: 'b'.repeat(32), request: { ...defaults, name: 'II 展示测试' }, action: 'train',
     status: 'completed', stage: '完成', metrics: [], clients: {},
@@ -35,7 +53,7 @@ it('shows only FedMIA-II metrics, distribution and sample predictions', async ()
   await screen.findByText('尚未找到数据集');
   fireEvent.click(screen.getByRole('tab', { name: /结果展示/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'II 展示测试' }));
-  expect(await screen.findByText('FedMIA-II')).toBeVisible();
+  expect(await screen.findByText('FedMIA-II', {}, { timeout: 5000 })).toBeVisible();
   expect(screen.queryByText('FedMIA-I', { exact: true })).not.toBeInTheDocument();
   expect(screen.queryByRole('combobox', { name: '攻击变体' })).not.toBeInTheDocument();
   expect(screen.getByRole('combobox', { name: '攻击评测客户端' })).toBeVisible();

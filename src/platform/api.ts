@@ -53,11 +53,14 @@ export interface Prediction {
   inferenceMs: number; elapsedSeconds: number; checkpointSha256: string; testBundleSha256: string;
   imageSha256: string; manifestSha256: string; testProvenance: string; inferenceContract: string;
 }
-export interface Library { models: LibraryItem[]; testsets: LibraryItem[] }
 export interface UploadedPrediction {
   samples: number; labelled: boolean; metrics: Metric | null; checkpointSha256: string;
   items: { index: number; filename: string; labelName: string | null; predictedName: string;
     confidence: number; correct: boolean | null; imageUrl: string }[];
+}
+export interface Library { models: LibraryItem[]; testsets: LibraryItem[] }
+export interface BackdoorTestsetInfo {
+  id: string; name: string; count: number; skipped: number; unlabelled: number;
 }
 export interface BackdoorTestset {
   exported: boolean; total: number; maxIds: number; base: string; message?: string;
@@ -65,6 +68,8 @@ export interface BackdoorTestset {
   domains: { name: string; count: number }[];
   labels: { index: number; name: string; count: number }[];
   runs: { attack: string | null; defense: string | null };
+  /** 当前应用的上传测试集; 未上传时为空 */
+  testset?: BackdoorTestsetInfo | null;
 }
 export interface BackdoorPick { ids: string[]; labels: number[]; total: number; count: number; seed?: number;
   /** 是否按"攻击命中 ∧ 防御拦住"加权抽样（后端有全测试集预测缓存时为 true） */
@@ -91,6 +96,25 @@ export interface BackdoorJob {
   runs: Record<string, string>; status: string; stage: string; error: string | null;
   createdAt: string; updatedAt: string; endedAt?: string;
   images?: Record<string, string>; result?: BackdoorResult;
+}
+export interface BackdoorTrainingTemplate { key: string; file: string; label: string; exists: boolean }
+export interface BackdoorTrainingDataset { id: string; name: string; classes: number; count: number; layout: string }
+export interface BackdoorTrainingGroup {
+  token: string; base: string; baseline: string; attack: string; defense: string;
+  dataRoot: string; datasetId: string; datasetName: string; classes: string[]; createdAt: string;
+  testsetId?: string; testsetName?: string; testsetCount?: number; testsetSkipped?: number;
+  testsetUnlabelled?: number; testsetAppliedAt?: string;
+}
+export interface BackdoorTrainingJob {
+  id: string; action: string; token: string; datasetId: string; datasetName: string; base: string;
+  device: string; total: number; createdAt: string; updatedAt: string; startedAt?: string; endedAt?: string;
+  status: string; stage: string; stageIndex: number; error: string | null; pid?: number;
+  results?: { key: string; label: string; expname: string }[]; group?: BackdoorTrainingGroup;
+}
+export interface BackdoorTrainingStatus {
+  runnable: boolean; datasets: BackdoorTrainingDataset[]; templates: BackdoorTrainingTemplate[];
+  missing: string[]; base: string; job: BackdoorTrainingJob | null; group: BackdoorTrainingGroup | null;
+  testsets?: BackdoorTrainingDataset[];
 }
 export const backdoorImageUrl = (id: string) => `/api/platform/backdoor/testset/${id}/image`;
 export const terminal = (status: string) => ['completed', 'failed', 'stopped', 'interrupted'].includes(status);
