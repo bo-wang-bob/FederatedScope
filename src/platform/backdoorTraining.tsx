@@ -123,7 +123,6 @@ export function BackdoorTrainingPanel({ onCompleted }: { onCompleted?: () => voi
     </ol>}
     {job && <p className="backdoor-training-meta">
       {running ? job.stage : `${statusText[job.status] || job.status} · ${job.stage}`} · {job.datasetName}
-      {job.device && ` · ${job.device.toUpperCase()}`}
     </p>}
     {job?.status === 'failed' && job.error && <Alert className="backdoor-training-error" type="error" showIcon title={job.error}
       action={<Button size="small" onClick={() => void openLogs()}>日志</Button>} />}
