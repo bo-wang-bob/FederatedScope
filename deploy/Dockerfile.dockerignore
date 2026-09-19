@@ -9,6 +9,7 @@
 !backend/deploy
 !backend/deploy/**
 !backend/setup.py
+!backend/run.py
 !backend/README.md
 !frontend
 !frontend/package.json

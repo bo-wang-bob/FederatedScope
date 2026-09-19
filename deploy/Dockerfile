@@ -1,4 +1,4 @@
-# ViT training/evaluation + privacy replay + backdoor image inference.
+# ViT training/evaluation + privacy + backdoor training and image inference.
 # Build online, export with docker save, then load on the offline target.
 # Build context is the directory containing sibling backend/ and frontend/.
 FROM node:22-bookworm-slim AS frontend
@@ -28,7 +28,7 @@ WORKDIR /opt/platform/backend
 COPY backend/federatedscope ./federatedscope
 COPY backend/scripts ./scripts
 COPY backend/deploy ./deploy
-COPY backend/setup.py backend/README.md ./
+COPY backend/run.py backend/setup.py backend/README.md ./
 COPY --from=frontend /build/dist /opt/platform/frontend/dist
 RUN python scripts/check_platform_environment.py --strict
 EXPOSE 8002

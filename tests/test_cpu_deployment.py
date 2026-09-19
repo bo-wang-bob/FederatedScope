@@ -7,17 +7,17 @@ from federatedscope.standalone_api.platform_config import ConfigFactory
 from federatedscope.standalone_api.platform_privacy import PrivacyConfig
 from federatedscope.standalone_api.uploaded_config import UploadedConfig
 
-class CpuDeploymentTests(unittest.TestCase):
-    def test_explicit_cpu_launch_changes_defaults_not_user_selection(self):
+class DeviceDefaultsTests(unittest.TestCase):
+    def test_obsolete_local_cpu_environment_does_not_override_server_defaults(self):
         repo=Path(__file__).resolve().parents[1]
         with patch.dict(os.environ, {'FS_PLATFORM_DEVICE':'cpu'}), tempfile.TemporaryDirectory(dir=repo/'exp') as state:
             factory=ConfigFactory(repo)
             for method in ('fedavg','fedprox','heterogeneous_solution'):
-                self.assertEqual(factory.defaults('military_vit',method)['gpu'],-1)
+                self.assertEqual(factory.defaults('military_vit',method)['gpu'],0)
                 req=factory.normalize(dict(group='military_vit',method=method))
-                self.assertEqual(req['gpu'],-1)
+                self.assertEqual(req['gpu'],0)
                 raw,_=factory.build(req,Path(state))
-                self.assertFalse(raw['use_gpu'])
+                self.assertTrue(raw['use_gpu'])
                 explicit=factory.normalize(dict(group='military_vit',method=method,gpu=0))
                 self.assertEqual(explicit['gpu'],0)
                 explicit_raw,_=factory.build(explicit,Path(state))
@@ -25,8 +25,12 @@ class CpuDeploymentTests(unittest.TestCase):
             privacy=PrivacyConfig(factory)
             req=privacy.normalize(dict(group='military_cnn',method='ggeur',rounds=1,clientCount=3))
             raw,provenance=privacy.build(req,Path(state))
-            self.assertFalse(raw['use_gpu'])
-            self.assertIn('use_gpu',provenance['configOverrides'])
+            _,preset=privacy.preset('military_cnn',False)
+            self.assertEqual(raw['use_gpu'],preset['use_gpu'])
+            self.assertNotIn('use_gpu',provenance['configOverrides'])
+            uploaded=UploadedConfig(factory)
+            with patch.object(uploaded.store,'training',return_value={}):
+                self.assertEqual(uploaded.defaults('uploaded_'+'a'*32,'fedavg')['gpu'],0)
 
     def test_server_preserves_gpu_presets_and_explicit_device(self):
         repo=Path(__file__).resolve().parents[1]

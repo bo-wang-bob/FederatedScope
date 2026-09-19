@@ -16,6 +16,12 @@ def check_environment(gpu=False, strict=False):
     from federatedscope.standalone_api.platform_offline import configure_offline_worker
     configure_offline_worker()
     errors, versions = [], {}
+    for relative in ('run.py', 'scripts/start_platform.py',
+                     'scripts/backdoor/tests/vit_newdataset.yaml',
+                     'scripts/backdoor/tests/sabre_vit_newdataset.yaml',
+                     'scripts/backdoor/tests/sabre_vit_newdataset_defense.yaml'):
+        if not (REPO / relative).is_file():
+            errors.append('缺少部署入口或模板：' + relative)
     if strict and sys.version_info[:2] != (3, 9):
         errors.append('发布环境要求 CPython 3.9')
     for line in (REPO / 'deploy/requirements-runtime.lock').read_text().splitlines():
@@ -46,6 +52,8 @@ def check_environment(gpu=False, strict=False):
         errors.append('依赖闭包检查失败：' + str(error))
     modules = [
         'federatedscope.standalone_api.platform_app',
+        'federatedscope.standalone_api.platform_backdoor_training',
+        'federatedscope.standalone_api.dataset_import',
         'federatedscope.core.configs.config',
         'federatedscope.core.auxiliaries.data_builder',
         'federatedscope.core.auxiliaries.runner_builder',

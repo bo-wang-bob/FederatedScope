@@ -29,7 +29,7 @@ def service(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('backdoor,platform,explicit,expected', [
-    ('cpu', None, None, 'cpu'), (None, 'cpu', None, 'cpu'),
+    ('cpu', None, None, 'cpu'), (None, 'cpu', None, 'cuda'),
     (None, None, None, 'cuda'), ('cpu', 'cpu', 'cuda', 'cuda'),
     ('cuda', 'cpu', None, 'cuda'), ('cuda', None, 'cpu', 'cpu'),
 ])

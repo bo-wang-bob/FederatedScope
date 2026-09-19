@@ -209,7 +209,7 @@ class BackdoorTrainingService:
                 raise PlatformError('训练轮数必须是 1–500 的整数')
             device = payload.get('device')
             if device is None:
-                device = os.environ.get('FS_BACKDOOR_DEVICE') or os.environ.get('FS_PLATFORM_DEVICE') or 'cuda'
+                device = os.environ.get('FS_BACKDOOR_DEVICE') or 'cuda'
             if device not in ('cuda', 'cpu'):
                 raise PlatformError('设备只能是 cuda 或 cpu')
             self._vit_weights()  # Fail before registering a queued job.
