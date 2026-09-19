@@ -27,6 +27,7 @@ import threading
 import uuid
 
 from .platform_config import PlatformError
+from .paths import env_path
 from .repository import JsonRepository
 
 TERMINAL = {'completed', 'failed', 'stopped', 'interrupted'}
@@ -207,8 +208,11 @@ class BackdoorTrainingService:
                                        or not 1 <= rounds <= 500):
                 raise PlatformError('训练轮数必须是 1–500 的整数')
             device = payload.get('device')
-            if device is not None and device not in ('cuda', 'cpu'):
+            if device is None:
+                device = os.environ.get('FS_BACKDOOR_DEVICE') or os.environ.get('FS_PLATFORM_DEVICE') or 'cuda'
+            if device not in ('cuda', 'cpu'):
                 raise PlatformError('设备只能是 cuda 或 cpu')
+            self._vit_weights()  # Fail before registering a queued job.
 
             job_id = uuid.uuid4().hex
             out = self.directory(job_id)
@@ -228,7 +232,7 @@ class BackdoorTrainingService:
 
             job = dict(id=job_id, action='backdoor-training', token=token,
                        datasetId=value['id'], datasetName=value['name'],
-                       base=str(self.base), device=device or 'cuda',
+                       base=str(self.base), device=device,
                        total=len(ORDER), createdAt=now(), updatedAt=now(),
                        status='queued', stage='等待启动', stageIndex=0,
                        error=None, results=[])
@@ -237,7 +241,7 @@ class BackdoorTrainingService:
                                       rounds, device) for key in ORDER]
             JsonRepository._atomic_write(out / 'spec.json', dict(
                 base=str(self.base), token=token, datasetId=value['id'],
-                device=device or 'cuda', runs=specs))
+                device=device, runs=specs))
             threading.Thread(target=self._run, args=(job_id, specs, value,
                                                      directory, token),
                              daemon=True).start()
@@ -259,6 +263,13 @@ class BackdoorTrainingService:
     # ------------------------------------------------------------------ #
     # 配置生成
     # ------------------------------------------------------------------ #
+    def _vit_weights(self):
+        resources = env_path('FS_PLATFORM_RESOURCES', self.repo / 'resources', self.repo)
+        weights = env_path('FS_BACKDOOR_VIT_WEIGHTS', resources / 'models/ViT-B-16.pt', self.repo)
+        if not weights.is_file():
+            raise PlatformError('缺少后门训练的 ViT 权重，请配置 FS_BACKDOOR_VIT_WEIGHTS', 409)
+        return weights
+
     def _build_spec(self, key, dataset, directory, token, job_id,
                     rounds, device):
         import yaml
@@ -284,13 +295,13 @@ class BackdoorTrainingService:
         cfg['data']['root'] = str(images)
         ggeur = cfg.setdefault('ggeur', {})
         ggeur.update(domainnet_domains=['uploaded'],
+                     clip_model_path=str(self._vit_weights()),
                      domainnet_manifest_path=str(manifest),
                      domainnet_shared_classes_only=False,
                      feature_cache_dir=str(directory / 'features'),
                      use_feature_cache=True,
                      head_only_mode=True)
-        if device == 'cpu':
-            cfg['use_gpu'] = False
+        cfg['use_gpu'] = device != 'cpu'
         if rounds:
             cfg['federate']['total_round_num'] = int(rounds)
             sabre = (cfg.get('attack') or {}).get('sabre')
