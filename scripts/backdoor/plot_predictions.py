@@ -61,7 +61,9 @@ def setup_font(font_size):
 
 
 def _label_text(idx, class_names):
-    """标签索引 → 展示文本; 索引越界时回退为数字。"""
+    """标签索引 → 展示文本; -1 表示未标注, 索引越界时回退为数字。"""
+    if idx == -1:
+        return '?'
     if 0 <= idx < len(class_names):
         return str(class_names[idx])
     return str(idx)
@@ -225,8 +227,49 @@ def sample_test_images(server, n, sample_seed):
     return images, labels, ids
 
 
+def _load_test_override(server, manifest_path, data_root):
+    """用用户上传的测试集替换 server 的测试划分。
+
+    manifest 由后端 (_apply_testset) 生成: 每条 record 显式带
+    split='test', DomainNet 会按 manifest 过滤而不再做比例划分,
+    因此上传的测试集整体进入 loader, 与训练时的内部划分无关。
+    loader 的 domain 名沿用 manifest 的 domains (如 'uploaded'),
+    保证 _enumerate_testset 生成的编号与导出浏览图一致。
+    """
+    from torchvision import transforms
+    from federatedscope.cv.dataset.domainnet import DomainNet
+    from eval import load_manifest
+    bundle = load_manifest(manifest_path, data_root)
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
+    ])
+    from torch.utils.data import DataLoader
+    loaders = {}
+    for domain, records in (bundle.get('records') or {}).items():
+        if not records:
+            continue
+        dataset = DomainNet(root=data_root, domain=domain, split='test',
+                            transform=transform, classes=bundle['classes'],
+                            records=records)
+        loaders[domain] = DataLoader(dataset, batch_size=32, shuffle=False,
+                                     num_workers=0)
+    if not loaders:
+        raise RuntimeError(f"测试集 manifest 无可用记录: {manifest_path}")
+    server.a3fl_test_loaders = loaders
+    server.a3fl_test_loaded = True
+
+
 def _enumerate_testset(server):
-    """加载测试集, 返回 ([(domain, ds, idx), ...], {domain: size})。"""
+    """加载测试集, 返回 ([(domain, ds, idx), ...], {domain: size})。
+
+    server 上挂有 a3fl_test_override (manifest 路径, 数据根) 时,
+    用用户上传的测试集整体替换训练时的内部测试划分。
+    """
+    override = getattr(server, 'a3fl_test_override', None)
+    if override:
+        _load_test_override(server, override[0], override[1])
     server._load_a3fl_test_loaders()
     if not server.a3fl_test_loaders:
         raise RuntimeError("测试集加载失败 (数据类型不支持?)")

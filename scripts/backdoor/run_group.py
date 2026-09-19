@@ -19,6 +19,9 @@ Spec (JSON):
     output     输出目录
     device     cuda / cpu
     dataRoot   可选, 覆盖 config.yaml 里的 data.root
+    testManifest 可选, 用户上传测试集的 manifest (全部 split='test'),
+                存在时用它整体替换训练时的内部测试划分
+    testRoot   可选, 测试集 manifest 对应的数据根目录
 """
 import argparse
 import json
@@ -124,6 +127,11 @@ def run(spec):
     head0 = torch.load(find_artifacts(attack_dir)[0], map_location='cpu', weights_only=True)
     num_classes = int(head0['num_classes'])
     class_names = get_class_names(cfg, num_classes)
+
+    # 1.5) 用户上传的测试集: 整体替换训练时的内部测试划分 (见 _apply_testset)
+    if spec.get('testManifest'):
+        server.a3fl_test_override = (spec['testManifest'],
+                                      spec.get('testRoot') or cfg.data.root)
 
     # 2) 加载一次测试集, 按编号取图
     pairs, domain_sizes = _enumerate_testset(server)

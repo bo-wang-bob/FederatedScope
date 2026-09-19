@@ -125,17 +125,48 @@ class BackdoorTrainingService:
             rows.append((value, directory))
         return rows
 
+    def _testsets(self):
+        """已就绪的测试集 (kind='test'), 按登记时间从新到旧。"""
+        from .uploaded_datasets import DatasetStore
+        store = DatasetStore(self.repo)
+        rows = []
+        for value in store.list():
+            if value.get('kind') != 'test':
+                continue
+            rows.append((store.directory(value['id']), value))
+        rows.sort(key=lambda row: (row[0] / 'dataset.json').stat().st_mtime,
+                  reverse=True)
+        return rows
+
+    def _resolve_testset(self, dataset_id):
+        rows = self._testsets()
+        if dataset_id is not None:
+            if not isinstance(dataset_id, str):
+                raise PlatformError('测试集编号非法')
+            for directory, value in rows:
+                if value['id'] == dataset_id:
+                    return directory, value
+            raise PlatformError('测试集不存在或未完成上传', 404)
+        if not rows:
+            raise PlatformError('请先上传测试集', 409)
+        return rows[0]
+
     def status(self):
         datasets = [dict(id=value['id'], name=value['name'],
                          classes=len(value.get('classes') or []),
                          count=value.get('count', 0),
                          layout=value.get('layout', 'classes'))
                     for value, _ in self._train_datasets()]
+        testsets = [dict(id=value['id'], name=value['name'],
+                         classes=len(value.get('classes') or []),
+                         count=value.get('count', 0))
+                    for _, value in self._testsets()]
         running = next((j for j in self.list()
                         if j.get('status') not in TERMINAL), None)
         return dict(runnable=bool(datasets) and
                     all(item['exists'] for item in self.templates()),
-                    datasets=datasets, templates=self.templates(),
+                    datasets=datasets, testsets=testsets,
+                    templates=self.templates(),
                     missing=[item['file'] for item in self.templates()
                              if not item['exists']],
                     base=str(self.base), job=running, group=self.read_group())
@@ -304,9 +335,8 @@ class BackdoorTrainingService:
                     job.update(status='stopped', stage='已停止', endedAt=now())
                     self._save(job)
                     return
-                job.update(stage='导出测试集', stageIndex=len(specs))
+                job.update(stage='配置测试集', stageIndex=len(specs))
                 self._save(job)
-            self._export_testset(token, specs, log_path)
             group = dict(token=token, base=str(self.base),
                          baseline=specs[0]['expname'],
                          attack=specs[1]['expname'],
@@ -317,6 +347,8 @@ class BackdoorTrainingService:
                          classes=list(dataset.get('classes') or []),
                          createdAt=now())
             self._write_group(group)
+            # 没有上传测试集时跳过 (挑图区会提示先上传), 有则整体应用
+            self._export_testset(group)
             with self.lock:
                 job = self.get(job_id)
                 job.update(status='completed', stage='已完成', endedAt=now(),
@@ -410,36 +442,99 @@ class BackdoorTrainingService:
         graveyard.mkdir(exist_ok=True)
         path.rename(graveyard / f'{path.name}_{uuid.uuid4().hex[:8]}')
 
-    def _export_testset(self, token, specs, log_path):
-        """导出测试集图片/索引, 供 BackdoorService 挑图。换组即重建。"""
+    def _apply_testset(self, payload=None, group=None):
+        """用上传的测试集重建 testset_images, 挑图与三连对比全部改用它。
+
+        - 测试集须按 类别/图片 组织 (类别与训练集一致, 大小写敏感);
+          类名不在训练组里的图片跳过; 平铺无标签的测试集记 label=-1。
+        - 生成的 test_manifest.json 每条 record 显式 split='test',
+          DomainNet 按 manifest 过滤而非按比例划分, 整个测试集参与。
+        - 重建 testset_images 时旧目录改名挪入 .trash (不做删除,
+          规避宿主 safe-delete 拦截); groups.json 登记 testsetId,
+          mtime 变化触发 BackdoorService 热切换清空缓存。
+        """
+        if not isinstance(payload, dict):
+            payload = {}
+        if group is None:
+            stored = read_json(self.group_file)
+            group = stored.get('active') if isinstance(stored, dict) else None
+        if not isinstance(group, dict) or not group.get('token'):
+            raise PlatformError('请先启动一次训练, 生成攻防实验结果', 409)
+        classes = [str(item) for item in (group.get('classes') or [])]
+        directory, value = self._resolve_testset(payload.get('datasetId'))
+        images_root = directory / 'images'
+        records, skipped, unlabelled = [], 0, 0
+        for item in value['items']:
+            path = str(item.get('path') or '')
+            parts = path.split('/')
+            if len(parts) == 2:                      # 类别/图片 → 训练类别索引
+                if parts[0] not in classes:
+                    skipped += 1
+                    continue
+                label = classes.index(parts[0])
+            else:                                    # 平铺图片, 未标注
+                label, unlabelled = -1, unlabelled + 1
+            records.append(dict(path='test/' + path, label=label,
+                                split='test'))
+        if not records:
+            known = '、'.join(classes) or '(无)'
+            raise PlatformError(
+                f'测试集没有可用图片: 需按 类别/图片 组织且类别与训练集'
+                f'一致 (大小写敏感), 训练类别: {known}', 409)
+        manifest = directory / 'test_manifest.json'
+        JsonRepository._atomic_write(manifest, dict(
+            classes=classes, domains=['uploaded'],
+            records={'uploaded': records}))
+
+        # 重建 testset_images: 旧目录挪 .trash, 图片按 manifest 顺序转 jpg。
+        # 同组换测试集 (token 相同但 testsetId 不同) 也必须整目录重建,
+        # 否则旧图片/预测缓存残留, 挑图数量与 index 不一致。
         target = self.base / 'testset_images'
-        if target.is_dir():
-            marker = target / '.group'
-            existing = marker.read_text(encoding='utf-8').strip() \
-                if marker.is_file() else ''
-            # 无 .group 标记的历史目录 (旧实验时代的导出, 含 .done 跳过标记与
-            # 旧 index.csv/预测缓存) 也必须整目录重建, 否则导出脚本会因 .done
-            # 跳过, 旧图片/索引/缓存全部残留, 挑图仍旧用上一个数据集。
-            if existing != token:
-                self._discard_dir(target)
+        meta_file = target / 'meta.json'
+        previous = read_json(meta_file) or {}
+        if target.is_dir() and not (
+                previous.get('testsetId') == value['id']
+                and (target / '.group').is_file()
+                and (target / '.group').read_text(encoding='utf-8').strip()
+                == group['token']
+                and previous.get('count') == len(records)):
+            self._discard_dir(target)
         target.mkdir(parents=True, exist_ok=True)
-        (target / '.group').write_text(token, encoding='utf-8')
-        script = self.repo / 'scripts' / 'backdoor' / 'export_testset.py'
-        if not script.is_file():
-            raise PlatformError(f'缺少导出脚本: {script}', 500)
-        env = {**os.environ, 'PYTHONUNBUFFERED': '1',
-               'PYTHONIOENCODING': 'utf-8',
-               'MPLCONFIGDIR': self._mpl_dir()}
-        with log_path.open('ab') as log:
-            log.write(f'\n=== {now()} export testset ===\n'.encode('utf-8'))
-            code = subprocess.call(
-                [sys.executable, str(script), '--run',
-                 str(self.base / specs[1]['expname']), '--out', str(target),
-                 '--device', os.environ.get('FS_BACKDOOR_DEVICE', 'cuda')],
-                cwd=str(self.repo), env=env, stdout=log,
-                stderr=subprocess.STDOUT)
-        if code != 0:
-            raise PlatformError('测试集导出失败，请查看日志')
+        from PIL import Image
+        with (target / 'index.csv').open('w', encoding='utf-8', newline='') \
+                as index_stream:
+            index_stream.write('id,label\n')
+            for offset, record in enumerate(records):
+                with Image.open(images_root / record['path']) as image:
+                    image.convert('RGB').save(
+                        target / f'uploaded_{offset + 1:05d}.jpg', quality=95)
+                index_stream.write(
+                    f'uploaded_{offset + 1:05d},{int(record["label"])}\n')
+        (target / '.group').write_text(group['token'], encoding='utf-8')
+        JsonRepository._atomic_write(target / 'meta.json', dict(
+            run=group.get('attack'), testsetId=value['id'],
+            testsetName=value.get('name'), count=len(records),
+            skipped=skipped, unlabelled=unlabelled))
+
+        group.update(testsetId=value['id'], testsetName=value.get('name'),
+                     testsetCount=len(records), testsetSkipped=skipped,
+                     testsetUnlabelled=unlabelled, testsetAppliedAt=now())
+        JsonRepository._atomic_write(self.group_file, dict(active=group))
+        return dict(testsetId=value['id'], testsetName=value.get('name'),
+                    count=len(records), skipped=skipped,
+                    unlabelled=unlabelled, group=group['token'])
+
+    def apply_testset(self, payload):
+        """API 入口: 把 (默认最新的) 上传测试集应用到当前结果组。"""
+        if not isinstance(payload, dict):
+            raise PlatformError('请求必须是 JSON 对象')
+        return self._apply_testset(payload)
+
+    def _export_testset(self, group):
+        """训练完成后配置测试集: 有上传的测试集则应用, 没有则跳过 (挑图空态)。"""
+        if not self._testsets():
+            return None
+        return self._apply_testset(group=group)
 
     def _fail(self, job_id, message):
         with self.lock:

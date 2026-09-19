@@ -321,17 +321,27 @@ class BackdoorService:
         rows = self._load_index()
         names = self.class_names()
         runs = self.runs()
+        meta = read_json(self.base / 'testset_images' / 'meta.json') or {}
+        testset_info = None
+        if meta.get('testsetId'):
+            testset_info = dict(id=str(meta['testsetId']),
+                                name=str(meta.get('testsetName') or ''),
+                                count=int(meta.get('count') or 0),
+                                skipped=int(meta.get('skipped') or 0),
+                                unlabelled=int(meta.get('unlabelled') or 0))
         if rows is None:
             return dict(exported=False, total=0, classNames=names, domains=[], labels=[], runs=runs,
-                        base=str(self.base), message=f'未找到测试集导出: {self.base / "testset_images"}')
+                        base=str(self.base), testset=testset_info,
+                        message='未上传测试集：请按 类别/图片 组织上传测试集后开始测试')
         domains, labels = {}, {}
         for image_id, label in rows:
             domain = image_id.rsplit('_', 1)[0]
             domains[domain] = domains.get(domain, 0) + 1
             labels[label] = labels.get(label, 0) + 1
         return dict(exported=True, total=len(rows), classNames=names,
+                    testset=testset_info,
                     domains=[dict(name=name, count=count) for name, count in sorted(domains.items())],
-                    labels=[dict(index=index, name=names[index] if index < len(names) else str(index),
+                    labels=[dict(index=index, name=names[index] if 0 <= index < len(names) else ('未标注' if index < 0 else str(index)),
                                  count=count) for index, count in sorted(labels.items())],
                     runs=runs, base=str(self.base), maxIds=MAX_IDS)
 
@@ -359,6 +369,28 @@ class BackdoorService:
             self._predictions = cache
         return self._predictions
 
+    def _testset_manifest(self):
+        """当前组的上传测试集 (manifest 路径, 图片根); 未配置返回 None。
+
+        testsetId 由训练服务 (_apply_testset) 写入 groups.json,
+        manifest 与图片都在上传数据集自己的目录里。
+        """
+        self._sync_group()
+        testset_id = (self.group or {}).get('testsetId') \
+            if isinstance(self.group, dict) else None
+        if not testset_id:
+            return None
+        from .uploaded_datasets import DatasetStore
+        try:
+            store = DatasetStore(self.repo)
+            directory = store.directory(testset_id)
+            manifest = directory / 'test_manifest.json'
+            if not manifest.is_file():
+                return None
+            return manifest, directory / 'images'
+        except PlatformError:
+            return None
+
     def _start_precompute(self):
         """缓存缺失时后台生成一次 (不阻塞挑图, 失败也不影响本次随机抽样)。"""
         with self.lock:
@@ -374,6 +406,12 @@ class BackdoorService:
                    ','.join(f'{key}={value}' for key, value in runs.items() if value)]
         if self.data_root:
             command += ['--data-root', str(self.data_root)]
+        # 用户上传的测试集: 预计算也必须覆盖同一批图片
+        manifest = self._testset_manifest()
+        if manifest:
+            command += ['--test-manifest', str(manifest[0])]
+            if manifest[1]:
+                command += ['--data-root', str(manifest[1])]
         log = self.root / 'precompute.log'
 
         def _worker():
@@ -408,7 +446,7 @@ class BackdoorService:
             raise PlatformError('请求必须是 JSON 对象')
         rows = self._load_index()
         if rows is None:
-            raise PlatformError('测试集尚未导出, 请先运行一次绘图脚本以生成测试集图片', 409)
+            raise PlatformError('尚未配置测试集, 请先上传测试集（按 类别/图片 组织）', 409)
         count = payload.get('count', MAX_IDS)
         if not isinstance(count, int) or isinstance(count, bool):
             raise PlatformError('图片数量非法')
@@ -546,6 +584,11 @@ class BackdoorService:
             spec = dict(base=str(self.base), runs={k: v for k, v in runs.items() if v},
                         ids=ids, output=str(output), device=self.device,
                         dataRoot=self.data_root, fontSize=font_size)
+            # 用户上传的测试集: 三连对比整体改用它 (不再用训练时的内部划分)
+            manifest = self._testset_manifest()
+            if manifest:
+                spec.update(testManifest=str(manifest[0]),
+                            testRoot=str(manifest[1]))
             JsonRepository._atomic_write(output / 'spec.json', spec)
             job = dict(id=job_id, action='backdoor', ids=ids, name=name,
                        runs=spec['runs'], base=str(self.base), device=self.device,

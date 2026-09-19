@@ -744,6 +744,9 @@ class PlatformHandler(ApiHandler):
             if path == '/api/platform/backdoor/pick':
                 self._data(backdoor.pick(self._body()))
                 return
+            if path == '/api/platform/backdoor/testset/apply':
+                self._data(self.context.training.apply_testset(self._body()))
+                return
             if path == '/api/platform/backdoor/jobs':
                 self._data(backdoor.create(self._body()), 202)
                 return
