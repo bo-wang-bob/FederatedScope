@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Empty, Form, Input, InputNumber, Popconfirm, Progress, Select, Space, Steps, Table, Tabs, Tag } from 'antd';
 import { ExperimentOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOutlined } from '@ant-design/icons';
 import { api, key, percent, terminal, type Catalog, type Job, type RequestConfig } from './api';
-import { Curves, LossChart } from './charts';
 import { Panel, State, Stat } from './ui';
 import './privacyLab.css';
 
@@ -15,6 +14,17 @@ type Results = { dataset: string; defense: boolean; clientId: number; clientIds:
   indexedWarning: string | null; rounds: number[]; metrics: Record<string, AttackMetric>; samples: Record<string, AttackSample[]> };
 const path = 'privacy/experiments/';
 const label = (value: string) => value === 'member' ? '成员' : '非成员';
+
+function trainingStatus(job: PrivacyJob) {
+  if (job.status === 'failed') return '实验失败';
+  if (job.status === 'stopped' || job.status === 'interrupted') return '实验已停止';
+  if (job.status === 'stopping') return '正在停止';
+  if (job.status === 'completed') return job.action === 'inspect' ? '预检完成' : '实验完成';
+  if (job.status === 'queued') return '等待启动';
+  if (job.action === 'inspect') return '资源预检中';
+  if (job.stage.includes('评测') || job.stage.includes('结果')) return '攻击评测中';
+  return '模型训练中';
+}
 
 export function PrivacyLab() {
   const [tab, setTab] = useState<'train' | 'results'>('train');
@@ -144,17 +154,13 @@ function PrivacyExperiments({ stageTab, onStageChange }: { stageTab: 'train' | '
             <div className="privacy-lab-task-heading"><strong>{job.request.name || job.id.slice(0, 8)}</strong><Tag>{job.request.defense ? '有防御' : '无防御'}</Tag></div>
             <Steps size="small" current={job.action === 'inspect' ? 0 : terminal(job.status) && job.status === 'completed' ? 3 : job.stage.includes('评测') || job.stage.includes('结果') ? 2 : 1} items={[{ title: '预检' }, { title: '训练 / 保存' }, { title: '攻击评测' }, { title: '完成' }]} />
             <Progress percent={Math.min(100, Math.round((job.metrics.at(-1)?.round || 0) / job.request.rounds * 100))} status={job.status === 'failed' ? 'exception' : job.status === 'completed' ? 'success' : 'active'} />
-            <div className="privacy-lab-stats"><Stat label="评估轮次" value={`${job.metrics.at(-1)?.round || 0} / ${job.request.rounds}`} /><Stat label="当前准确率" value={percent(job.metrics.at(-1)?.accuracy)} /><Stat label="已保存攻击特征" value={job.featureStorage?.files ?? '—'} sub={job.featureStorage?.files ? `${job.featureStorage.rounds.length} 个保存轮次` : '等待保存'} /></div>
+            <div className="privacy-lab-stats"><Stat label="训练轮次" value={`${job.metrics.at(-1)?.round || 0} / ${job.request.rounds}`} /><Stat label="模型状态" value={trainingStatus(job)} /><Stat label="已保存攻击特征" value={job.featureStorage?.files ?? '—'} sub={job.featureStorage?.files ? `${job.featureStorage.rounds.length} 个保存轮次` : '等待保存'} /></div>
             {job.storageError && <Alert type="error" title="特征保存失败" description={job.storageError} />}
             {job.error && <Alert type="error" showIcon title={job.error} />}
             {job.data && <p className="privacy-lab-note">{job.data.clientCount} 个客户端 · {job.data.trainSamples} 训练样本 · {job.data.testSamples} 测试样本</p>}
             <Space wrap>{job.featureStorage?.resultsReady && <Button type="primary" onClick={() => onStageChange('results')}>查看攻击结果</Button>}{!terminal(job.status) && <Popconfirm title="停止本次隐私实验？已保存特征会保留。" onConfirm={() => void stop()}><Button danger icon={<StopOutlined />}>停止任务</Button></Popconfirm>}
               {terminal(job.status) && <Button icon={<ReloadOutlined />} onClick={() => { form.setFieldsValue(job.request); setPreflight(job.action === 'inspect' && job.status === 'completed' ? job : undefined); }}>载入此配置</Button>}</Space>
           </Panel>
-          <Tabs items={[{ key: 'curves', label: '训练曲线', children: <Panel title="训练指标"><Curves points={job.metrics} /><LossChart points={job.metrics} /></Panel> },
-            { key: 'clients', label: '客户端状态', children: <Table rowKey="id" dataSource={Object.values(job.clients)} size="small" pagination={{ pageSize: 8 }} columns={[{ title: '客户端', dataIndex: 'id' }, { title: '域', dataIndex: 'domain' }, { title: '样本数', dataIndex: 'samples' }, { title: '状态', dataIndex: 'stage' }, { title: '损失', dataIndex: 'loss', render: (v: number | undefined) => v?.toFixed(4) ?? '—' }]} /> },
-            { key: 'logs', label: '执行日志', children: <PrivacyLogs id={job.id} /> },
-          ]} />
         </> : <Panel title="训练进度" extra={<Tag>等待启动</Tag>}><div className="privacy-lab-await"><div className="privacy-lab-empty-icon"><ExperimentOutlined /></div><h3>准备开始训练</h3></div></Panel>}
       </div>
     </div>
@@ -176,17 +182,6 @@ function PrivacyExperiments({ stageTab, onStageChange }: { stageTab: 'train' | '
       </div>
     </div>
   </section>;
-}
-
-function PrivacyLogs({ id }: { id: string }) {
-  const [logs, setLogs] = useState('读取日志…');
-  useEffect(() => {
-    let alive = true, busy = false;
-    const update = async () => { if (busy) return; busy = true; try { const value = await api<string>(path + 'jobs/' + id + '/logs'); if (alive) setLogs(value); } catch (e) { if (alive) setLogs((e as Error).message); } finally { busy = false; } };
-    void update(); const timer = setInterval(() => void update(), 3000);
-    return () => { alive = false; clearInterval(timer); };
-  }, [id]);
-  return <pre className="privacy-lab-logs" tabIndex={0}>{logs}</pre>;
 }
 
 function PrivacyResults({ id }: { id: string }) {
