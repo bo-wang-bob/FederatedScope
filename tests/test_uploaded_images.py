@@ -55,6 +55,18 @@ def test_format_coverage_is_complete():
     assert {suffix for suffix, _ in FORMATS} == IMAGE_TYPES
 
 
+def test_same_pixels_in_different_formats_are_not_deduplicated(tmp_path, monkeypatch):
+    monkeypatch.setenv('FS_PLATFORM_UPLOADS', str(tmp_path / 'uploads'))
+    store = DatasetStore(tmp_path)
+    identifier = store.create(dict(name='相同像素', kind='test'))['id']
+    store.put(identifier, 'a.png', encoded('PNG'))
+    store.put(identifier, 'b.bmp', encoded('BMP'))
+    value = store.finish(identifier)
+    assert value['count'] == 2
+    assert value['items'][0]['sha256'] == value['items'][1]['sha256']
+    assert value['items'][0]['originalSha256'] != value['items'][1]['originalSha256']
+
+
 def test_exif_orientation_is_applied():
     exif = Image.Exif()
     exif[274] = 6

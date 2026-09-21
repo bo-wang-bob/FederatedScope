@@ -64,6 +64,20 @@ def test_scope_missing_shape_and_source_changes(setup):
     assert importer.store.get(plan['id'], False)['count'] == 0
 
 
+@pytest.mark.parametrize('kind', ['train', 'test'])
+def test_server_import_allows_identical_image_contents(setup, kind):
+    importer, source = setup
+    for i in range(6):
+        path = source / ('A' if i < 3 else 'B') / f'{i}.png' if kind == 'train' else source / f'{i}.png'
+        picture(path)
+    plan = importer.create(dict(path=str(source), kind=kind))
+    for _ in range(plan['total']):
+        importer.next(plan['id'])
+    value = importer.store.finish(plan['id'])
+    assert value['count'] == 6
+    assert len({item['sha256'] for item in value['items']}) == 1
+
+
 def test_incomplete_import_cannot_finish_or_mix_browser_upload(setup):
     importer, source = setup
     image = picture(source / 'a.png')

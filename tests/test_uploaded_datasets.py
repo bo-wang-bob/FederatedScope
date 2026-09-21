@@ -49,16 +49,36 @@ def test_upload_rejects_escaping_and_reserved_paths(store, path):
         store.put(identifier, path, picture())
 
 
-def test_corrupt_duplicate_and_insufficient_data(store):
+def test_corrupt_and_insufficient_data(store):
     identifier = store.create(dict(name='检查', kind='train'))['id']
     with pytest.raises(PlatformError):
         store.put(identifier, 'A/a.png', b'not a picture')
     store.put(identifier, 'A/a.png', picture())
-    with pytest.raises(PlatformError, match='重复'):
-        store.put(identifier, 'B/b.png', picture())
+    store.put(identifier, 'B/b.png', picture())
     with pytest.raises(PlatformError):
         store.finish(identifier)
     assert store.list() == []
+
+
+@pytest.mark.parametrize('kind', ['train', 'test'])
+def test_duplicate_contents_remain_separate_samples(store, kind):
+    identifier = store.create(dict(name='允许重复内容', kind=kind))['id']
+    for i in range(6):
+        path = f'{"A" if i < 3 else "B"}/{i}.png' if kind == 'train' else f'{i}.png'
+        store.put(identifier, path, picture())
+    value = store.finish(identifier)
+    assert value['count'] == 6
+    assert len({r['sha256'] for r in value['items']}) == 1
+    assert all(store.image(identifier, i).is_file() for i in range(6))
+
+
+def test_same_path_retry_and_collision_protection_remain(store):
+    identifier = store.create(dict(name='路径保护', kind='test'))['id']
+    store.put(identifier, 'a.png', picture())
+    assert store.put(identifier, 'a.png', picture())['count'] == 1
+    for path, content in [('A.png', picture()), ('a.png', picture(1))]:
+        with pytest.raises(PlatformError, match='重名'):
+            store.put(identifier, path, content)
 
 
 def test_labelled_test_folder_and_single_image(store):

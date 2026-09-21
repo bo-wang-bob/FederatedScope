@@ -52,7 +52,7 @@ def test_binary_images_reach_upload_and_complete_registration(endpoint):
         category = 'ants' if i < 3 else 'bees'
         status, response = endpoint(
             f'/api/platform/datasets/{identifier}/files?path={category}%2F{i}.png',
-            png((i * 30, 10, 20)), 'application/octet-stream')
+            png((10, 20, 30)), 'application/octet-stream')
         assert status == 200, response
     status, response = endpoint(f'/api/platform/datasets/{identifier}/finish', b'{}')
     assert status == 200

@@ -94,8 +94,8 @@ class DatasetStore:
             stored_bytes = value.get('storedBytes', value['bytes']) + len(content) + len(normalized)
             if value['count'] >= 50000 or stored_bytes > MAX_BYTES:
                 raise PlatformError('单次上传最多 50000 张、20 GiB')
-            if any(r['sha256'] == checksum or r.get('originalSha256', r['sha256']) == original_checksum for r in value['items']):
-                raise PlatformError('存在内容相同的重复图片，请去重后上传，避免训练/测试泄漏')
+            # Distinct paths remain distinct samples, even with identical pixels.
+            # Hashes are retained for integrity/versioning, not upload deduplication.
             root = self.directory(identifier) / 'images'
             # Appending rather than replacing the suffix keeps a.jpg/a.png distinct.
             normalized_relative = relative + '.png'
