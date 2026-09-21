@@ -30,8 +30,7 @@ const groupLabels: Record<string, string> = {
   domainnet_cnn: 'DomainNet · ConvNeXt CNN', domainnet_mixer: 'DomainNet · MLP-Mixer',
   domainnet_vit: 'DomainNet · ViT', military_vit: 'MilitaryAircraft-3D · ViT',
   mdsent_lstm: '多域情感 · LSTM',
-  mdsent_rnn: '多域情感 · RNN', officehome_cnn: 'OfficeHome · ConvNeXt CNN',
-  officehome_mixer: 'OfficeHome · MLP-Mixer', officehome_vit: 'OfficeHome · ViT',
+  mdsent_rnn: '多域情感 · RNN',
 };
 
 function newIdempotencyKey() {
@@ -44,7 +43,7 @@ export function ExperimentPage() {
   const navigate = useNavigate();
   const { mode, setMode, scenarioId, scenarioVersion, setActiveExperiment } = useAppStore();
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('distributed');
-  const [distributedGroup, setDistributedGroup] = useState('officehome_vit');
+  const [distributedGroup, setDistributedGroup] = useState('military_vit');
   const [name, setName] = useState(`跨域实验-${new Date().toISOString().slice(0, 10)}`);
   const [method, setMethod] = useState<ExperimentMethod>('heterogeneous_solution');
   const [rounds, setRounds] = useState(30);

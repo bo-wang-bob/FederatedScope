@@ -19,7 +19,7 @@ import '../platform/studio.css';
 import './design.css';
 
 const previewTheme = { ...researchTheme, token: { ...researchTheme.token, fontSizeSM: 14 } };
-const domainOptions = [{ value: 'all', label: '全部域' }, { value: 'Art', label: 'Art' }, { value: 'Real_World', label: 'Real World' }];
+const domainOptions = [{ value: 'all', label: '全部域' }, { value: 'aerial', label: 'aerial' }, { value: 'natural', label: 'natural' }];
 const classOptions = [{ value: 'all', label: '全部类别' }, ...Array.from(new Set(samples.map(s => s.category))).map(category => ({ value: category, label: category }))];
 type Notice = { title: string; detail: string };
 type MembershipRecord = {
@@ -83,7 +83,7 @@ function SampleWorkbench({ notify }: { notify: (notice: Notice) => void }) {
   };
   return <div className="design-verification">
     <section className="design-gallery" aria-label="测试样本">
-      <div className="design-gallery-header"><h2>测试样本</h2><span>Office-Home</span></div>
+      <div className="design-gallery-header"><h2>测试样本</h2><span>MilitaryAircraft-3D</span></div>
       <div className="design-gallery-filters"><Select aria-label="样本域" value={domain} options={domainOptions} onChange={setDomain} /><Select aria-label="样本类别" value={category} options={classOptions} onChange={setCategory} /></div>
       <div className="design-sample-grid">{visible.map(item => <button key={item.id} className={sample?.id === item.id ? 'selected' : ''}
         aria-label={`选择 ${item.domain} ${item.category}`} aria-pressed={sample?.id === item.id} onClick={() => { if (sample?.id !== item.id) { setLoadedSampleId(undefined); setSelected(item.id); } }}>
@@ -108,11 +108,11 @@ function SampleWorkbench({ notify }: { notify: (notice: Notice) => void }) {
 
 function Evaluation({ notify }: { notify: (notice: Notice) => void }) {
   const [method, setMethod] = useState('heterogeneous_solution');
-  const [domains, setDomains] = useState(['Art', 'Real_World']);
+  const [domains, setDomains] = useState(['aerial', 'natural']);
   return <div className="design-evaluation">
     <section className="design-evaluation-config"><h2>评测配置</h2>
       <label htmlFor="design-eval-model">模型方案</label><Select id="design-eval-model" value={method} options={designMethods} onChange={setMethod} />
-      <label htmlFor="design-eval-testset">测试集</label><Select id="design-eval-testset" value="officehome-samples" options={[{ value: 'officehome-samples', label: 'Office-Home · 预览样本' }]} />
+      <label htmlFor="design-eval-testset">测试集</label><Select id="design-eval-testset" value="military-samples" options={[{ value: 'military-samples', label: 'MilitaryAircraft-3D · 预览样本' }]} />
       <span className="design-field-label">测试域</span><Checkbox.Group value={domains} onChange={values => setDomains(values as string[])} options={domainOptions.slice(1)} />
       <Button type="primary" block disabled={!domains.length} onClick={() => notify({ title: '评测预览', detail: '当前仅预览评测配置，未提交任务或生成指标。' })}>开始评测 <ArrowRightOutlined /></Button>
     </section>
@@ -164,7 +164,7 @@ function PrivacyResearch() {
     </PageHeading>
     <div className="privacy-lab">
       <section className="privacy-picker" aria-label="成员推理样本">
-        <div className="privacy-section-title"><h2>样本选择</h2><span>Office-Home</span></div>
+        <div className="privacy-section-title"><h2>样本选择</h2><span>MilitaryAircraft-3D</span></div>
         <div className="privacy-sample-list">
           {filtered.map(record => <button key={record.id} className={record.id === selected.id ? 'selected' : ''}
             onClick={() => setSelectedId(record.id)} aria-pressed={record.id === selected.id}>

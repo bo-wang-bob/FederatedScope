@@ -12,12 +12,10 @@ Images are bundled locally. Preview pages do not request the platform API or ext
 - SHA-256: `a859053b31ae6268c735e0881743b55ce7192563636486d88ac42d887424ee83`
 - Scene illustration only. It is not this system's test data, an operational map, or evidence of NASA endorsement. No NASA logos are used.
 
-## Existing test images
+## Dataset preview images
 
-`art-radio.jpg`, `real-radio.jpg`, `real-laptop.jpg`, `real-computer.jpg` are unchanged copies of four images already in the user's Office-Home testset `65f09e544a114f4a9e9eaa00d4d0f0e4`. Sample IDs, original filenames, original domains/classes and verified SHA-256 values are recorded in `../assets.ts`. They were retrieved read-only on 2026-09-15 and each file hash matched its sample manifest.
+`aerial-b52.jpg`, `natural-b52.jpg`, `natural-f16.jpg`, and `natural-c17.jpg` are unmodified copies from `backend/resources/datasets/MilitaryAircraft3D/`, using `0000.jpg` in the matching domain/class directory. SHA-256 values and original labels are recorded in `../assets.ts`.
 
-The `Art` domain label is preserved even when the source file itself is a photograph. These are generic research classification samples, not military datasets. Their inclusion does not imply that the model is usable for military applications.
-
-Historical feature-to-image correspondence remains source-limited (`legacy-split-seed-ordered-labels; no embedded sample IDs`). Exact image identity does not prove the source of historical feature generation. No inference is performed by this preview. Copies remain subject to the original dataset/image rights; no new license or public redistribution permission is asserted.
+These images are design-preview assets, not predictions or accuracy evidence. The preview does not use their IDs for backend inference. Original dataset/image rights still apply; no new redistribution license is asserted.
 
 Attribution and scope limitations are retained in this document and `../assets.ts`; the console no longer exposes an image-source button or modal.

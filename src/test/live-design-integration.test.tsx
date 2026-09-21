@@ -82,12 +82,12 @@ it('uses the live preflight/train controller from the redesigned training screen
   expect(await screen.findByRole('button', { name: /停止任务/ })).toBeInTheDocument();
 });
 
-it.each(['fedavg', 'fedprox', 'heterogeneous_solution'])('launches OfficeHome ViT %s with its own defaults', async method => {
-  const officeRequest = {...request, group:'officehome_vit', method, clientCount:60, sampleClients:0,
+it.each(['fedavg', 'fedprox', 'heterogeneous_solution'])('launches uploaded ViT %s with its own defaults', async method => {
+  const officeRequest = {...request, group:'uploaded_92dbe4bd90da4b94b4b2e608bcb12302', method, clientCount:60, sampleClients:0,
     learningRate:method==='fedprox' ? .0002 : .0001, samplesPerClient:0,
     augmentationMode:method==='heterogeneous_solution' ? 'generate' : 'none',
     generatedPerSample:50, generatedPerPrototype:50, targetPerClass:50, covarianceScale:1} as RequestConfig;
-  const officeGroup = {...catalog.groups[0], id:'officehome_vit', dataset:'Office-Home', domains:4,
+  const officeGroup = {...catalog.groups[0], id:'uploaded_92dbe4bd90da4b94b4b2e608bcb12302', dataset:'上传测试集', domains:4,
     methods:['fedavg','fedprox','heterogeneous_solution','fedopt'].map(id=>({id,label:id,enabled:true,reason:null,
       defaults:{...officeRequest,method:id,learningRate:id==='fedprox' ? .0002 : .0001,
         augmentationMode:id==='heterogeneous_solution' ? 'generate' : 'none'} as RequestConfig}))};
@@ -103,7 +103,7 @@ it.each(['fedavg', 'fedprox', 'heterogeneous_solution'])('launches OfficeHome Vi
   render(<MemoryRouter initialEntries={['/?view=train']}><PlatformApp /></MemoryRouter>);
   const dataset=await screen.findByRole('combobox',{name:'数据集'});
   fireEvent.mouseDown(dataset);
-  fireEvent.click(await screen.findByText('Office-Home / VIT'));
+  fireEvent.click(await screen.findByText('上传测试集 / VIT'));
   expect(screen.getAllByRole('radio')).toHaveLength(3);
   fireEvent.click(screen.getByRole('radio',{name:method==='heterogeneous_solution' ? /本架构/ : method==='fedprox' ? /FedProx/ : /FedAvg/}));
   fireEvent.click(screen.getByRole('button',{name:/下一步/}));
@@ -112,7 +112,7 @@ it.each(['fedavg', 'fedprox', 'heterogeneous_solution'])('launches OfficeHome Vi
   fireEvent.click(screen.getByRole('button',{name:/下一步/}));
   fireEvent.click(screen.getByRole('button',{name:/启动训练/}));
   await waitFor(()=>expect(writes).toHaveLength(2));
-  for(const write of writes) expect(write.body).toEqual(expect.objectContaining({group:'officehome_vit',method,clientCount:60,gpu:0,learningRate:officeRequest.learningRate}));
+  for(const write of writes) expect(write.body).toEqual(expect.objectContaining({group:'uploaded_92dbe4bd90da4b94b4b2e608bcb12302',method,clientCount:60,gpu:0,learningRate:officeRequest.learningRate}));
   expect(writes[1].body.preflightId).toBe('f'.repeat(32));
 });
 

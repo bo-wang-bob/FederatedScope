@@ -75,14 +75,14 @@ describe('frontend design review — isolated from live execution', () => {
     mount('/?view=experience');
     const stage = screen.getByRole('region', { name: '当前样本' });
     expect(screen.getByRole('button', { name: 'scan 预测' })).toBeDisabled();
-    fireEvent.load(within(stage).getByRole('img', { name: /Real_World · Radio/ }));
+    fireEvent.load(within(stage).getByRole('img', { name: /natural · B-52/ }));
     fireEvent.click(screen.getByRole('button', { name: 'scan 预测' }));
     expect(await screen.findByText(/尚未加载模型或执行推理/)).toBeInTheDocument();
     expect(screen.queryByText(/置信度|正确率|\d+\.\d+%/)).not.toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /确.*定/ }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: '下一张' }));
-    const nextImage = within(stage).getByRole('img', { name: /Real_World · Laptop/ });
+    const nextImage = within(stage).getByRole('img', { name: /natural · F-16/ });
     expect(screen.getByRole('button', { name: 'scan 预测' })).toBeDisabled();
     fireEvent.error(nextImage);
     expect(within(stage).getByText('图像无法载入')).toBeInTheDocument();
@@ -91,9 +91,9 @@ describe('frontend design review — isolated from live execution', () => {
 
   it('filters domains/classes together and handles an empty selection', async () => {
     mount('/?view=experience');
-    await selectOption('样本域', 'Art');
+    await selectOption('样本域', 'aerial');
     expect(screen.getAllByRole('button', { name: /^选择 / })).toHaveLength(1);
-    await selectOption('样本类别', 'Laptop');
+    await selectOption('样本类别', 'F-16');
     expect(screen.getByText('没有匹配的样本')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'scan 预测' })).toBeDisabled();
   });
@@ -101,10 +101,10 @@ describe('frontend design review — isolated from live execution', () => {
   it('supports evaluation selection without sending a task or inventing metrics', async () => {
     mount('/?view=evaluate');
     expect(screen.getByText('尚无评测结果')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Art' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Real World' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'aerial' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'natural' }));
     expect(screen.getByRole('button', { name: /开始评测/ })).toBeDisabled();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Art' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'aerial' }));
     fireEvent.click(screen.getByRole('button', { name: /开始评测/ }));
     expect(await screen.findByText(/未提交任务或生成指标/)).toBeInTheDocument();
   });

@@ -11,9 +11,10 @@ export function isAircraftVit(group: Group) {
   return normalize(group.dataset) === 'militaryaircraft3d' && normalize(group.backbone) === 'vit';
 }
 export function isPresentationGroup(group: Group) {
-  return group.id.startsWith('uploaded_') || isAircraftVit(group) || (normalize(group.dataset) === 'officehome' && normalize(group.backbone) === 'vit');
+  return group.id.startsWith('uploaded_') || isAircraftVit(group);
 }
 export function presentationCatalog(catalog: Catalog, restricted = aircraftDemoEnabled()): Catalog {
+  catalog = { ...catalog, groups: catalog.groups.filter(group => !normalize(group.id).startsWith('officehome') && normalize(group.dataset) !== 'officehome') };
   if (!restricted) return catalog;
   return { ...catalog, groups: catalog.groups.filter(isPresentationGroup).map(group => ({
     ...group, methods: group.methods.filter(method => DEMO_METHODS.some(id => id === method.id)),
@@ -22,14 +23,13 @@ export function presentationCatalog(catalog: Catalog, restricted = aircraftDemoE
   })) };
 }
 export function requestInPresentation(request: Pick<RequestConfig, 'group' | 'method'>, catalog?: Catalog, restricted = aircraftDemoEnabled()) {
-  return !restricted || !!catalog?.groups.some(group => isPresentationGroup(group) && group.id === request.group &&
-    DEMO_METHODS.some(id => id === request.method) && group.methods.some(method => method.id === request.method));
+  return !normalize(request.group).startsWith('officehome') && (!restricted || !!catalog?.groups.some(group => isPresentationGroup(group) && group.id === request.group &&
+    DEMO_METHODS.some(id => id === request.method) && group.methods.some(method => method.id === request.method)));
 }
 export function presentationLibrary(library: Library, catalog?: Catalog, restricted = aircraftDemoEnabled()): Library {
-  if (!restricted) return library;
-  return { models: library.models.filter(item => requestInPresentation(item, catalog, true)),
-    testsets: library.testsets.filter(item => requestInPresentation(item, catalog, true)) };
+  return { models: library.models.filter(item => requestInPresentation(item, catalog, restricted)),
+    testsets: library.testsets.filter(item => requestInPresentation(item, catalog, restricted)) };
 }
 export function presentationJobs(jobs: Job[], catalog?: Catalog, restricted = aircraftDemoEnabled()) {
-  return restricted ? jobs.filter(job => requestInPresentation(job.request, catalog, true)) : jobs;
+  return jobs.filter(job => requestInPresentation(job.request, catalog, restricted));
 }

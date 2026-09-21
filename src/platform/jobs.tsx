@@ -36,7 +36,7 @@ export function JobDetail({job,library,stop,rerun}:{job:Job;library:Library;stop
   const clients=Object.values(job.clients || {}),points=job.metrics || [],final=points.at(-1);
   const finished=terminal(job.status), training=job.action==='train';
   const model=library.models.find(m=>m.jobId===job.id&&m.kind==='final');
-  const imageModel=model && /^(officehome|digit3|domainnet|military|uploaded)_/.test(model.group);
+  const imageModel=model && /^(digit3|domainnet|military|uploaded)_/.test(model.group);
   const detail=<div className="job-details-grid"><Panel title="实际参数"><Descriptions column={2} items={Object.entries(job.request).map(([key,value])=>({key,label:key,children:JSON.stringify(value)}))}/><Collapse ghost items={[{key:'versions',label:'配置与数据版本',children:<pre className="platform-code">{JSON.stringify({config:job.config,provenance:job.provenance,data:job.data},null,2)}</pre>}]} /></Panel><Panel title="运行日志"><pre className="platform-log">{terminology(logs) || '尚无日志'}</pre></Panel></div>;
   return <div className="job-detail"><div className="platform-job-heading"><div><div className="job-title-line"><State value={job.status}/><span>{new Date(job.createdAt).toLocaleString('zh-CN')}</span></div><h2>{job.request.name || job.id.slice(0,8)}</h2><p>{job.request.group} <i> / </i> {methodLabel(job.request.method)}</p></div><Space>
     {!finished&&<Popconfirm title="停止当前任务？" description="只回收此任务进程，保留配置、日志和已生成文件。" onConfirm={()=>stop(job.id)}><Button danger icon={<StopOutlined/>}>停止任务</Button></Popconfirm>}

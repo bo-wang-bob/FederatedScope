@@ -9,7 +9,7 @@ beforeAll(() => {
   globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-const model = { id: 'a'.repeat(32) + ':final', jobId: 'a'.repeat(32), name: '测试模型', group: 'officehome_vit',
+const model = { id: 'a'.repeat(32) + ':final', jobId: 'a'.repeat(32), name: '测试模型', group: 'military_vit',
   method: 'fedavg', kind: 'final', classes: ['Class_A', 'Class_B'], domains: [{ name: 'Art', testSamples: 2 }],
   featureSpace: 'fixture', sha256: 'model-version', trainingRounds: 2 };
 const library: Library = { models: [model], testsets: [{ ...model, id: model.jobId, samples: 2 }] };

@@ -236,12 +236,12 @@ export function PrivacyMembershipPanel() {
     </div>
     <div className="privacy-lab">
       <section className="privacy-picker" aria-label="成员推理样本">
-        <div className="privacy-section-title"><div><h2>样本选择</h2><p>{groupLabel}</p></div><span>{payload.dataset || 'Office-Home'} · {records.length} 个</span></div>
+        <div className="privacy-section-title"><div><h2>样本选择</h2><p>{groupLabel}</p></div><span>{payload.dataset || '数据集'} · {records.length} 个</span></div>
         <div className="privacy-sample-list">
           {records.map(record => <button key={record.id} className={record.id === selected.id ? 'selected' : ''}
             onClick={() => setSelectedId(record.id)} aria-pressed={record.id === selected.id}>
             <img src={record.imageUrl} alt={`${record.className || record.filename} ${membershipStatus[record.truth].label}`} />
-            <span><strong>{record.className || record.filename || record.id}</strong><small>{record.domain || payload.dataset || 'Office-Home'}</small></span>
+            <span><strong>{record.className || record.filename || record.id}</strong><small>{record.domain || payload.dataset || '数据集'}</small></span>
           </button>)}
         </div>
       </section>
@@ -253,7 +253,7 @@ export function PrivacyMembershipPanel() {
           <div>
             <span className="privacy-eyebrow">当前样本</span>
             <strong>{selected.className || selected.filename || selected.id}</strong>
-            <p><b className={membershipStatus[selected.truth].tone}>{selected.truth === 'member' ? '客户端训练样本' : '非训练样本'}</b><i>{selected.domain || payload.dataset || 'Office-Home'}</i></p>
+            <p><b className={membershipStatus[selected.truth].tone}>{selected.truth === 'member' ? '客户端训练样本' : '非训练样本'}</b><i>{selected.domain || payload.dataset || '数据集'}</i></p>
           </div>
         </div>
         <div className="privacy-comparison-list" role="region" aria-label="攻防指标对照" tabIndex={0}>

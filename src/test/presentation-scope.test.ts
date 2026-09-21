@@ -18,12 +18,13 @@ it('defaults to the aircraft demo and permits an explicit full-catalog build', (
   expect(aircraftDemoEnabled()).toBe(true);
   vi.stubEnv('VITE_DEMO_SCOPE', 'all');
   expect(aircraftDemoEnabled()).toBe(false);
-  expect(presentationCatalog(catalog)).toBe(catalog);
-  expect(presentationLibrary(library,catalog)).toBe(library);
+  expect(presentationCatalog(catalog).groups.map(g=>g.id)).toEqual(['military_vit','military_cnn']);
+  expect(presentationLibrary(library,catalog).models.map(m=>m.id)).toEqual(['plane-final','fedopt']);
+  expect(requestInPresentation({group:'officehome_vit',method:'fedavg'},catalog)).toBe(false);
 });
-it('keeps military and OfficeHome ViT with three methods without mutation', () => {
+it('keeps military ViT with three methods without mutation', () => {
   const filtered=presentationCatalog(catalog);
-  expect(filtered.groups.map(g=>g.id)).toEqual(['military_vit','officehome_vit']);
+  expect(filtered.groups.map(g=>g.id)).toEqual(['military_vit']);
   for (const entry of filtered.groups) {
     expect(entry.methods.map(m=>m.id)).toEqual(['fedavg','fedprox','heterogeneous_solution']);
     expect(entry.methods.every(m=>m.defaults.group===entry.id)).toBe(true);
@@ -33,17 +34,17 @@ it('keeps military and OfficeHome ViT with three methods without mutation', () =
 });
 it('never relabels or substitutes another dataset when the military group is missing', () => {
   const missing={...catalog,groups:catalog.groups.filter(g=>g.id!=='military_vit')};
-  expect(presentationCatalog(missing).groups.map(g=>g.id)).toEqual(['officehome_vit']);
-  expect(presentationLibrary(library,missing).models.map(m=>m.id)).toEqual(['other']);
+  expect(presentationCatalog(missing).groups.map(g=>g.id)).toEqual([]);
+  expect(presentationLibrary(library,missing).models.map(m=>m.id)).toEqual([]);
   expect(presentationCatalog({...catalog,groups:catalog.groups.filter(g=>g.backbone==='cnn')}).groups).toEqual([]);
   expect(presentationLibrary(library)).toEqual({models:[],testsets:[]});
 });
 it('filters model and testset inventories and history with the same allowlist', () => {
-  expect(presentationLibrary(library,catalog).models.map(m=>m.id)).toEqual(['plane-final','other']);
-  expect(presentationLibrary(library,catalog).testsets.map(t=>t.id)).toEqual(['plane','office']);
+  expect(presentationLibrary(library,catalog).models.map(m=>m.id)).toEqual(['plane-final']);
+  expect(presentationLibrary(library,catalog).testsets.map(t=>t.id)).toEqual(['plane']);
   const jobs=[{id:'plane',request},{id:'office',request:{...request,group:'officehome_vit'}}, {id:'hidden-method',request:{...request,method:'fedopt'}}] as Job[];
-  expect(presentationJobs(jobs,catalog).map(j=>j.id)).toEqual(['plane','office']);
-  expect(requestInPresentation(jobs[1].request,catalog)).toBe(true);
+  expect(presentationJobs(jobs,catalog).map(j=>j.id)).toEqual(['plane']);
+  expect(requestInPresentation(jobs[1].request,catalog)).toBe(false);
   expect(requestInPresentation({group:'officehome_vit',method:'fedopt'},catalog)).toBe(false);
 });
 it('does not restore a hidden method from the demo draft or overwrite the full-view draft', () => {

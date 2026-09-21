@@ -43,11 +43,11 @@ export function PhotoHome({ showDatasetImages = true }: { showDatasetImages?: bo
     </div>
     <div className="design-home-modules">
       <Link to={viewHref('experience')} className="design-module-card design-model-card" aria-label="模型验证">
-        {showDatasetImages ? <div className="design-card-images"><img src={samples[0].src} alt="Office-Home Art 域无线电设备样本" /><img src={samples[1].src} alt="Office-Home Real World 域无线电设备样本" /></div> : <div className="demo-module-symbol" aria-hidden="true"><ScanOutlined /></div>}
+        {showDatasetImages ? <div className="design-card-images"><img src={samples[0].src} alt="MilitaryAircraft-3D aerial B-52 样本" /><img src={samples[1].src} alt="MilitaryAircraft-3D natural B-52 样本" /></div> : <div className="demo-module-symbol" aria-hidden="true"><ScanOutlined /></div>}
         <div className="design-card-caption"><span><ScanOutlined /><h2>模型验证</h2></span><ArrowRightOutlined /></div>
       </Link>
       <Link to={viewHref('compare')} className="design-module-card design-compare-card" aria-label="算法对比">
-        {showDatasetImages ? <div className="design-card-images"><img src={samples[2].src} alt="Office-Home Real World 域笔记本电脑样本" /></div> : <div className="demo-module-symbol" aria-hidden="true"><LineChartOutlined /></div>}
+        {showDatasetImages ? <div className="design-card-images"><img src={samples[2].src} alt="MilitaryAircraft-3D natural F-16 样本" /></div> : <div className="demo-module-symbol" aria-hidden="true"><LineChartOutlined /></div>}
         <div className="design-card-caption"><span><LineChartOutlined /><h2>算法对比</h2></span><ArrowRightOutlined /></div>
       </Link>
     </div>

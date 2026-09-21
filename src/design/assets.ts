@@ -1,18 +1,18 @@
 import terrain from './media/namib-landsat.jpg';
-import artRadio from './media/art-radio.jpg';
-import realComputer from './media/real-computer.jpg';
-import realLaptop from './media/real-laptop.jpg';
-import realRadio from './media/real-radio.jpg';
+import aerialB52 from './media/aerial-b52.jpg';
+import naturalC17 from './media/natural-c17.jpg';
+import naturalF16 from './media/natural-f16.jpg';
+import naturalB52 from './media/natural-b52.jpg';
 
 export const landscape = terrain;
 export const imageSource = 'https://science.nasa.gov/earth/earth-observatory/where-the-dunes-end-146064/';
-export const testsetId = '65f09e544a114f4a9e9eaa00d4d0f0e4';
+export const testsetId = 'military-design-samples';
 
 // Static, byte-for-byte copies of existing test images. These are not inference results.
 export const samples = [
-  { id: '1cd02b0c02c09840cc4aef22', src: artRadio, domain: 'Art', category: 'Radio', label: '无线电设备', filename: '00045.jpg', sha256: '3fa50a2860d5ab6c02e159deec3c55db90e52c175030ac242ef87f84c292e7bd' },
-  { id: 'f6dfa4dd5bcf3f7c176f3431', src: realRadio, domain: 'Real_World', category: 'Radio', label: '无线电设备', filename: '00007.jpg', sha256: '7999d1bfe85282f32b86a5a3c1d4a002ff7099c62742fcc9eae298814162783f' },
-  { id: '9098c73c1afa5c755c389d70', src: realLaptop, domain: 'Real_World', category: 'Laptop', label: '笔记本电脑', filename: '00066.jpg', sha256: 'bab042eb3cfd290193e783e0035cc52c97decdb86a685cf440d6cf02205bccf7' },
-  { id: '1de59828b76ddc88e1145c35', src: realComputer, domain: 'Real_World', category: 'Computer', label: '计算机', filename: '00020.jpg', sha256: '1a5a932c457709f70af37e256bfb93525bedede67ddeb11d0771079796b34956' },
+  { id: 'aerial-b52', src: aerialB52, domain: 'aerial', category: 'B-52', label: 'B-52', filename: '0000.jpg', sha256: '62629af7f0a5ca98d902369ab3292204cc59952f911c8e35366d9bccb763737c' },
+  { id: 'natural-b52', src: naturalB52, domain: 'natural', category: 'B-52', label: 'B-52', filename: '0000.jpg', sha256: '573c64f0ccef92807b409ef62414d3451c248ce4d313ba0a1eedfa038dd819b0' },
+  { id: 'natural-f16', src: naturalF16, domain: 'natural', category: 'F-16', label: 'F-16', filename: '0000.jpg', sha256: '2c90325b781376fb679ebbc1c41b41ff9c97e6ad675fb2bc8b0cb3104cc61a7c' },
+  { id: 'natural-c17', src: naturalC17, domain: 'natural', category: 'C-17', label: 'C-17', filename: '0000.jpg', sha256: '9d76f2d9a2270b2b1ab4a6f2f930fed333241829439ccaed51a092969ab50e04' },
 ] as const;
 export type DesignSample = typeof samples[number];

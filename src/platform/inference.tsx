@@ -36,7 +36,7 @@ function StoredModelExperience({ library, initialModel, initialTestset, onSelect
   library: Library; initialModel?: string; initialTestset?: string; onSelectionChange?: (model:string,testset?:string)=>void; disabled: boolean; create: (action: string, payload: object) => Promise<Job>; open: (id: string) => void;
   imageGroups?: string[];
 }) {
-  const models = library.models.filter(m => imageGroups ? imageGroups.includes(m.group) : /^(officehome|digit3|domainnet|military|uploaded)_/.test(m.group));
+  const models = library.models.filter(m => imageGroups ? imageGroups.includes(m.group) : /^(digit3|domainnet|military|uploaded)_/.test(m.group));
   const [modelId, setModelId] = useState<string>(initialModel || '');
   const [testsetId, setTestsetId] = useState<string>();
   const [domain, setDomain] = useState<string>();

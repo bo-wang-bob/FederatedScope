@@ -25,11 +25,11 @@ beforeAll(() => {
 beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-const defaults: RequestConfig = { group: 'officehome_vit', method: 'fedavg', name: '正在训练的实验', rounds: 8,
+const defaults: RequestConfig = { group: 'military_vit', method: 'fedavg', name: '正在训练的实验', rounds: 8,
   clientCount: 60, sampleClients: 0, batchSize: 32, localEpochs: 1, learningRate: .0001,
   seed: 42, splitSeed: 42, alpha: .1, gpu: 1, evaluationFrequency: 1, samplesPerClient: 0 };
 const catalog: Catalog = { host: 'ct-2x4090-lziy', address: '10.112.81.135', protocol: 'test', evaluationPolicy: 'test', groups: [
-  { id: defaults.group, dataset: 'Office-Home', backbone: 'vit', cacheFound: true, cacheFiles: 8,
+  { id: defaults.group, dataset: 'MilitaryAircraft-3D', backbone: 'vit', cacheFound: true, cacheFiles: 8,
     cacheBytes: 10, domains: 4, partitionLocked: false, methods: [{ id: 'fedavg', label: 'FedAvg', enabled: true, reason: null, defaults }] },
 ] };
 const running: Job = { id: 'a'.repeat(32), action: 'train', status: 'running', stage: '协同训练 第 3 轮',
