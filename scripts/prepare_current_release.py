@@ -18,9 +18,9 @@ FRONTEND_CODE = ('src', 'resource', 'tests', 'public', 'package.json',
                  'package-lock.json', 'index.html', 'vite.config.ts',
                  'vitest.config.ts', 'playwright.config.ts', 'README.md', 'LICENSE', 'dist')
 REQUIRED_RESOURCES = (
-    'datasets/MilitaryAircraft3D', 'datasets/OfficeHomeDataset_10072016',
+    'datasets/MilitaryAircraft3D',
     'exp/distributed_feature_cache/military_aircraft_vit_fixedsplit_v2',
-    'exp/distributed_feature_cache/officehome_vit', 'caches/military_vit_default',
+    'caches/military_vit_default',
     'models/ViT-B-16.pt', 'torch/hub/checkpoints/convnext_base-6075fbad.pth',
     'fedmia_local', 'backdoor/exp',
 )
@@ -44,6 +44,10 @@ def inspect(backend, frontend):
         if not path.exists() or not list(files(path)):
             raise ValueError('missing/empty resource: ' + relative)
     resource_files = inventory(resources)
+    retired = [name for name in resource_files
+               if 'officehome' in name.lower().replace('-', '').replace('_', '')]
+    if retired:
+        raise ValueError('retired OfficeHome resources must be removed: ' + retired[0])
     uploads = resources / 'uploaded_datasets'
     if uploads.exists():
         for directory in uploads.iterdir():

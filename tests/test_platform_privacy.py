@@ -31,6 +31,12 @@ class PrivacyTests(unittest.TestCase):
         self.normal.close()
         self.temp.cleanup()
 
+    def test_catalogs_exclude_retired_dataset(self):
+        for service in (self.normal, self.privacy):
+            groups = service.catalog()['groups']
+            self.assertTrue(any(g['id'].startswith('military_') for g in groups))
+            self.assertFalse(any(g['id'].startswith('officehome_') for g in groups))
+
     def test_private_config_does_not_mutate_normal_factory(self):
         base = ConfigFactory(REPO)
         normal_req = base.normalize(dict(group='military_vit', method='fedavg', rounds=2, clientCount=3))

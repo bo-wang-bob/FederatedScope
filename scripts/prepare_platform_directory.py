@@ -74,7 +74,7 @@ def state_snapshot(root):
     root = Path(root)
     snapshot = {}
     state_files = list(files(root / 'jobs'))
-    for module in ('backdoor', 'privacy_experiments'):
+    for module in ('backdoor', 'backdoor-training', 'privacy_experiments'):
         if (root / module).exists():
             state_files.extend(files(root / module))
     for path in state_files:

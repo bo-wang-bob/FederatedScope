@@ -8,6 +8,15 @@ from scripts.check_platform_directory import verify_files
 
 
 class CurrentReleaseTests(unittest.TestCase):
+    def test_retired_dataset_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            backend, frontend = self.fixture(Path(temp))
+            old = backend / 'resources/datasets/OfficeHomeDataset_10072016/image.jpg'
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b'old dataset')
+            with self.assertRaisesRegex(ValueError, 'retired OfficeHome'):
+                release.inspect(backend, frontend)
+
     def fixture(self, root):
         backend, frontend = root / 'backend', root / 'frontend'
         for name in release.BACKEND_CODE:
@@ -30,7 +39,7 @@ class CurrentReleaseTests(unittest.TestCase):
                 path = path / 'fixture'
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('resource')
-        for module in ('jobs', 'privacy_experiments/jobs', 'backdoor/jobs'):
+        for module in ('jobs', 'privacy_experiments/jobs', 'backdoor/jobs', 'backdoor-training'):
             path = backend / 'exp/platform' / module / 'example/job.json'
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps({'id': 'example', 'status': 'completed'}))
@@ -52,6 +61,7 @@ class CurrentReleaseTests(unittest.TestCase):
             self.assertFalse((moved / 'frontend/src/.env.local').exists())
             self.assertFalse(list(moved.rglob('process.json')))
             self.assertTrue((moved / 'backend/exp/platform/privacy_experiments/jobs/example/model.pt').is_file())
+            self.assertTrue((moved / 'backend/exp/platform/backdoor-training/example/job.json').is_file())
             self.assertTrue((moved / 'backend/resources/fedmia_local/active_package.json').is_file())
             self.assertTrue((moved / 'frontend/tsconfig.json').is_file())
 

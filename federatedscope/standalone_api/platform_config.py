@@ -114,6 +114,9 @@ class ConfigFactory:
         entries = []
         for group in self.groups():
             family, backbone = group.split('_', 1)
+            # Keep internal templates for uploaded datasets, not public entries.
+            if family == 'officehome':
+                continue
             cache = self.cache_dir(group)
             files = list(cache.glob('*.npz'))
             methods = []

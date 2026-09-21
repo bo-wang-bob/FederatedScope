@@ -86,6 +86,18 @@ class DirectoryPackagingTests(unittest.TestCase):
                 with self.subTest(name=name), self.assertRaises(ValueError):
                     check.verify_files(root)
 
+    def test_backdoor_training_snapshot_rejects_active_then_preserves_stopped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'jobs').mkdir()
+            path = root / 'backdoor-training/example/job.json'
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(dict(id='example', status='running')))
+            with self.assertRaises(ValueError):
+                prepare.state_snapshot(root)
+            path.write_text(json.dumps(dict(id='example', status='stopped')))
+            self.assertIn('backdoor-training/example/job.json', prepare.state_snapshot(root))
+
     def test_links_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

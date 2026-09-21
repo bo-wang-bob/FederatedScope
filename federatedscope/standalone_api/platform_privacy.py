@@ -176,7 +176,7 @@ class PrivacyService(PlatformService):
         return re.sub(r'\x1b\[[0-9;]*m', '', text)
 
     def catalog(self):
-        groups = dict(PRESETS)
+        groups = {key: value for key, value in PRESETS.items() if not key.startswith('officehome_')}
         for value in self.configs.base.store.list():
             if value['kind'] == 'train':
                 groups[value['group']] = (value['name'], 1, '')

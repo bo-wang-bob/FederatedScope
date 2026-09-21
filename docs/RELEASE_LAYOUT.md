@@ -3,6 +3,8 @@
 当前推荐的打包入口。无需 Docker；不附带 Python、Node、虚拟环境或驱动。
 前后端保持同级，不搬动正在运行的安装目录。
 
+本次交付已移除 OfficeHome 原图、特征缓存、旧隐私/后门实验资源与结果；页面不再提供该数据集。军机、上传数据集、共享模型权重及军机隐私/后门资源保留。内部通用配置模板供上传训练复用，不包含 OfficeHome 数据。
+
 ```text
 release/
 ├─ frontend/
@@ -13,8 +15,7 @@ release/
 │  ├─ setup.py、run.py
 │  ├─ resources/
 │  │  ├─ datasets/MilitaryAircraft3D/
-│  │  ├─ datasets/OfficeHomeDataset_10072016/
-│  │  ├─ exp/distributed_feature_cache/  # 两套 ViT 特征
+│  │  ├─ exp/distributed_feature_cache/  # 军机 ViT 特征
 │  │  ├─ caches/military_vit_default/    # 默认增强缓存
 │  │  ├─ models/ViT-B-16.pt
 │  │  ├─ torch/hub/checkpoints/convnext_base-6075fbad.pth
