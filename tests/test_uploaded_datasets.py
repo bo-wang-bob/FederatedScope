@@ -123,6 +123,17 @@ def test_uploaded_training_uses_real_class_count_and_private_cache(store, tmp_pa
     assert str(value['id']) in raw['ggeur']['feature_cache_dir']
     assert source['datasetFingerprint'] == value['fingerprint']
     assert req['clientCount'] == 3
+    assert req['alpha'] == 0.01
+    assert raw['ggeur']['use_lds'] is True
+    assert raw['ggeur']['dirichlet_within_domain_clients'] is True
+    assert raw['ggeur']['lds_alpha'] == 0.01
+    assert source['clientPartition']['trainingOnly'] is True
+    changed = configs.normalize({**req, 'alpha': 1.0, 'splitSeed': 123})
+    changed_raw, changed_source = configs.build(changed, tmp_path / 'changed')
+    assert changed_raw['ggeur']['lds_alpha'] == 1.0
+    assert changed_raw['ggeur']['data_split_seed'] == 123
+    assert changed_source['clientPartition']['seed'] == 123
+    assert changed_raw['ggeur']['domainnet_manifest_path'] == raw['ggeur']['domainnet_manifest_path']
     assert raw['ggeur']['feature_extractor'] == 'clip'
     assert raw['ggeur']['embedding_dim'] == 512
     assert raw['ggeur']['clip_model'] == 'ViT-B-16'

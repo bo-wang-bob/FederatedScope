@@ -19,7 +19,7 @@ class UploadedConfig:
             return self.base.defaults(group, method)
         self.store.training(group)
         req = self.base.defaults('officehome_vit', method)
-        req.update(group=group, clientCount=3,
+        req.update(group=group, clientCount=3, alpha=0.01,
                    gpu=0,
                    sampleClients=0, augmentationSourceId='',
                    augmentationMode='generate' if method == 'heterogeneous_solution' else 'none')
@@ -45,10 +45,16 @@ class UploadedConfig:
             return self.base.build(req, output)
         raw, provenance = self.base.build({**req, 'group': 'officehome_vit'}, output)
         value = self.store.configure(raw, req['group'])
-        raw['ggeur'].update(require_complete_feature_cache=True, use_feature_cache=True)
+        raw['ggeur'].update(require_complete_feature_cache=True, use_feature_cache=True,
+                            use_lds=True, dirichlet_within_domain_clients=True,
+                            lds_alpha=req['alpha'], lds_seed=req['splitSeed'])
         provenance.update(uploadedDataset=value['id'], datasetFingerprint=value['fingerprint'],
                           datasetSplit='explicit-folders' if value.get('layout') == 'split' else 'seeded-70:30',
-                          protocol='uploaded-folder-vit / recorded split / original algorithms')
+                          protocol='uploaded-folder-vit / recorded split / client-dirichlet-v1',
+                          clientPartition=dict(strategy='dirichlet', alpha=req['alpha'],
+                                               seed=req['splitSeed'], trainingOnly=True,
+                                               fullAllocation=True, emptyClientPolicy='move-one-from-largest'))
+        provenance['parameterBindings']['alpha'] = 'ggeur.lds_alpha / dirichlet_within_domain_clients (training only)'
         return raw, provenance
 
     def catalog(self):
