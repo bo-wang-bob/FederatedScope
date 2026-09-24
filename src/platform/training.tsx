@@ -67,7 +67,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
   }, [catalog, uploadedGroup]);
   const chooseMethod = (id: string) => {
     const defaults = group?.methods.find(m => m.id === id)?.defaults;
-    setPresetId(''); setDraft({ ...defaults, name: draft.name || '' }); setErrors({});
+    setPresetId(''); setDraft({ ...defaults, name: draft.name || '', alpha: draft.alpha ?? defaults?.alpha, splitSeed: draft.splitSeed ?? defaults?.splitSeed }); setErrors({});
   };
   const validate = (all = false) => {
     const next = validateDraft(draft, catalog);
@@ -80,7 +80,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
     return true;
   };
   const number = (field: keyof RequestConfig, label: string, min: number, max: number, _hint?: string, locked = false, increment = 1) =>
-    <div className="wizard-field" key={field}><label htmlFor={'train-' + field}>{label}</label>
+    <div className="wizard-field" key={field}><label htmlFor={'train-' + field} title={_hint}>{label}</label>
       <InputNumber id={'train-' + field} aria-label={label} aria-invalid={!!errors[field]} aria-describedby={errors[field] ? 'error-' + field : undefined} status={errors[field] ? 'error' : undefined} value={draft[field] as number} min={min} max={max} step={increment} disabled={frozen || locked} onChange={value => change(field, value)} />
       {errors[field] && <small id={'error-' + field} role="alert" className="field-error">{errors[field]}</small>}</div>;
   const participantOptions = [{ value: 0, label: '全部' }, ...Array.from({ length: draft.clientCount || 0 }, (_,index) => ({ value: index + 1, label: String(index + 1) }))];
@@ -106,6 +106,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
       </>}
       {step === 1 && <><div className="wizard-title"><h2>训练参数</h2></div>
         <div className="wizard-fields">{number('rounds','通信轮数',1,1000)}{number('localEpochs','本地轮数',1,100)}{number('learningRate','学习率',1e-8,1,undefined,false,.0001)}{number('batchSize','批大小',1,1024)}{number('clientCount','客户端数量',group?.domains || 1,240,undefined,group?.partitionLocked,group?.domains)}<div className="wizard-field"><label htmlFor="train-sampleClients">每轮参与客户端</label><Select id="train-sampleClients" aria-label="每轮参与客户端" value={draft.sampleClients ?? 0} disabled={frozen} onChange={value => change('sampleClients',value)} options={participantOptions} />{errors.sampleClients && <small role="alert" className="field-error">{errors.sampleClients}</small>}</div></div>
+        <div className="wizard-fields">{number('alpha','异构程度（Dirichlet α）',.0001,100,'α 越小，客户端类别分布差异越大；仅划分训练集',group?.partitionLocked,.01)}{number('splitSeed','划分种子',0,2147483647,undefined,group?.partitionLocked)}</div>
         {ours && <section className="augmentation-settings"><div className="wizard-section-title"><h3>数据增强</h3><span>本架构</span></div>
           {!!augmentationPresets.length && <div className="wizard-field"><label htmlFor="train-augmentation-preset">已验证增强配置</label><Select id="train-augmentation-preset" aria-label="已验证增强配置" allowClear placeholder="选择已跑配置" value={presetId || undefined} disabled={frozen} onChange={id => { setPresetId(id || ''); const source=augmentationPresets.find(item => item.id === id); if(source) setDraft(old => ({...source.request,name:old.name,augmentationMode:'generate',augmentationSourceId:'',allowLegacyAugmentation:false})); }} options={augmentationPresets.map(source => ({value:source.id,label:augmentationConfigLabel(source)}))} /></div>}
           <div className="wizard-fields">{number('generatedPerSample','每个样本生成数',0,1000)}{number('generatedPerPrototype','每个原型生成数',0,1000)}{number('targetPerClass','每类目标样本数',0,5000,'0 不设目标数量')}{number('covarianceScale','协方差缩放',0,10,undefined,false,.1)}</div>
@@ -113,7 +114,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
       </>}
       {step === 2 && <><div className="wizard-title"><h2>{draft.name || '确认实验配置'}</h2></div>
         <div className="review-identity"><span className="review-identity-icon"><ExperimentOutlined /></span><div><h3>{methodLabel(draft.method)}</h3><p>{group?.dataset} / {group?.backbone.toUpperCase()}</p></div><span className="review-identity-type">协同训练</span></div>
-        <dl className="review-grid">{[['通信轮数',draft.rounds],['客户端',draft.clientCount],['每轮参与',draft.sampleClients || '全部'],['本地轮数',draft.localEpochs],['学习率',draft.learningRate],['批大小',draft.batchSize],...(ours ? [['每类目标样本',draft.targetPerClass]] : [])].map(([label,value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+        <dl className="review-grid">{[['通信轮数',draft.rounds],['客户端',draft.clientCount],['每轮参与',draft.sampleClients || '全部'],['本地轮数',draft.localEpochs],['学习率',draft.learningRate],['批大小',draft.batchSize],['Dirichlet α',draft.alpha],['划分种子',draft.splitSeed],...(ours ? [['每类目标样本',draft.targetPerClass]] : [])].map(([label,value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       </>}
       </div>
       {Object.keys(errors).length > 0 && step > 0 && <Alert type="error" showIcon title="请检查以下参数" description={<ul className="validation-errors">{Object.entries(errors).map(([field,message]) => <li key={field}>{message}</li>)}</ul>} />}

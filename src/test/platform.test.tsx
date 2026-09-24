@@ -32,9 +32,11 @@ describe('three-step training workflow',()=>{
     fireEvent.click(screen.getByRole('radio',{name:/本架构/}));next();
     expect(screen.getByRole('spinbutton',{name:'本地轮数'})).toHaveValue('1');
     expect(screen.getByRole('spinbutton',{name:'通信轮数'})).toHaveValue('100');
+    fireEvent.change(screen.getByRole('spinbutton',{name:'异构程度（Dirichlet α）'}),{target:{value:'0.01'}});
     fireEvent.click(screen.getByRole('button',{name:/上一步/}));
     fireEvent.click(screen.getByRole('radio',{name:/FedAvg/}));next();
     expect(screen.getByRole('spinbutton',{name:'本地轮数'})).toHaveValue('5');
+    expect(screen.getByRole('spinbutton',{name:'异构程度（Dirichlet α）'})).toHaveValue('0.01');
   });
   it('starts once, automatically checks the exact visible configuration and binds the preflight',async()=>{
     const fetch=vi.fn().mockImplementation(async(path:string)=>response(path.endsWith('preflight')?preflight:training));
@@ -44,12 +46,14 @@ describe('three-step training workflow',()=>{
     fireEvent.change(screen.getByRole('spinbutton',{name:'通信轮数'}),{target:{value:'8'}});
     fireEvent.change(screen.getByRole('spinbutton',{name:'学习率'}),{target:{value:'0.002'}});
     fireEvent.change(screen.getByRole('spinbutton',{name:'批大小'}),{target:{value:'17'}});
+    fireEvent.change(screen.getByRole('spinbutton',{name:'异构程度（Dirichlet α）'}),{target:{value:'0.01'}});
+    fireEvent.change(screen.getByRole('spinbutton',{name:'划分种子'}),{target:{value:'123'}});
     next();fireEvent.click(screen.getByRole('button',{name:/启动训练/}));
     await waitFor(()=>expect(open).toHaveBeenCalledWith(training.id));
     const posted=fetch.mock.calls.map(([url,init])=>({url,body:JSON.parse(init.body)}));
     expect(posted).toHaveLength(2);
-    expect(posted[0]).toMatchObject({url:'/api/platform/preflight',body:{rounds:8,learningRate:.002,batchSize:17,gpu:1,name:'页面参数测试'}});
-    expect(posted[1]).toMatchObject({url:'/api/platform/train',body:{rounds:8,learningRate:.002,batchSize:17,preflightId:preflight.id}});
+    expect(posted[0]).toMatchObject({url:'/api/platform/preflight',body:{rounds:8,learningRate:.002,batchSize:17,gpu:1,alpha:.01,splitSeed:123,name:'页面参数测试'}});
+    expect(posted[1]).toMatchObject({url:'/api/platform/train',body:{rounds:8,learningRate:.002,batchSize:17,alpha:.01,splitSeed:123,preflightId:preflight.id}});
     expect(posted[0].body.idempotencyKey).not.toBe(posted[1].body.idempotencyKey);
     expect(sessionStorage.getItem(LAUNCH_KEY)).toBeNull();
   });

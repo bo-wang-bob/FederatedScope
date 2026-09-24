@@ -1,6 +1,6 @@
-import { ArrowRightOutlined, BarChartOutlined, CheckCircleFilled, ExperimentOutlined, InfoCircleOutlined,
+import { ArrowRightOutlined, BarChartOutlined, CheckCircleFilled, ExperimentOutlined,
   LockOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
-import { Alert, Popover, Select, Skeleton, Tag } from 'antd';
+import { Alert, Select, Skeleton, Tag } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from './api';
@@ -247,7 +247,7 @@ export function PrivacyMembershipPanel() {
       </section>
       <PrivacyDistributionChart distributions={payload.distributions} />
       <section className="privacy-result" aria-label="成员推理攻击结果">
-        <div className="privacy-card-heading privacy-result-heading"><span className="privacy-heading-icon"><ExperimentOutlined /></span><div><h3 className="privacy-result-title">攻击结果对照{payload.alignment && <Popover title="结果口径" content={<p className="privacy-result-note">{payload.alignment.message}</p>} trigger="click"><button className="privacy-info-button" type="button" aria-label="查看结果口径"><InfoCircleOutlined /></button></Popover>}</h3><p>{payload.alignment?.metricsMode === 'mix' ? '整体指标与当前样本预测' : payload.alignment ? '共同样本指标与当前样本预测' : '整体指标与当前样本预测'}</p></div><em>Client {payload.clientId}</em></div>
+        <div className="privacy-card-heading privacy-result-heading"><span className="privacy-heading-icon"><ExperimentOutlined /></span><div><h3 className="privacy-result-title">攻击结果对照</h3></div><em>Client {payload.clientId}</em></div>
         <div className="privacy-selected-summary">
           <img src={selected.imageUrl} alt={selected.className || selected.filename} />
           <div>

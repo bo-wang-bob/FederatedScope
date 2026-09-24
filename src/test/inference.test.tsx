@@ -26,11 +26,12 @@ describe('single-image model experience', () => {
   it.each([2, 100])('keeps core controls without the removed notices for a %i-round model', async trainingRounds => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: page }) }));
     const open = vi.fn();
-    render(<ModelExperience library={{ ...library, models: [{ ...model, trainingRounds }] }} disabled={false} create={vi.fn()} open={open} />);
+    render(<ModelExperience library={{ ...library, models: [{ ...model, trainingRounds, augmentationWarning: '历史增强来源提醒' }] }} disabled={false} create={vi.fn()} open={open} />);
     await screen.findByAltText('测试原图 0.jpg');
     expect(screen.queryByText('冻结特征推理')).not.toBeInTheDocument();
     expect(screen.queryByText('样本关联受限')).not.toBeInTheDocument();
     expect(screen.queryByText('推理口径与来源限制')).not.toBeInTheDocument();
+    expect(screen.queryByText('历史增强来源提醒')).not.toBeInTheDocument();
     expect(screen.queryByText(/旧数据按划分与标签顺序关联/)).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /下载模型/ })).toHaveAttribute('href', '/api/platform/jobs/' + model.jobId + '/model-final');
     fireEvent.click(screen.getByRole('button', { name: /查看训练记录/ }));

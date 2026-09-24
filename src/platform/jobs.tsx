@@ -48,7 +48,6 @@ export function JobDetail({job,library,stop,rerun}:{job:Job;library:Library;stop
     ]}}><Button icon={<DownloadOutlined/>}>导出</Button></Dropdown>
   </Space></div>
     {job.error&&<Alert type="error" title={terminology(job.error)} showIcon/>}
-    {job.data?.augmentation?.warning&&<Alert type="warning" title={terminology(job.data.augmentation.warning)}/>}
     {finished&&!job.cleanup.ok&&<Alert type="error" title={job.cleanup.message} action={<Button onClick={()=>stop(job.id)}>重试本任务清理</Button>}/>}
     {model&&job.status==='completed'&&<div className="job-next-action"><div><span className="live-dot"/><strong>模型已保存</strong></div><Link className="studio-button primary small" to={modelHref(model.id,!imageModel)}>验证模型 <ArrowRightOutlined/></Link></div>}
     {training&&<><div className="job-progress"><div><span>{terminology(job.stage)}</span><strong>{final?.round ?? '—'} <small>/ {job.request.rounds} 轮已评测</small></strong></div><Progress percent={final ? Math.min(100,final.round/job.request.rounds*100):0} showInfo={false} strokeColor="#83bcc3" railColor="#263640" status={job.status==='failed'?'exception':job.status==='running'?'active':'normal'} size="small"/></div>

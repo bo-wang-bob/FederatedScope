@@ -112,7 +112,6 @@ function StoredModelExperience({ library, initialModel, initialTestset, onSelect
     </div>
     {initialModel && !model && <Alert type="warning" title="指定模型不可用，请重新选择。" />}
     {model && <div className="experience-context"><span>{model.classes.length} 个类别<i>·</i>训练 {model.trainingRounds ?? '—'} 轮</span><a href={'/api/platform/jobs/'+model.jobId+'/model-'+model.kind}><DownloadOutlined /> 下载模型</a></div>}
-    {model?.augmentationWarning && <Alert type="warning" title={model.augmentationWarning} />}
     {error && <Alert type="error" showIcon title={error} action={<Button onClick={() => setRefresh(x => x+1)} disabled={busy}>重新读取</Button>} />}
     <div className="experience-workspace">
       <section className="experience-sample-library"><div className="experience-gallery-head"><h3>测试样本<span>{samples?.total.toLocaleString() ?? '—'}</span></h3><div className="experience-filters"><Select aria-label="测试域筛选" placeholder="全部域" allowClear value={domain} disabled={frozen || !test} onChange={v => {setDomain(v);setPage(1);}} options={test?.domains.map(d => ({value:d.name,label:d.name}))} /><Select aria-label="测试类别筛选" placeholder="全部类别" allowClear showSearch optionFilterProp="label" value={label} disabled={frozen || !test} onChange={v => {setLabel(v);setPage(1);}} options={test?.classes.map((name,i) => ({value:i,label:name.replaceAll('_',' ')}))} /></div></div>
