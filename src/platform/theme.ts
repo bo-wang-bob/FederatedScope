@@ -4,11 +4,11 @@ import { theme, type ThemeConfig } from 'antd';
 export const researchTheme: ThemeConfig = {
   algorithm: theme.darkAlgorithm,
   token: {
-    colorPrimary: '#6ba9b0', colorInfo: '#6ba9b0', colorSuccess: '#8da883',
+    colorPrimary: '#94cfe9', colorInfo: '#94cfe9', colorSuccess: '#8ebca7',
     colorWarning: '#c3a572', colorError: '#d78585',
-    colorBgBase: '#10161c', colorBgLayout: '#10161c', colorBgContainer: '#171f27',
-    colorBgElevated: '#202c36', colorText: '#e0e7eb', colorTextSecondary: '#a2b0bb',
-    colorTextTertiary: '#8d9da9', colorBorder: '#34424d', colorBorderSecondary: '#2a3742',
+    colorBgBase: '#091522', colorBgLayout: '#091522', colorBgContainer: '#101f30',
+    colorBgElevated: '#15283c', colorText: '#e5eef7', colorTextSecondary: '#a6b8c9',
+    colorTextTertiary: '#92a9bd', colorBorder: '#355169', colorBorderSecondary: '#294054',
     borderRadius: 6, fontSize: 14, fontSizeSM: 14, controlHeight: 40,
     fontFamily: '"Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif',
     motionDurationMid: '0.16s', motionDurationSlow: '0.2s',
@@ -17,8 +17,8 @@ export const researchTheme: ThemeConfig = {
     Button: { primaryColor: '#0c1a20', primaryShadow: 'none', defaultShadow: 'none', controlHeightLG: 40, contentFontSizeLG: 14 },
     Input: { controlHeight: 40 }, InputNumber: { controlHeight: 40 }, Select: { controlHeight: 40 },
     Card: { headerFontSize: 16, headerHeight: 56 },
-    Table: { headerBg: '#1c2731', headerColor: '#acbac4', rowHoverBg: '#202e38', cellPaddingBlock: 16 },
+    Table: { headerBg: '#1a3147', headerColor: '#b3c9db', rowHoverBg: '#203c52', cellPaddingBlock: 16 },
     Tabs: { titleFontSize: 14 },
-    Tooltip: { colorBgSpotlight: '#2b3d49', colorTextLightSolid: '#edf3f6' },
+    Tooltip: { colorBgSpotlight: '#29455e', colorTextLightSolid: '#edf3f6' },
   },
 };

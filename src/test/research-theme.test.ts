@@ -15,7 +15,7 @@ describe('research console design contract', () => {
     expect(token.fontSize).toBe(14);
     expect(token.fontSizeSM).toBe(14);
     expect(token.controlHeight).toBe(40);
-    expect(token.colorBgElevated).toBe('#202c36');
+    expect(token.colorBgElevated).toBe('#15283c');
     expect(token.motionDurationMid).toBe('0.16s');
   });
   it('keeps normal text and primary actions readable at 14px', () => {

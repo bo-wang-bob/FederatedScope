@@ -74,13 +74,15 @@ describe('desktop workspace navigation',()=>{
     expect(resolveView(null,'/experiments/new')).toBe('train');expect(resolveView(null,'/reports')).toBe('jobs');
     expect(resolveView('toString','/')).toBe('home');expect(viewHref('home')).toBe('/');
   });
-  it('provides a fixed sidebar, current task access and reserved extensions',async()=>{
+  it('provides top navigation, current task access and all research modules',async()=>{
     const openCurrent=vi.fn();
     render(<MemoryRouter><StudioShell view="home" connected running openCurrent={openCurrent}>页面内容</StudioShell></MemoryRouter>);
     const nav=screen.getByRole('navigation',{name:'主要功能'});
-    expect(within(nav).getAllByRole('link')).toHaveLength(4);
+    expect(within(nav).getAllByRole('link')).toHaveLength(6);
     expect(within(nav).getByRole('link',{name:'系统首页'})).toHaveAttribute('aria-current','page');
-    expect(screen.getByRole('complementary')).toBeInTheDocument();
+    expect(screen.getByRole('banner')).toBeInTheDocument();
+    expect(screen.queryByRole('complementary')).not.toBeInTheDocument();
+    expect(screen.getByText('隐私计算与可信共享技术验证平台')).toBeInTheDocument();
     expect(screen.getByText('服务已连接')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button',{name:/当前任务/}));expect(openCurrent).toHaveBeenCalledOnce();
     expect(await screen.findByRole('link',{name:/隐私保护/})).toHaveAttribute('href','/?view=privacy');
@@ -130,7 +132,7 @@ describe('desktop workspace navigation',()=>{
     await screen.findByText('server offline');
     expect(screen.getByRole('button',{name:/重连/})).toBeInTheDocument();
     expect(within(screen.getByRole('region',{name:'功能导航'})).getByRole('link',{name:'模型验证'})).toBeInTheDocument();
-    expect(within(screen.getByRole('navigation',{name:'研究扩展'})).getByRole('link',{name:/隐私保护/})).toHaveAttribute('href','/?view=privacy');
+    expect(within(screen.getByRole('navigation',{name:'主要功能'})).getByRole('link',{name:/隐私保护/})).toHaveAttribute('href','/?view=privacy');
     expect(screen.queryByText(/GPU|资源占用|缓存配置/)).not.toBeInTheDocument();
   });
   it('keeps data-cache legacy bookmarks useful without exposing a cache page',async()=>{
@@ -158,11 +160,11 @@ describe('desktop workspace navigation',()=>{
   });
 });
 describe('action-first homepage',()=>{
-  it('shows the actual current task and three approved image-led navigation entries',()=>{
+  it('shows actual current and recent tasks alongside the complete workflow',()=>{
     render(<MemoryRouter><SystemHome jobs={[running,completed]} loading={false}/></MemoryRouter>);
     expect(screen.getByRole('link',{name:/当前任务/})).toHaveAttribute('href','/?view=jobs&id='+running.id);
-    expect(screen.queryByRole('link',{name:/已完成的基线实验/})).not.toBeInTheDocument();
-    expect(within(screen.getByRole('region',{name:'功能导航'})).getAllByRole('link')).toHaveLength(3);
+    expect(screen.getByRole('link',{name:/已完成的基线实验/})).toHaveAttribute('href','/?view=jobs&id='+completed.id);
+    expect(within(screen.getByRole('region',{name:'功能拓扑地图'})).getAllByRole('link')).toHaveLength(5);
     expect(screen.getByRole('link',{name:/新建训练/})).toHaveAttribute('href','/?view=train');
     expect(screen.queryByText(/GPU|缓存|4090|服务器|资源/)).not.toBeInTheDocument();
   });

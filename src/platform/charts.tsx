@@ -4,17 +4,17 @@ import { Empty } from 'antd';
 import { terminology, type Client, type Job, type Point, type Resource } from './api';
 const colors = ['#8abfc7', '#a5b88e', '#859fcd', '#cfb380', '#b399c5', '#cc9898'];
 const axisStyle = { axisLine: { lineStyle: { color: '#435a68' } }, axisTick: { lineStyle: { color: '#435a68' } },
-  axisLabel: { color: '#a6becd', fontSize: 12, hideOverlap: true }, nameTextStyle: { color: '#a6becd', fontSize: 12 },
+  axisLabel: { color: '#a6becd', fontSize: 14, hideOverlap: true }, nameTextStyle: { color: '#a6becd', fontSize: 14 },
   splitLine: { lineStyle: { color: '#2a3a45' } } };
 function Plot({ option, style }: { option: { xAxis?: object; yAxis?: object; legend?: object; visualMap?: object; [key: string]: unknown }; style: { height: number } }) {
   return <Suspense fallback={<div className="chart-loading">正在加载图表…</div>}><Chart option={{ ...option,
     ...(option.xAxis && { xAxis: { ...axisStyle, ...option.xAxis } }),
     ...(option.yAxis && { yAxis: { ...axisStyle, ...option.yAxis } }),
-    ...(option.legend && { legend: { textStyle: { color: '#afc3cf', fontSize: 12 }, pageTextStyle: { color: '#afc3cf' }, pageIconColor: '#8abfc7', ...option.legend } }),
-    ...(option.visualMap && { visualMap: { textStyle: { color: '#afc3cf', fontSize: 12 }, ...option.visualMap } }),
+    ...(option.legend && { legend: { textStyle: { color: '#afc3cf', fontSize: 14 }, pageTextStyle: { color: '#afc3cf' }, pageIconColor: '#8abfc7', ...option.legend } }),
+    ...(option.visualMap && { visualMap: { textStyle: { color: '#afc3cf', fontSize: 14 }, ...option.visualMap } }),
     animation: !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches, animationDuration: 200, animationDurationUpdate: 160 }} height={style.height} /></Suspense>;
 }
-const common = { backgroundColor: 'transparent', color: colors, textStyle: { color: '#afc3cf', fontFamily: 'Segoe UI, Microsoft YaHei, sans-serif', fontSize: 12 },
+const common = { backgroundColor: 'transparent', color: colors, textStyle: { color: '#afc3cf', fontFamily: 'Segoe UI, Microsoft YaHei, sans-serif', fontSize: 14 },
   tooltip: { trigger: 'axis', backgroundColor: '#20313d', borderColor: '#47606f', textStyle: { color: '#d5e4ed', fontSize: 14 } }, grid: { left: 50, right: 44, top: 45, bottom: 38 } };
 export function Curves({ points }: { points: Point[] }) {
   if (!points.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="等待训练指标" />;
@@ -44,7 +44,7 @@ const nodes: object[] = [{ id: 'server', name: '协同\n聚合', x: 350, y: 190,
     const center = { x: 350 + Math.cos(a) * 210, y: 190 + Math.sin(a) * 130 };
     const group = clients.filter(c => c.domain === domain);
     nodes.push({ id: domain, name: `${domain}\n${group.length} 客户端`, ...center, symbolSize: 57,
-      itemStyle: { color: '#263a45', borderColor: colors[i % colors.length], borderWidth: 1.5 }, label: { show: true, position: 'bottom', color: '#bbcfdb', fontSize: 12 } });
+      itemStyle: { color: '#263a45', borderColor: colors[i % colors.length], borderWidth: 1.5 }, label: { show: true, position: 'bottom', color: '#bbcfdb', fontSize: 14 } });
     links.push({ source: 'server', target: domain });
     group.forEach((c, j) => {
       const angle = Math.PI * 2 * j / group.length;

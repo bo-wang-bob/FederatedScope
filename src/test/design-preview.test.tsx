@@ -32,14 +32,16 @@ async function selectOption(label: string, value: string) {
 }
 
 describe('frontend design review — isolated from live execution', () => {
-  it('keeps only three core homepage actions and locally bundled real imagery', () => {
+  it('provides map-based module navigation with a locally bundled satellite scene', () => {
     mount();
     const home = screen.getByRole('region', { name: '功能导航' });
-    expect(within(home).getAllByRole('link')).toHaveLength(3);
+    expect(within(screen.getByRole('region', { name: '功能拓扑地图' })).getAllByRole('link')).toHaveLength(5);
+    expect(within(home).getByRole('link', { name: '独立评测' })).toHaveAttribute('href', '/?view=evaluate');
     expect(screen.getByRole('status')).toHaveTextContent('设计预览');
     expect(screen.queryByText(/服务已连接|GPU|本地草稿|科研仿真实验平台/)).not.toBeInTheDocument();
     expect(home.querySelectorAll('p,small')).toHaveLength(0);
-    expect(within(home).getAllByRole('img').filter(image => image.tagName === 'IMG')).toHaveLength(4);
+    expect(home.querySelectorAll('img')).toHaveLength(1);
+    expect(home.querySelector('img')?.getAttribute('src')).not.toMatch(/^https?:/);
     expect(samples).toHaveLength(4);
     expect(samples.every(sample => !sample.src.includes('/api/') && /^[a-f0-9]{64}$/.test(sample.sha256))).toBe(true);
   });

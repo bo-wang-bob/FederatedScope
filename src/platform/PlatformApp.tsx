@@ -16,10 +16,12 @@ import { TrainingForm } from './training';
 import { JobDetail, JobTable } from './jobs';
 import { useTrainingLaunch } from './launch';
 import { researchTheme } from './theme';
+import { PLATFORM_NAME } from './branding';
 import { aircraftDemoEnabled, DEMO_DRAFT_KEY, DEMO_LAUNCH_KEY, presentationCatalog, presentationJobs, presentationLibrary, requestInPresentation } from './presentationScope';
 import './studio.css';
 import '../design/design.css';
 import './live.css';
+import '../design/command.css';
 export { TrainingForm } from './training';
 
 export default function PlatformApp() {
@@ -49,7 +51,7 @@ function Workspace() {
     window.addEventListener('datasets:changed', reloadDatasets);
     return () => window.removeEventListener('datasets:changed', reloadDatasets);
   }, []);
-  useEffect(() => { document.title=page.label+' · 跨域协同训练'; },[page.label]);
+  useEffect(() => { document.title=page.label+' · '+PLATFORM_NAME; },[page.label]);
   useEffect(() => { window.scrollTo(0,0); },[view,selectedId]);
   useEffect(() => {
     let alive=true,busy=false;
@@ -119,7 +121,7 @@ function Workspace() {
     {view !== 'home' && <div className="studio-page-heading"><div><h1>{selectedId ? '实验详情' : area === 'experience' ? '模型验证' : page.label}</h1></div>
       <div>{routeTabs.length > 0 && <nav className="studio-route-tabs" aria-label="模块功能">{routeTabs.map(tab => <Link aria-current={view === tab.view ? 'page' : undefined} className={view === tab.view ? 'active' : ''} key={tab.view} to={tab.href ?? (modelId && area === 'experience' ? modelHref(modelId,tab.view === 'evaluate',testsetId) : viewHref(tab.view))}>{tab.label}</Link>)}</nav>}
       </div></div>}
-    {view === 'home' ? <SystemHome jobs={scopedJobs} loading={!catalog} showDatasetImages={!restricted} /> : isPlannedView(view) ? <PlannedModule moduleId={view} /> : view === 'backdoor' || view === 'backdoorCompare' ? <div className="studio-page-enter">{view === 'backdoor' ? <BackdoorLab /> : <BackdoorCompare />}</div> : !catalog ? <div className="studio-loading"><Skeleton active paragraph={{rows:8}} /></div> : <>
+    {view === 'home' ? <SystemHome jobs={scopedJobs} loading={!catalog || !!error} catalog={catalog} library={!libraryError && catalog ? library : undefined} showDatasetImages={!restricted} /> : isPlannedView(view) ? <PlannedModule moduleId={view} /> : view === 'backdoor' || view === 'backdoorCompare' ? <div className="studio-page-enter">{view === 'backdoor' ? <BackdoorLab /> : <BackdoorCompare />}</div> : !catalog ? <div className="studio-loading"><Skeleton active paragraph={{rows:8}} /></div> : <>
       {view === 'train' && (catalog.groups.length ? <TrainingForm key={(query.get('group') || '')+':'+(query.get('source') || '')} catalog={catalog} draftKey={restricted ? DEMO_DRAFT_KEY : undefined} initialGroup={query.get('group') || undefined} sourceId={query.get('source') || undefined} running={running} disconnected={!!error} launch={launch} open={open} /> : <div className="studio-empty-state"><h2>训练配置尚未接入</h2></div>)}
       {view === 'jobs' && <div className="studio-page-enter">{selectedId ? <><Button className="studio-back" type="text" icon={<ArrowLeftOutlined />} onClick={() => setQuery({view:'jobs'})}>返回实验记录</Button>{detailError && <Alert type="error" title={detailError} action={<Button onClick={() => setRefreshKey(x => x+1)}>重试</Button>} />}{selected ? requestInPresentation(selected.request,allCatalog) || !terminal(selected.status) ? <JobDetail key={selected.id} job={selected} library={library} stop={stop} rerun={() => setQuery({view:'train',source:selected.id,group:selected.request.group})} /> : <Alert type="info" title="该记录不在当前演示范围" /> : !detailError && <Skeleton active />}</> :
         <section className="studio-surface jobs-collection"><div className="collection-toolbar"><Input aria-label="搜索实验" prefix={<SearchOutlined />} placeholder="搜索实验名称或算法" allowClear value={search} onChange={event => setSearch(event.target.value)} /><Space>

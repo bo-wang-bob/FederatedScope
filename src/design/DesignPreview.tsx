@@ -17,6 +17,7 @@ import { samples, type DesignSample } from './assets';
 import { ConsoleShell as DesignShell, PhotoHome as Home } from './Presentation';
 import '../platform/studio.css';
 import './design.css';
+import './command.css';
 
 const previewTheme = { ...researchTheme, token: { ...researchTheme.token, fontSizeSM: 14 } };
 const domainOptions = [{ value: 'all', label: '全部域' }, { value: 'aerial', label: 'aerial' }, { value: 'natural', label: 'natural' }];
