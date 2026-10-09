@@ -134,6 +134,8 @@ it('connects backdoor selection and comparison without invoking training or priv
     return {ok:true,json:async()=>({data})};
   }));
   render(<MemoryRouter initialEntries={['/?view=backdoor']}><PlatformApp /></MemoryRouter>);
+  // 后门页默认落在「训练实验」标签, 挑图/对比内容在「对比测试」标签下。
+  fireEvent.click(await screen.findByRole('tab',{name:/对比测试/}));
   await screen.findByRole('button',{name:'样本 Art_00001 · Laptop'});
   fireEvent.click(screen.getByRole('button',{name:/生成对比/}));
   const link=await screen.findByRole('link',{name:/查看逐样本对照/});

@@ -83,10 +83,12 @@ export interface BackdoorPick { ids: string[]; labels: number[]; total: number; 
 export interface BackdoorStat { correct: number; total: number; accuracy: number; asr: number; asrEligible?: number; asrRate: number | null }
 export interface BackdoorResult {
   ids: string[]; classNames: string[]; targetLabel: number; targetName: string; attackName: string;
+  /** label_flip 这类无触发器攻击: 没有 triggered/defense 两格, 只有干净图对照 */
+  triggerless?: boolean;
   runs: Record<string, { name: string; display: string }>;
   images: { id: string; label: number; labelName: string;
     clean: { label: number; name: string };
-    triggered: { label: number; name: string; hit: boolean };
+    triggered?: { label: number; name: string; hit: boolean };
     defense?: { label: number; name: string; hit: boolean } }[];
   stats: Record<string, BackdoorStat>;
   paths: Record<string, string>;
@@ -97,11 +99,13 @@ export interface BackdoorJob {
   createdAt: string; updatedAt: string; endedAt?: string;
   images?: Record<string, string>; result?: BackdoorResult;
 }
-export interface BackdoorTrainingTemplate { key: string; file: string; label: string; exists: boolean }
+export interface BackdoorTrainingTemplate { key: string; file: string; label: string; exists: boolean; attack?: string }
+export interface BackdoorTrainingAttack { key: string; name: string; attack: string; defense: string }
 export interface BackdoorTrainingDataset { id: string; name: string; classes: number; count: number; layout: string }
 export interface BackdoorTrainingGroup {
   token: string; base: string; baseline: string; attack: string; defense: string;
   dataRoot: string; datasetId: string; datasetName: string; classes: string[]; createdAt: string;
+  attackKey?: string; attackName?: string;
   testsetId?: string; testsetName?: string; testsetCount?: number; testsetSkipped?: number;
   testsetUnlabelled?: number; testsetAppliedAt?: string;
 }
@@ -109,11 +113,13 @@ export interface BackdoorTrainingJob {
   id: string; action: string; token: string; datasetId: string; datasetName: string; base: string;
   device: string; total: number; createdAt: string; updatedAt: string; startedAt?: string; endedAt?: string;
   status: string; stage: string; stageIndex: number; error: string | null; pid?: number;
+  attack?: string; attackName?: string;
   results?: { key: string; label: string; expname: string }[]; group?: BackdoorTrainingGroup;
 }
 export interface BackdoorTrainingStatus {
   runnable: boolean; datasets: BackdoorTrainingDataset[]; templates: BackdoorTrainingTemplate[];
   missing: string[]; base: string; job: BackdoorTrainingJob | null; group: BackdoorTrainingGroup | null;
+  attacks?: BackdoorTrainingAttack[]; attack?: string; attackName?: string; defaultAttack?: string;
   testsets?: BackdoorTrainingDataset[];
 }
 export const backdoorImageUrl = (id: string) => `/api/platform/backdoor/testset/${id}/image`;

@@ -1,6 +1,17 @@
 /* 后门研究: 挑图 + clean/triggered/defense 三连对比。逐样本对照在独立的 backdoorCompare 页面。 */
 .backdoor-lab{display:grid;gap:20px}
 
+/* 页面外壳: 「训练实验 / 对比测试」两个标签切换, 参考隐私保护页的 workbench 结构。 */
+.backdoor-workbench{display:block;min-width:0}
+.backdoor-workbench-header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding-bottom:18px;margin-bottom:24px;border-bottom:1px solid var(--studio-line)}
+.backdoor-workbench-header [role=tablist]{display:flex;gap:6px;padding:5px;border:1px solid var(--studio-line);border-radius:12px;background:var(--studio-panel)}
+.backdoor-workbench-header button{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:42px;padding:0 24px;border:1px solid transparent;border-radius:8px;background:transparent;color:#96ada5;font:inherit;font-size:14px;white-space:nowrap;cursor:pointer}
+.backdoor-workbench-header button:hover{color:#e1eee7;background:var(--studio-raised)}
+.backdoor-workbench-header button[aria-selected=true]{background:#1d2c36;border-color:#3f6b78;color:#d7ecf3}
+.backdoor-workbench-header button:focus-visible{outline:2px solid var(--studio-accent);outline-offset:3px}
+/* 两个区域都常驻挂载(hidden 切换), 保留各自的任务状态与轮询。 */
+.backdoor-workbench>[hidden]{display:none!important}
+
 .backdoor-picker .ant-card-body{padding:20px 22px 22px}
 .backdoor-filters{display:flex;align-items:flex-end;gap:20px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--studio-line)}
 .backdoor-filters label{display:grid;gap:8px;min-width:180px}
@@ -24,6 +35,7 @@
 .backdoor-progress p[role=alert]{color:#e0a49b;max-width:760px;text-align:center}
 
 .backdoor-figures{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+.backdoor-triggerless{margin-top:18px}
 .backdoor-figure{margin:0;display:flex;flex-direction:column;border:1px solid var(--studio-line);border-radius:8px;background:var(--studio-raised);overflow:hidden}
 .backdoor-figure-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px 10px 16px;border-bottom:1px solid var(--studio-line)}
 .backdoor-figure-head h3{font-size:15px;font-weight:600;color:#cfe3ea}
@@ -55,21 +67,33 @@
   .backdoor-figures{grid-template-columns:1fr}
 }
 
-/* 攻防实验训练面板: 上传数据集 -> 启动三个实验 -> 导出测试集。 */
+/* 攻防实验训练面板: 上传数据集 -> 启动三个实验 -> 导出测试集。
+   左列「实验配置」, 右列「训练进度」(Steps + Progress + Stat), 与隐私页一致。 */
+.backdoor-training-workflow{display:grid;grid-template-columns:minmax(320px,.9fr) minmax(440px,1.35fr);gap:20px;align-items:start}
+.backdoor-training-workflow>*{min-width:0}
+.backdoor-training-monitor{display:grid;gap:18px;min-width:0}
 .backdoor-training .ant-card-body{padding:20px 22px 22px}
-.backdoor-training-form{display:flex;align-items:flex-end;gap:20px;flex-wrap:wrap}
-.backdoor-training-form label{display:grid;gap:8px;min-width:200px}
+.backdoor-training-form{display:flex;flex-direction:column;gap:16px}
+.backdoor-training-form label{display:grid;gap:8px}
 .backdoor-training-form label>span{color:#a9bdca;font-size:12px;letter-spacing:.04em}
-.backdoor-training-form .ant-select{min-width:230px}
-.backdoor-training-form .ant-input-number{width:130px}
-.backdoor-training-actions{display:flex;gap:12px;margin-left:auto}
-.backdoor-training-stage{list-style:none;display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 0;padding:0}
-.backdoor-training-stage li{display:flex;align-items:center;padding:5px 14px;border-radius:999px;border:1px solid var(--studio-line);
-  background:var(--studio-raised);color:#93a9b6;font-size:12.5px;letter-spacing:.02em}
-.backdoor-training-stage li.active{color:#9fd3e8;border-color:#3f6b78;background:#1d2c36}
-.backdoor-training-stage li.done{color:#9fc194;border-color:#4a6b45}
-.backdoor-training-stage li.fail{color:#e59a8c;border-color:#7a4a42}
-.backdoor-training-meta{margin:12px 0 0;color:#a9bdca;font-size:12.5px}
+.backdoor-training-form .ant-select,.backdoor-training-form .ant-input-number{width:100%}
+.backdoor-training-actions{display:flex;gap:12px;margin-top:18px;flex-wrap:wrap}
+.backdoor-training-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
+.backdoor-training-heading strong{font-size:15px;color:#e3edf2}
+.backdoor-training-steps{margin-bottom:18px}
+.backdoor-training-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin:18px 0 0}
+.backdoor-training-stats .platform-stat{padding:12px 14px;border:1px solid var(--studio-line);border-radius:8px;background:var(--studio-raised)}
+.backdoor-training-meta{margin:14px 0 0;color:#a9bdca;font-size:12.5px}
+.backdoor-training-next{margin-top:16px}
+.backdoor-training-await{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:230px;padding:24px 12px;text-align:center;color:#93a9b6}
+.backdoor-training-await>.anticon{font-size:38px;color:#7fb2c4}
+.backdoor-training-await h3{margin:6px 0 0;font-weight:500;color:#cfe3ea}
+.backdoor-training-await p{margin:0;max-width:420px;font-size:12.5px;line-height:1.8}
 .backdoor-training-error{margin-top:14px}
 .backdoor-training-logs{max-height:60vh;overflow:auto;margin:0;padding:14px;border-radius:6px;background:#0d141a;
   color:#c3d6e0;font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+@media (max-width:1120px){.backdoor-training-workflow{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:600px){
+  .backdoor-workbench-header [role=tablist]{width:100%}
+  .backdoor-workbench-header button{flex:1;padding:0 12px}
+}

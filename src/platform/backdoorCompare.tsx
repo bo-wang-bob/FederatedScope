@@ -62,13 +62,18 @@ export function BackdoorCompare() {
       {job && <>
         {job.status !== 'completed' ? <div className="backdoor-progress">{terminal(job.status) ? <><h3>{job.stage}</h3>{job.error && <p role="alert">{job.error}</p>}</> : <><Spin size="large" /><h3>{job.stage}</h3><p className="platform-muted">正在计算 {job.ids.length} 张图片的攻防预测</p></>}</div> : result && <>
           <h3 className="backdoor-table-title">逐样本预测对照</h3>
+          {result.triggerless && <Alert className="backdoor-compare-alert" type="info" showIcon
+            title={`${result.attackName} 属于无触发器攻击`}
+            description="该攻击没有可注入的触发器，「注入触发器」一列不适用；后两列是攻击模型与防御模型在同一批干净测试图上的表现。" />}
           <div className="backdoor-table" role="table">
-            <div role="row" className="backdoor-row head"><span>样本</span><span>真实标签</span><span>干净样本</span><span>注入触发器</span><span>防御后</span></div>
+            <div role="row" className="backdoor-row head"><span>样本</span><span>真实标签</span><span>干净样本</span><span>{result.triggerless ? '注入触发器（不适用）' : '注入触发器'}</span><span>防御后</span></div>
             {result.images.map(row => <div role="row" className="backdoor-row" key={row.id}>
               <span><img src={backdoorImageUrl(row.id)} alt={row.id} loading="lazy" /><code>{row.id}</code></span>
               <span>{readable(row.labelName)}</span>
               <span className={row.clean.label === row.label ? 'ok' : 'warn'}>{readable(row.clean.name)}</span>
-              <span className={row.triggered.hit ? 'hit' : row.triggered.label === row.label ? 'ok' : 'warn'}>{readable(row.triggered.name)}{row.triggered.hit && <Tag color="error">劫持</Tag>}</span>
+              <span className={!row.triggered ? undefined : row.triggered.hit ? 'hit' : row.triggered.label === row.label ? 'ok' : 'warn'}>
+                {row.triggered ? <>{readable(row.triggered.name)}{row.triggered.hit && <Tag color="error">劫持</Tag>}</> : '—'}
+              </span>
               <span className={row.defense ? row.defense.hit ? 'hit' : row.defense.label === row.label ? 'ok' : 'warn' : undefined}>{row.defense ? readable(row.defense.name) : '—'}</span>
             </div>)}
           </div>
