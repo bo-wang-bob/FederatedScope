@@ -14,9 +14,14 @@ def wrap_attacker_trainer(base_trainer, config):
     # 恒真条件 (非空字符串永远为真), 会连带屏蔽下面所有 trainer 包装。
     # 这里按"GGEUR 在自己的 client 训练路径里实现了 CERBERUS/SABRE,
     # 不需要通用 wrapper"的原意写成本集合判断, 不扩散那个 bug。
-    if attack_method in ('cerberus', 'sabre'):
-        # GGEUR implements CERBERUS/SABRE inside its custom client training
-        # path (GGEURClient._train_head_for_round). No generic trainer
+    # LABEL_FLIP 同理: 统计阶段投毒与训练阶段翻转都在 GGEURClient._train_head_for_round
+    # 及其子方法里完成, 分支里没有任何 label_flip trainer 包装器可用, 必须一并短路,
+    # 否则客户端构造阶段就会 `ValueError: Trainer label_flip is not provided`。
+    # 别名集合与 GGEURClient 里 label_flip_enabled 的判定保持一致。
+    if attack_method in ('cerberus', 'sabre', 'label_flip', 'label_flipping',
+                         'data_poisoning'):
+        # GGEUR implements CERBERUS/SABRE/LABEL_FLIP inside its custom client
+        # training path (GGEURClient._train_head_for_round). No generic trainer
         # wrapper is needed here.
         return base_trainer
     if attack_method == 'gan_attack':

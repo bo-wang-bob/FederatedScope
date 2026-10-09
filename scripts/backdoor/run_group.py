@@ -12,6 +12,11 @@
     defense_clean.png 防御模型 + 干净图      (确认防御不损伤正常精度)
     result.json       逐样本真实标签/三次预测 + 汇总统计
 
+无触发器攻击 (label_flip: 数据投毒 / 模型偷渡) 没有可注入的 trigger, 降级产出:
+    clean.png          攻击模型 + 干净图     (命中目标类的样本标红)
+    defense_clean.png  防御模型 + 干净图
+    result.json        标记 triggerless=True, 不含 triggered/defense 两格
+
 Spec (JSON):
     base       包含各 run 子目录的基目录 (如 exp/sabre)
     runs       {"attack": "sabre_vit_42", "defense": "sabre_vit_defense_42"}
@@ -104,6 +109,78 @@ def _plot(images, labels, preds, class_names, path, title, font_size, highlight=
               highlight=highlight)
 
 
+def _hit_flags(preds, labels, target_label):
+    """被劫持样本: 真实标签不是目标类, 却被预测成目标类。target_label<0 时不做标注。"""
+    if target_label < 0:
+        return None
+    return [p == target_label and t != target_label
+            for p, t in zip(preds, labels)]
+
+
+def _triggerless_result(output, device, base, images, labels, resolved_ids,
+                        class_names, per_run, attack_name, target_label,
+                        font_size):
+    """无触发器攻击 (label_flip: 数据投毒 / 模型投毒) 的降级产出。
+
+    label_flip 不产生 trigger artifact, 因此没有"注入触发器"这一格可对照,
+    也就无法给出「触发器命中」的图。此时只产出攻击模型与防御模型在同一批
+    干净测试图上的预测图, 并在 result.json 里用 ``triggerless=True`` 明确
+    标注, 前端据此隐藏/说明触发器相关列, 而不是整个对比任务失败。
+    """
+    attack_entry = per_run['attack']
+    defense_entry = per_run.get('defense')
+    target_name = _label_text(target_label, class_names) if target_label >= 0 else '—'
+
+    _plot(images, labels, attack_entry['clean'], class_names,
+          os.path.join(output, 'clean.png'),
+          f"{attack_entry['display']}: clean test images", font_size,
+          highlight=_hit_flags(attack_entry['clean'], labels, target_label))
+
+    paths = dict(clean='clean.png')
+    if defense_entry:
+        _plot(images, labels, defense_entry['clean'], class_names,
+              os.path.join(output, 'defense_clean.png'),
+              f"{defense_entry['display']}: clean test images", font_size,
+              highlight=_hit_flags(defense_entry['clean'], labels, target_label))
+        paths['defenseClean'] = 'defense_clean.png'
+
+    stats = dict(clean=_summarize(labels, attack_entry['clean'], target_label))
+    if defense_entry:
+        stats['defenseClean'] = _summarize(labels, defense_entry['clean'],
+                                           target_label)
+
+    per_image = []
+    for i, (image_id, label) in enumerate(zip(resolved_ids, labels)):
+        row = dict(id=image_id, label=label,
+                   labelName=_label_text(label, class_names),
+                   clean=dict(label=attack_entry['clean'][i],
+                              name=_label_text(attack_entry['clean'][i],
+                                               class_names)))
+        if defense_entry:
+            row['defense'] = dict(
+                label=defense_entry['clean'][i],
+                name=_label_text(defense_entry['clean'][i], class_names),
+                hit=bool(target_label >= 0
+                         and defense_entry['clean'][i] == target_label
+                         and label != target_label))
+        per_image.append(row)
+
+    result = dict(ids=resolved_ids, classNames=class_names,
+                  targetLabel=target_label, targetName=target_name,
+                  attackName=attack_name, triggerless=True,
+                  runs={key: dict(name=entry['run'], display=entry['display'])
+                        for key, entry in per_run.items()},
+                  images=per_image, stats=stats, paths=paths,
+                  device=device, base=base)
+    with open(os.path.join(output, 'result.json'), 'w', encoding='utf-8') as stream:
+        json.dump(result, stream, ensure_ascii=False, indent=2)
+    print(f"  无触发器攻击 ({attack_name}): 干净图命中目标类 "
+          f"{stats['clean']['asr']}/{len(labels)}"
+          + (f" -> defense {stats['defenseClean']['asr']}/{len(labels)}"
+             if defense_entry else ""))
+    return result
+
+
 def run(spec):
     base = os.path.abspath(spec['base'])
     output = os.path.abspath(spec['output'])
@@ -163,7 +240,17 @@ def run(spec):
               f"{sum(1 for t, p in zip(labels, clean_preds) if t == p)}/{len(labels)}")
 
     if target_label is None:
-        raise SystemExit("[ERROR] 攻击组未找到 trigger artifact, 无法生成后门对比")
+        # label_flip (数据投毒 / 模型偷渡) 不产生 trigger artifact: 没有可注入
+        # 的触发器, 因此降级为"干净图上的攻防模型对照"并在结果里标注 triggerless,
+        # 而不是直接失败。
+        hinted = int(getattr(cfg.attack, 'target_label_ind', -1))
+        if hinted < 0:
+            hinted = int(getattr(getattr(cfg.attack, 'label_flip', None),
+                                 'target_label_ind', -1))
+        return _triggerless_result(
+            output, device, base, images, labels, resolved_ids, class_names,
+            per_run, str(getattr(cfg.attack, 'attack_method', '') or 'unknown'),
+            hinted, font_size)
 
     target_name = _label_text(target_label, class_names)
     attack_entry, defense_entry = per_run['attack'], per_run.get('defense')

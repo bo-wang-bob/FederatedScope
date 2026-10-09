@@ -33,17 +33,97 @@ from .repository import JsonRepository
 TERMINAL = {'completed', 'failed', 'stopped', 'interrupted'}
 TOKEN_PATTERN = re.compile(r'^grp[0-9a-f]{8}$')
 # 三个模板的执行顺序: 干净基线 -> 注入后门 -> 加防御后门
-TEMPLATES = {
-    'baseline': 'vit_newdataset.yaml',
-    'attack': 'sabre_vit_newdataset.yaml',
-    'defense': 'sabre_vit_newdataset_defense.yaml',
-}
 ORDER = ('baseline', 'attack', 'defense')
-LABELS = {
-    'baseline': '干净基线（无攻击）',
-    'attack': 'SABRE 后门攻击',
-    'defense': 'SABRE 攻击 + multi_metrics 防御',
+# 干净基线无攻击, 四种攻击共用同一个 baseline 模板。
+BASELINE_TEMPLATE = 'vit_newdataset.yaml'
+# 攻击目录: 前端下拉框的顺序/命名以本表为准。
+# key 只作为机器标识, name 是页面显示名。
+ATTACKS = {
+    'data_poisoning': {
+        'name': '数据投毒',
+        'attack': 'label_flip_stats_vit_newdataset.yaml',
+        'defense': 'label_flip_stats_vit_newdataset_defense.yaml',
+    },
+    'model_poisoning': {
+        'name': '模型投毒',
+        'attack': 'label_flip_train_vit_newdataset.yaml',
+        'defense': 'label_flip_train_vit_newdataset_defense.yaml',
+    },
+    'common_backdoor': {
+        'name': '常见后门',
+        'attack': 'a3fl_vit_newdataset.yaml',
+        'defense': 'a3fl_vit_newdataset_defense.yaml',
+    },
+    'new_backdoor': {
+        'name': '新型后门',
+        'attack': 'sabre_vit_newdataset.yaml',
+        'defense': 'sabre_vit_newdataset_defense.yaml',
+    },
 }
+# 默认保持既有行为: 不带 attack 字段的请求仍跑 sabre (新型后门)。
+DEFAULT_ATTACK = 'new_backdoor'
+BASELINE_LABEL = '干净基线（无攻击）'
+# 历史遗留的机器键: 训练阶段 label_flip 早期误写成 model_smuggling(模型偷渡),
+# 已更正为 model_poisoning(模型投毒)。旧任务/结果组里仍存着旧键, 读取时
+# 归一化到当前目录, 这样不需要改动任何已持久化的状态文件。
+ATTACK_ALIASES = {'model_smuggling': 'model_poisoning'}
+
+
+def normalize_attack(value):
+    """把历史遗留的攻击键映射到当前目录 (非字符串原样返回)。"""
+    if isinstance(value, str):
+        key = value.strip()
+        return ATTACK_ALIASES.get(key, key)
+    return value
+
+
+def resolve_attack(value):
+    """Normalize the requested attack key (None/'' -> default)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return DEFAULT_ATTACK
+    if not isinstance(value, str):
+        raise PlatformError('攻击类型编号非法')
+    key = normalize_attack(value)
+    if key not in ATTACKS:
+        supported = '、'.join(f'{item["name"]}({name})'
+                              for name, item in ATTACKS.items())
+        raise PlatformError(f'不支持的后门攻击: {value}，可选: {supported}')
+    return key
+
+
+def attack_catalog():
+    """Frontend-facing list of selectable attacks (stable order)."""
+    return [dict(key=name, name=item['name'], attack=item['attack'],
+                 defense=item['defense'])
+            for name, item in ATTACKS.items()]
+
+
+def retime_attack(attack_block, rounds):
+    """Keep the attack inside a shortened run.
+
+    模板里的攻击窗口是按 total_round_num=100 调好的; 用户在页面上把轮数改小
+    (例如 1) 时 start_round 可能已经越过训练末尾, 攻击就完全不会触发。这里把
+    越界的 start_round 折半并补足 poison_epochs, 保证攻击仍会发生。
+
+    label_flip 用 poison_epochs=0 表示"一直攻击", 因此只折半 start_round,
+    不截断它的持续语义。
+    """
+    if not isinstance(attack_block, dict):
+        return
+    rounds = int(rounds)
+    for block_key in ('sabre', 'a3fl', 'label_flip'):
+        block = attack_block.get(block_key)
+        if not isinstance(block, dict):
+            continue
+        start_round = int(block.get('start_round', 0) or 0)
+        if start_round < rounds:
+            continue
+        block['start_round'] = max(0, rounds // 2)
+        if block_key == 'label_flip' and \
+                int(block.get('poison_epochs', 0) or 0) <= 0:
+            continue
+        block['poison_epochs'] = max(1, rounds - int(block['start_round']))
+
 
 
 def now():
@@ -56,6 +136,26 @@ def read_json(path, default=None):
         return json.loads(Path(path).read_text(encoding='utf-8'))
     except (FileNotFoundError, ValueError, OSError):
         return default
+
+
+def heal_attack_keys(value):
+    """就地归一化任务/结果组里的攻击键与显示名。
+
+    历史状态里可能存着 `model_smuggling` 这种已更正的旧键, 或与当前目录
+    不一致的旧显示名。这里按当前 ATTACKS 目录重算, 保证接口返回给前端的
+    键/名始终自洽; 不写盘, 只在读取时生效。缺少攻击键的旧记录保持原样。
+    """
+    if not isinstance(value, dict):
+        return value
+    for field in ('attack', 'attackKey'):
+        raw = value.get(field)
+        if not isinstance(raw, str):
+            continue
+        key = normalize_attack(raw)
+        if key in ATTACKS:
+            value[field] = key
+            value['attackName'] = ATTACKS[key]['name']
+    return value
 
 
 class BackdoorTrainingService:
@@ -88,14 +188,14 @@ class BackdoorTrainingService:
         job = read_json(self.directory(job_id) / 'job.json')
         if job is None:
             raise PlatformError('任务不存在', 404)
-        return job
+        return heal_attack_keys(job)
 
     def list(self):
         jobs = []
         for path in sorted((self.root).glob('*/job.json')):
             job = read_json(path)
             if job:
-                jobs.append(job)
+                jobs.append(heal_attack_keys(job))
         jobs.sort(key=lambda j: j.get('createdAt', ''), reverse=True)
         return jobs
 
@@ -108,10 +208,40 @@ class BackdoorTrainingService:
     # ------------------------------------------------------------------ #
     # 概览
     # ------------------------------------------------------------------ #
-    def templates(self):
-        return [dict(key=key, file=TEMPLATES[key], label=LABELS[key],
-                     exists=(self.templates_dir / TEMPLATES[key]).is_file())
+    def _files(self, attack_key):
+        """三个实验位 -> 模板文件名 (按攻击类型解析)。"""
+        spec = ATTACKS[attack_key]
+        return {'baseline': BASELINE_TEMPLATE,
+                'attack': spec['attack'],
+                'defense': spec['defense']}
+
+    def _labels(self, attack_key):
+        """三个实验位 -> 页面显示名。"""
+        name = ATTACKS[attack_key]['name']
+        return {'baseline': BASELINE_LABEL,
+                'attack': f'{name} 后门攻击',
+                # 展示名不暴露具体防御方法, 统一写「攻击 + 防御」。
+                'defense': f'{name} 攻击 + 防御'}
+
+    def templates(self, attack_key=DEFAULT_ATTACK):
+        files, labels = self._files(attack_key), self._labels(attack_key)
+        return [dict(key=key, file=files[key], label=labels[key],
+                     attack=attack_key,
+                     exists=(self.templates_dir / files[key]).is_file())
                 for key in ORDER]
+
+    def _active_attack(self):
+        """正在跑的任务优先; 否则沿用最近一次任务的选择; 再否则默认。
+
+        list() 已把历史键归一化; 这里再挡一道未知键, 避免脏状态让接口 500。
+        """
+        jobs = self.list()
+        for job in jobs:
+            if job.get('status') not in TERMINAL:
+                key = normalize_attack(job.get('attack'))
+                return key if key in ATTACKS else DEFAULT_ATTACK
+        key = normalize_attack(jobs[0].get('attack')) if jobs else None
+        return key if key in ATTACKS else DEFAULT_ATTACK
 
     def _train_datasets(self):
         from .uploaded_datasets import DatasetStore
@@ -164,11 +294,17 @@ class BackdoorTrainingService:
                     for _, value in self._testsets()]
         running = next((j for j in self.list()
                         if j.get('status') not in TERMINAL), None)
+        attack_key = self._active_attack()
+        templates = self.templates(attack_key)
         return dict(runnable=bool(datasets) and
-                    all(item['exists'] for item in self.templates()),
+                    all(item['exists'] for item in templates),
                     datasets=datasets, testsets=testsets,
-                    templates=self.templates(),
-                    missing=[item['file'] for item in self.templates()
+                    attacks=attack_catalog(),
+                    attack=attack_key,
+                    attackName=ATTACKS[attack_key]['name'],
+                    defaultAttack=DEFAULT_ATTACK,
+                    templates=templates,
+                    missing=[item['file'] for item in templates
                              if not item['exists']],
                     base=str(self.base), job=running, group=self.read_group())
 
@@ -181,7 +317,7 @@ class BackdoorTrainingService:
 
     def read_group(self):
         value = read_json(self.group_file)
-        return value.get('active') if isinstance(value, dict) else None
+        return heal_attack_keys(value.get('active')) if isinstance(value, dict) else None
 
     def _write_group(self, group):
         self.upload_root.mkdir(parents=True, exist_ok=True)
@@ -198,7 +334,10 @@ class BackdoorTrainingService:
                             if j.get('status') not in TERMINAL), None)
             if running:
                 raise PlatformError(f'训练任务 {running["id"][:8]} 仍在运行', 409)
-            missing = [item['file'] for item in self.templates() if not item['exists']]
+            attack_key = resolve_attack(payload.get('attack'))
+            files = self._files(attack_key)
+            missing = [item['file'] for item in self.templates(attack_key)
+                       if not item['exists']]
             if missing:
                 raise PlatformError(f'缺少实验配置模板: {", ".join(missing)}', 500)
             value, directory = self._resolve_dataset(payload.get('datasetId'))
@@ -225,7 +364,7 @@ class BackdoorTrainingService:
                 token = next(t for t in ('grp' + uuid.uuid4().hex[:8]
                                          for _ in range(20))
                              if not any((self.base / f'{stem}_{t}').exists()
-                                        for stem in (Path(TEMPLATES[k]).stem
+                                        for stem in (Path(files[k]).stem
                                                      for k in ORDER)))
             except StopIteration:
                 raise PlatformError('无法生成唯一的实验编号', 500)
@@ -233,12 +372,15 @@ class BackdoorTrainingService:
             job = dict(id=job_id, action='backdoor-training', token=token,
                        datasetId=value['id'], datasetName=value['name'],
                        base=str(self.base), device=device,
+                       attack=attack_key,
+                       attackName=ATTACKS[attack_key]['name'],
                        total=len(ORDER), createdAt=now(), updatedAt=now(),
                        status='queued', stage='等待启动', stageIndex=0,
                        error=None, results=[])
             self._save(job)
-            specs = [self._build_spec(key, value, directory, token, job_id,
-                                      rounds, device) for key in ORDER]
+            specs = [self._build_spec(key, attack_key, value, directory, token,
+                                      job_id, rounds, device)
+                     for key in ORDER]
             JsonRepository._atomic_write(out / 'spec.json', dict(
                 base=str(self.base), token=token, datasetId=value['id'],
                 device=device, runs=specs))
@@ -270,10 +412,12 @@ class BackdoorTrainingService:
             raise PlatformError('缺少后门训练的 ViT 权重，请配置 FS_BACKDOOR_VIT_WEIGHTS', 409)
         return weights
 
-    def _build_spec(self, key, dataset, directory, token, job_id,
+    def _build_spec(self, key, attack_key, dataset, directory, token, job_id,
                     rounds, device):
         import yaml
-        template = self.templates_dir / TEMPLATES[key]
+        files = self._files(attack_key)
+        labels = self._labels(attack_key)
+        template = self.templates_dir / files[key]
         with template.open(encoding='utf-8') as stream:
             cfg = yaml.safe_load(stream) or {}
 
@@ -304,17 +448,14 @@ class BackdoorTrainingService:
         cfg['use_gpu'] = device != 'cpu'
         if rounds:
             cfg['federate']['total_round_num'] = int(rounds)
-            sabre = (cfg.get('attack') or {}).get('sabre')
-            if isinstance(sabre, dict) and \
-                    int(sabre.get('start_round', 0)) >= int(rounds):
-                sabre['start_round'] = max(0, int(rounds) // 2)
-                sabre['poison_epochs'] = max(1, int(rounds) - sabre['start_round'])
+            retime_attack(cfg.get('attack') or {}, int(rounds))
 
         config_path = self.directory(job_id) / f'{stem}.yaml'
         with config_path.open('w', encoding='utf-8') as stream:
             yaml.safe_dump(cfg, stream, allow_unicode=True, sort_keys=False)
-        return dict(key=key, label=LABELS[key], expname=cfg['expname'],
-                    config=str(config_path), template=TEMPLATES[key])
+        return dict(key=key, label=labels[key], expname=cfg['expname'],
+                    config=str(config_path), template=files[key],
+                    attack=attack_key)
 
     # ------------------------------------------------------------------ #
     # 执行
@@ -325,6 +466,7 @@ class BackdoorTrainingService:
         try:
             with self.lock:
                 job = self.get(job_id)
+                attack_key = job.get('attack') or DEFAULT_ATTACK
                 job.update(status='running', startedAt=now(), stage='启动训练')
                 self._save(job)
             for index, spec in enumerate(specs):
@@ -352,6 +494,8 @@ class BackdoorTrainingService:
                          baseline=specs[0]['expname'],
                          attack=specs[1]['expname'],
                          defense=specs[2]['expname'],
+                         attackKey=attack_key,
+                         attackName=ATTACKS[attack_key]['name'],
                          dataRoot=str(directory / 'images'),
                          datasetId=dataset['id'],
                          datasetName=dataset['name'],

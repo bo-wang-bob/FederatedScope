@@ -38,6 +38,10 @@ from federatedscope.attack.auxiliary.a3fl_utils import parse_attacker_ids
 
 logger = logging.getLogger(__name__)
 
+# Attack payload keys that ride along with an uploaded update. The server peels
+# them off before aggregation and records them per attack.
+ATTACK_PAYLOAD_KEYS = ('sabre', 'a3fl', 'label_flip')
+
 # Shared BERT extractors avoid repeated loads during standalone evaluation.
 _SHARED_BERT_EXTRACTORS = {}
 
@@ -268,9 +272,9 @@ class GGEURServer(Server):
                 self.hierarchical_subserver_num)
 
         # ===== Backdoor attack / defense hooks (ported from saber_cnn) =====
-        # Every hook below is gated on cfg.attack.attack_method == 'sabre'
-        # (or ggeur.defense_method == 'multi_metrics'), so configurations that
-        # do not opt in keep the exact previous behaviour.
+        # Every hook below is gated on cfg.attack.attack_method ('sabre' /
+        # 'a3fl' / 'label_flip') or ggeur.defense_method == 'multi_metrics', so
+        # configurations that do not opt in keep the exact previous behaviour.
         _attack_method = str(
             getattr(config.attack, 'attack_method', '')).lower()
         self.sabre_enabled = _attack_method == 'sabre'
@@ -280,6 +284,20 @@ class GGEURServer(Server):
         self.latest_sabre_meta = None
         # Trigger relayed to every malicious client so they stay aligned.
         self.sabre_shared_trigger = None
+
+        # A3FL: same relay pattern, replacement-style patch trigger.
+        self.a3fl_enabled = _attack_method == 'a3fl'
+        self.a3fl_cfg = getattr(config.attack, 'a3fl', None)
+        self.latest_a3fl_meta = None
+        self.a3fl_shared_trigger = None
+
+        # Label-flipping data poisoning: no trigger, the server only records
+        # the per-round flip statistics for logging.
+        self.label_flip_enabled = _attack_method in (
+            'label_flip', 'label_flipping', 'data_poisoning')
+        self.label_flip_cfg = getattr(config.attack, 'label_flip', None)
+        self.latest_label_flip_meta = None
+
         # Per-client EMA of multi_metrics anomaly scores (history smoothing).
         self.multi_metrics_score_history = {}
 
@@ -326,6 +344,13 @@ class GGEURServer(Server):
             return model_para
         return self._attach_shared_trigger_payload(
             model_para, 'sabre', self.sabre_shared_trigger)
+
+    def _attach_a3fl_payload(self, model_para):
+        """Relay the shared A3FL patch trigger along the broadcast model."""
+        if not getattr(self, 'a3fl_enabled', False):
+            return model_para
+        return self._attach_shared_trigger_payload(
+            model_para, 'a3fl', self.a3fl_shared_trigger)
 
     def _update_shared_trigger(self, active_updates, attack_name,
                                shared_attr):
@@ -377,39 +402,78 @@ class GGEURServer(Server):
         self._update_shared_trigger(
             active_sabre, 'sabre', 'sabre_shared_trigger')
 
-    def _extract_sabre_metadata(self, valid_params, valid_senders):
-        """Peel SABRE payloads off the received updates.
+    def _update_a3fl_shared_trigger(self, active_a3fl):
+        if not getattr(self, 'a3fl_enabled', False):
+            return
+        self._update_shared_trigger(
+            active_a3fl, 'a3fl', 'a3fl_shared_trigger')
 
-        Returns ``(cleaned_params, metas, senders)``; aggregation only ever
-        sees the model weights afterwards.
+    def _extract_attack_metadata(self, valid_params, valid_senders):
+        """Peel every attack payload off the received updates.
+
+        Returns ``(cleaned_params, metas, senders)`` where ``metas`` maps each
+        attack name to the list of payloads found in this round.  Aggregation
+        only ever sees the model weights afterwards.  Attacks without a
+        payload simply yield an empty list, so this is safe for SABRE, A3FL and
+        label-flip clients at once.
         """
-        metas = []
+        metas = {name: [] for name in ATTACK_PAYLOAD_KEYS}
         cleaned = []
         senders = []
         for (sample_size, params), sender in zip(valid_params, valid_senders):
-            if isinstance(params, dict) and 'sabre' in params:
-                metas.append(params.get('sabre'))
-                params = copy.deepcopy(params)
-                params.pop('sabre', None)
-                params.pop('sabre_shared_trigger', None)
+            if isinstance(params, dict):
+                hits = [name for name in ATTACK_PAYLOAD_KEYS
+                        if name in params or
+                        f'{name}_shared_trigger' in params]
+                if hits:
+                    params = copy.deepcopy(params)
+                    for name in hits:
+                        metas[name].append(params.pop(name, None))
+                        params.pop(f'{name}_shared_trigger', None)
             cleaned.append((sample_size, params))
             senders.append(sender)
         return cleaned, metas, senders
 
-    def _record_sabre_round(self, sabre_metas, round_idx):
-        active_sabre = [
-            meta for meta in sabre_metas
-            if isinstance(meta, dict) and meta.get('active', False)
-        ]
-        self.latest_sabre_meta = active_sabre[0] if active_sabre else None
-        self._update_sabre_shared_trigger(active_sabre)
+    def _record_attack_round(self, attack_metas, round_idx):
+        """Store the per-attack round metadata and refresh relayed triggers."""
+        active = {}
+        for name in ATTACK_PAYLOAD_KEYS:
+            entries = attack_metas.get(name) or []
+            active[name] = [
+                meta for meta in entries
+                if isinstance(meta, dict) and meta.get('active', False)
+            ]
+
         if getattr(self, 'sabre_enabled', False):
+            self.latest_sabre_meta = (active['sabre'][0]
+                                      if active['sabre'] else None)
+            self._update_sabre_shared_trigger(active['sabre'])
             logger.info(
                 f"Server: Round {round_idx} received "
-                f"{len(sabre_metas)} SABRE metadata payloads, "
-                f"active={len(active_sabre)}, "
-                f"shared_trigger="
+                f"{len(attack_metas.get('sabre') or [])} SABRE metadata "
+                f"payloads, active={len(active['sabre'])}, shared_trigger="
                 f"{'yes' if self.sabre_shared_trigger is not None else 'no'}")
+
+        if getattr(self, 'a3fl_enabled', False):
+            self.latest_a3fl_meta = (active['a3fl'][0]
+                                     if active['a3fl'] else None)
+            self._update_a3fl_shared_trigger(active['a3fl'])
+            logger.info(
+                f"Server: Round {round_idx} received "
+                f"{len(attack_metas.get('a3fl') or [])} A3FL metadata "
+                f"payloads, active={len(active['a3fl'])}, shared_trigger="
+                f"{'yes' if self.a3fl_shared_trigger is not None else 'no'}")
+
+        if getattr(self, 'label_flip_enabled', False):
+            self.latest_label_flip_meta = (active['label_flip'][0]
+                                           if active['label_flip'] else None)
+            if active['label_flip']:
+                meta = active['label_flip'][0]
+                logger.info(
+                    f"Server: Round {round_idx} label-flip poisoning active - "
+                    f"poison_ratio={meta.get('poison_ratio')}, "
+                    f"poison_statistics={meta.get('poison_statistics')}, "
+                    f"poison_training={meta.get('poison_training')}")
 
     def _should_run_attack_eval(self, round_idx):
         """Whether to run the (expensive) trigger/ASR evaluation this round.
@@ -442,16 +506,30 @@ class GGEURServer(Server):
         return features.float()
 
     def _evaluate_sabre_on_test_sets(self):
-        """Apply the shared SABRE trigger to server-side test images.
+        """Apply the shared SABRE trigger to server-side test images."""
+        return self._evaluate_trigger_on_test_sets(
+            getattr(self, 'sabre_shared_trigger', None), 'SABRE',
+            additive=True)
+
+    def _evaluate_a3fl_on_test_sets(self):
+        """Apply the shared A3FL patch trigger to server-side test images."""
+        return self._evaluate_trigger_on_test_sets(
+            getattr(self, 'a3fl_shared_trigger', None), 'A3FL',
+            additive=False)
+
+    def _evaluate_trigger_on_test_sets(self, trigger_info, attack_name,
+                                       additive=True):
+        """Apply a shared trigger to server-side test images.
 
         Returns ``{'asr', 'non_target_asr', 'clean_target_rate'}`` keyed by
         domain (plus a global ``'average'`` entry).  Fully self-contained:
         any failure degrades to empty dicts instead of breaking the round.
+        ``additive`` picks SABRE-style ``clamp(x + trigger*mask)`` versus
+        A3FL-style patch replacement ``trigger*mask + x*(1-mask)``.
         """
         empty = {'asr': {}, 'non_target_asr': {}, 'clean_target_rate': {}}
         if self.global_mlp is None:
             return empty
-        trigger_info = getattr(self, 'sabre_shared_trigger', None)
         if not isinstance(trigger_info, dict):
             return empty
         trigger = trigger_info.get('trigger', None)
@@ -468,13 +546,17 @@ class GGEURServer(Server):
             self._load_feature_extractor()
         except Exception as exc:
             logger.debug(
-                f"Server: Skipping SABRE ASR evaluation ({exc})")
+                f"Server: Skipping {attack_name} ASR evaluation ({exc})")
             return empty
 
         target_label = int(trigger_info.get(
             'target_label', self._cfg.attack.target_label_ind))
-        clip_min = float(getattr(self.sabre_cfg, 'image_clip_min', -3.0))
-        clip_max = float(getattr(self.sabre_cfg, 'image_clip_max', 3.0))
+        clip_min = -3.0
+        clip_max = 3.0
+        trigger_cfg = self.sabre_cfg if additive else self.a3fl_cfg
+        if trigger_cfg is not None:
+            clip_min = float(getattr(trigger_cfg, 'image_clip_min', -3.0))
+            clip_max = float(getattr(trigger_cfg, 'image_clip_max', 3.0))
         trigger = trigger.to(self.device).float()
         mask = mask.to(self.device).float()
 
@@ -494,8 +576,11 @@ class GGEURServer(Server):
                         clean_pred = self.global_mlp(
                             self._extract_features_for_images(
                                 images)).argmax(dim=1)
-                        poisoned = torch.clamp(images + trigger * mask,
-                                               clip_min, clip_max)
+                        if additive:
+                            poisoned = torch.clamp(images + trigger * mask,
+                                                   clip_min, clip_max)
+                        else:
+                            poisoned = trigger * mask + images * (1.0 - mask)
                         poison_pred = self.global_mlp(
                             self._extract_features_for_images(
                                 poisoned)).argmax(dim=1)
@@ -523,7 +608,7 @@ class GGEURServer(Server):
                             clean_total)
         except Exception as exc:
             logger.warning(
-                f"Server: SABRE ASR evaluation failed: {exc}")
+                f"Server: {attack_name} ASR evaluation failed: {exc}")
             return empty
 
         for table in (asr, non_target_asr, clean_target_rate):
@@ -535,26 +620,43 @@ class GGEURServer(Server):
             'clean_target_rate': clean_target_rate,
         }
 
+    def _log_attack_asr(self, round_idx):
+        """Log the per-round backdoor metrics for whichever attack is on."""
+        self._log_sabre_asr(round_idx)
+        self._log_a3fl_asr(round_idx)
+        self._log_label_flip_round(round_idx)
+
     def _log_sabre_asr(self, round_idx):
-        if not getattr(self, 'sabre_enabled', False):
+        self._log_trigger_asr(round_idx, 'sabre',
+                              getattr(self, 'latest_sabre_meta', None),
+                              self._evaluate_sabre_on_test_sets)
+
+    def _log_a3fl_asr(self, round_idx):
+        self._log_trigger_asr(round_idx, 'a3fl',
+                              getattr(self, 'latest_a3fl_meta', None),
+                              self._evaluate_a3fl_on_test_sets)
+
+    def _log_trigger_asr(self, round_idx, attack_name, latest_meta, evaluate):
+        """Shared ASR logging for the trigger-carrying attacks."""
+        if not getattr(self, f'{attack_name}_enabled', False):
             return
-        if self.latest_sabre_meta is None:
+        if latest_meta is None:
             return
         if not self._should_run_attack_eval(round_idx):
             logger.debug(
-                f"Server: Round {round_idx} skipped SABRE ASR evaluation "
-                "(attack_eval_freq)")
+                f"Server: Round {round_idx} skipped {attack_name.upper()} ASR "
+                "evaluation (attack_eval_freq)")
             return
 
-        sabre_eval = self._evaluate_sabre_on_test_sets()
-        poison_results = sabre_eval.get('asr', {})
-        non_target_results = sabre_eval.get('non_target_asr', {})
-        clean_target_results = sabre_eval.get('clean_target_rate', {})
-        attacker_id = int(self.latest_sabre_meta.get('client_id', -1))
+        results = evaluate()
+        poison_results = results.get('asr', {})
+        non_target_results = results.get('non_target_asr', {})
+        clean_target_results = results.get('clean_target_rate', {})
+        attacker_id = int(latest_meta.get('client_id', -1))
         if not poison_results:
             logger.info(
-                f"Server: Round {round_idx} skipped SABRE ASR logging "
-                "because evaluation returned no results")
+                f"Server: Round {round_idx} skipped {attack_name.upper()} ASR "
+                "logging because evaluation returned no results")
             return
 
         def _fmt(table):
@@ -562,18 +664,33 @@ class GGEURServer(Server):
                              for key, value in table.items())
 
         logger.info(
-            f"Server: Round {round_idx} SABRE ASR "
+            f"Server: Round {round_idx} {attack_name.upper()} ASR "
             f"(attacker {attacker_id}) - {_fmt(poison_results)}")
         if non_target_results:
             logger.info(
-                f"Server: Round {round_idx} SABRE non-target ASR "
-                f"(attacker {attacker_id}) - {_fmt(non_target_results)}")
+                f"Server: Round {round_idx} {attack_name.upper()} "
+                f"non-target ASR (attacker {attacker_id}) - "
+                f"{_fmt(non_target_results)}")
         if clean_target_results:
-            target_label = int(self.latest_sabre_meta.get(
+            target_label = int(latest_meta.get(
                 'target_label', self._cfg.attack.target_label_ind))
             logger.info(
-                f"Server: Round {round_idx} SABRE clean target rate "
-                f"(target {target_label}) - {_fmt(clean_target_results)}")
+                f"Server: Round {round_idx} {attack_name.upper()} clean "
+                f"target rate (target {target_label}) - "
+                f"{_fmt(clean_target_results)}")
+
+    def _log_label_flip_round(self, round_idx):
+        """Label flipping has no trigger; log the aggregated flip statistics."""
+        if not getattr(self, 'label_flip_enabled', False):
+            return
+        meta = getattr(self, 'latest_label_flip_meta', None)
+        if not isinstance(meta, dict) or not meta.get('active', False):
+            return
+        logger.info(
+            f"Server: Round {round_idx} label-flip poisoning - "
+            f"client {int(meta.get('client_id', -1))}, "
+            f"flipped={meta.get('flipped_samples')}, "
+            f"target_label={meta.get('target_label')}")
 
     def _resolve_min_clients(self, name):
         value = int(getattr(self.ggeur_cfg, name, 0))
@@ -2399,6 +2516,7 @@ class GGEURServer(Server):
         # Backdoor experiments piggyback the shared trigger on the broadcast so
         # that every malicious client optimizes against the same pattern.
         model_para = self._attach_sabre_payload(model_para)
+        model_para = self._attach_a3fl_payload(model_para)
 
         # Broadcast to active training clients only. In strict mode this is all
         # configured clients; in fault-tolerance validation it is the quorum
@@ -2996,10 +3114,12 @@ class GGEURServer(Server):
 
         # Backdoor metadata rides along with the uploaded parameters; strip it
         # before any aggregation touches the weights.
-        if getattr(self, 'sabre_enabled', False):
-            valid_params, sabre_metas, valid_senders = \
-                self._extract_sabre_metadata(valid_params, valid_senders)
-            self._record_sabre_round(sabre_metas, round_idx)
+        if any((getattr(self, 'sabre_enabled', False),
+                getattr(self, 'a3fl_enabled', False),
+                getattr(self, 'label_flip_enabled', False))):
+            valid_params, attack_metas, valid_senders = \
+                self._extract_attack_metadata(valid_params, valid_senders)
+            self._record_attack_round(attack_metas, round_idx)
 
         # Compute sample weights
         sample_sizes = [s for s, p in valid_params]
@@ -3094,10 +3214,10 @@ class GGEURServer(Server):
         # report ASR.  Wrapped so a failure here can never break the round.
         try:
             if should_eval:
-                self._log_sabre_asr(round_idx)
+                self._log_attack_asr(round_idx)
         except Exception as exc:  # pragma: no cover - defensive only
             logger.warning(
-                f"Server: Round {round_idx} SABRE ASR logging failed: {exc}")
+                f"Server: Round {round_idx} backdoor ASR logging failed: {exc}")
         terminal_client_eval_only = bool(getattr(
             self.ggeur_cfg, 'terminal_client_eval_only', False))
         should_eval_clients = (
@@ -4188,7 +4308,7 @@ class GGEURServer(Server):
     # ------------------------------------------------------------------
 
     def _persist_artifacts(self, suffix, round_idx, kind):
-        """Shared save of the trained MLP head (+ sabre trigger).
+        """Shared save of the trained MLP head (+ attack trigger).
 
         Only the trained components are persisted; the frozen pretrained
         feature extractor (CLIP/CNN/timm) is intentionally NOT saved and
@@ -4251,15 +4371,19 @@ class GGEURServer(Server):
             f"Server: Saved {kind} MLP head (round {round_idx}) to "
             f"{head_path}")
 
-        # --- Attack trigger (sabre) ---
-        # An optimized trigger must be paired with the MLP head for
-        # standalone ASR evaluation.
-        trig = getattr(self, 'sabre_shared_trigger', None)
-        if trig is not None and isinstance(trig.get('trigger'),
-                                           torch.Tensor):
+        # --- Attack triggers (sabre / a3fl) ---
+        # An optimized trigger must be paired with the MLP head for standalone
+        # ASR evaluation. label-flip poisoning has no trigger, so it produces
+        # only the head above.
+        for attack_name, attr in (('sabre', 'sabre_shared_trigger'),
+                                  ('a3fl', 'a3fl_shared_trigger')):
+            trig = getattr(self, attr, None)
+            if trig is None or not isinstance(trig.get('trigger'),
+                                              torch.Tensor):
+                continue
             trig_path = os.path.join(
                 save_dir,
-                f"{expname}_seed{seed}_sabre_{suffix}_trigger.pt")
+                f"{expname}_seed{seed}_{attack_name}_{suffix}_trigger.pt")
             mask = trig.get('mask')
             torch.save({
                 'trigger': trig['trigger'].detach().cpu(),
@@ -4268,8 +4392,8 @@ class GGEURServer(Server):
                 'target_label': int(trig.get(
                     'target_label',
                     getattr(self._cfg.attack, 'target_label_ind', 0))),
-                'trigger_mode': trig.get('trigger_mode', 'sabre'),
-                'attack_name': 'sabre',
+                'trigger_mode': trig.get('trigger_mode', attack_name),
+                'attack_name': attack_name,
                 'source_client_id': int(trig.get('source_client_id', -1)),
                 'source_round': int(trig.get('source_round', round_idx)),
                 'seed': seed,
@@ -4279,8 +4403,8 @@ class GGEURServer(Server):
                 'mlp_head_file': os.path.basename(head_path),
             }, trig_path)
             logger.info(
-                f"Server: Saved {kind} sabre trigger (round {round_idx}) to "
-                f"{trig_path}")
+                f"Server: Saved {kind} {attack_name} trigger "
+                f"(round {round_idx}) to {trig_path}")
         return True
 
     def _save_trained_artifacts(self):
@@ -4303,7 +4427,9 @@ class GGEURServer(Server):
         """
         if getattr(self, '_peak_artifacts_saved', False):
             return
-        if not getattr(self, 'sabre_enabled', False):
+        if not any((getattr(self, 'sabre_enabled', False),
+                    getattr(self, 'a3fl_enabled', False),
+                    getattr(self, 'label_flip_enabled', False))):
             return
         last_attack_rounds = self._get_last_attack_rounds()
         if not last_attack_rounds:
@@ -4315,26 +4441,37 @@ class GGEURServer(Server):
             self._peak_artifacts_saved = True
 
     def _get_last_attack_rounds(self):
-        """Return the list of last attack rounds (inclusive) for the enabled
-        attack.  Used to decide when to snapshot the peak (strongest
-        backdoor) MLP head.
+        """Return the list of last attack rounds (inclusive) for every enabled
+        attack.  Used to decide when to snapshot the peak (strongest backdoor)
+        MLP head.
 
-        This lineage only implements the SABRE training-phase attack; other
-        attack methods added later should be appended here following the
-        same ``start_round + poison_epochs - 1`` rule.
+        Every attack follows the same ``start_round + poison_epochs - 1`` rule.
+        ``label_flip`` uses ``poison_epochs=0`` to mean "runs to the end of
+        training", so its boundary is the final round.
         """
         lasts = []
-        if getattr(self, 'sabre_enabled', False) and \
-                self.sabre_cfg is not None:
+        for enabled, cfg in (
+            (getattr(self, 'sabre_enabled', False), self.sabre_cfg),
+            (getattr(self, 'a3fl_enabled', False), self.a3fl_cfg),
+            (getattr(self, 'label_flip_enabled', False), self.label_flip_cfg),
+        ):
+            if not enabled or cfg is None:
+                continue
             start_round = int(getattr(
-                self.sabre_cfg, 'start_round',
+                cfg, 'start_round',
                 getattr(self._cfg.attack, 'inject_round', 0)))
             if start_round < 0:
                 start_round = int(
                     getattr(self._cfg.attack, 'inject_round', 0))
-            poison_epochs = int(getattr(self.sabre_cfg, 'poison_epochs', 0))
-            if poison_epochs > 0:
-                lasts.append(int(start_round + poison_epochs - 1))
+            poison_epochs = int(getattr(cfg, 'poison_epochs', 0))
+            if poison_epochs <= 0:
+                # label_flip with poison_epochs=0 attacks continuously; only
+                # meaningful when the training-phase flip is on.
+                if cfg is self.label_flip_cfg and \
+                        bool(getattr(cfg, 'poison_training', True)):
+                    lasts.append(int(self._total_round_num) - 1)
+                continue
+            lasts.append(int(start_round + poison_epochs - 1))
         return sorted(set(lasts))
 
     def _finish(self):
