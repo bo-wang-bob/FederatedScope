@@ -34,7 +34,8 @@ class AircraftRegistrationTests(unittest.TestCase):
                 self.assertFalse(Path(raw['data']['root']).is_absolute())
                 self.assertEqual(resolve_path(self.configs.repo, raw['data']['root']), self.configs.datasets / 'MilitaryAircraft3D')
                 self.assertEqual(raw['ggeur']['domainnet_domains'], ['aerial', 'natural', 'recon'])
-                self.assertEqual(raw['ggeur']['domainnet_manifest_path'], '')
+                self.assertEqual(raw['ggeur']['domainnet_manifest_path'],
+                    'scripts/military_aircraft_3domain/manifests/cache_sample_order.json')
                 self.assertEqual(raw['model']['num_classes'], 5)
                 self.assertEqual(req['gpu'], 0)
                 self.assertEqual(raw['device'], 0)

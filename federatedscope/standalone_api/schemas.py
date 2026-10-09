@@ -21,9 +21,6 @@ METHODS = STANDALONE_METHODS | DISTRIBUTED_METHODS
 DISTRIBUTED_GROUP_METHODS = {
     'digit3_cnn': {'fedavg', 'fedprox', 'heterogeneous_solution'},
     'digit3_vit': {'fedavg', 'fedprox', 'heterogeneous_solution'},
-    'domainnet_cnn': DISTRIBUTED_METHODS,
-    'domainnet_mixer': DISTRIBUTED_METHODS,
-    'domainnet_vit': DISTRIBUTED_METHODS,
     'mdsent_lstm': DISTRIBUTED_METHODS - {'moon'},
     'mdsent_rnn': DISTRIBUTED_METHODS - {'moon'},
     'officehome_cnn': DISTRIBUTED_METHODS,

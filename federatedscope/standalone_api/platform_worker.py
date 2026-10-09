@@ -20,6 +20,8 @@ os.environ.setdefault('OMP_NUM_THREADS', '2')
 from federatedscope.standalone_api.repository import JsonRepository
 from federatedscope.standalone_api.platform_paths import (
     cache_file, portable_backbone, compatible_backbones)
+from federatedscope.standalone_api.platform_inference import (
+    classifier_for_domain, snapshot_domain_heads)
 
 
 def save(path, value):
@@ -426,12 +428,15 @@ def train(spec):
             self._load_test_data_and_features()
             # One identical CPU/batch-size inference contract for monitoring
             # and reloaded heads. GPU/CPU LSTM kernels can flip near-tied logits.
-            if self.domain_prototype_ensemble or getattr(self, 'domain_personalized_heads', {}):
+            if self.domain_prototype_ensemble:
                 raise ValueError('当前检查点协议不支持额外的推理集成头')
             head = copy.deepcopy(self.global_mlp).cpu().eval()
+            extension = snapshot_domain_heads(getattr(self, 'domain_personalized_heads', {}))
             result = {}
             for domain, features in self.test_features.items():
-                cm = predict_confusion(head, features, self.test_labels[domain], cfg.model.num_classes)
+                domain_head = classifier_for_domain(head, domain, extension,
+                    cfg.ggeur.embedding_dim, cfg.model.num_classes)
+                cm = predict_confusion(domain_head, features, self.test_labels[domain], cfg.model.num_classes)
                 result[domain] = float(cm.diagonal().sum() / cm.sum())
                 self.test_accuracies_history.setdefault(domain, []).append(result[domain])
             result['average'] = sum(result.values()) / len(result)
@@ -439,6 +444,7 @@ def train(spec):
             if result['average'] > self.best_avg_accuracy:
                 self.best_avg_accuracy = result['average']
                 self.best_model_state = copy.deepcopy(self.global_mlp.state_dict())
+                self.best_inference_heads = extension
             del head
             if result:
                 domains = {k: v for k, v in result.items() if k != 'average'}
@@ -451,6 +457,24 @@ def train(spec):
                      worstDomain=min(domains.values()),
                      domainGap=max(domains.values()) - min(domains.values()))
             return result
+
+        def _save_portable_mlp_checkpoints(self):
+            super()._save_portable_mlp_checkpoints()
+            extension = snapshot_domain_heads(getattr(self, 'domain_personalized_heads', {}))
+            if extension is None:
+                return
+            directory = Path(self.ggeur_cfg.mlp_checkpoint_dir)
+            for kind in ('final', 'best'):
+                path = directory / ('mlp_' + kind + '.pt')
+                artifact = torch.load(path, map_location='cpu', weights_only=True)
+                selected = (getattr(self, 'best_inference_heads', extension)
+                            if kind == 'best' else extension)
+                artifact.update(format_version=2, inferenceHeads=selected)
+                self._atomic_torch_save(artifact, path)
+            manifest_path = directory / 'checkpoint_manifest.json'
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            manifest.update(format_version=2, inferenceHeads='domain-linear-l2-v1')
+            save(manifest_path, manifest)
 
     update_logger(cfg, clear_before_add=True)
     emit('stage', stage='单机协同训练')
@@ -564,7 +588,9 @@ def evaluate(spec):
             features, labels = features[mask], labels[mask]
             if not len(labels):
                 continue
-            cm = predict_confusion(model, features, labels, n)
+            head = classifier_for_domain(model, domain, checkpoint.get('inferenceHeads'),
+                int(checkpoint['architecture']['input_dim']), n)
+            cm = predict_confusion(head, features, labels, n)
             domains[domain] = classification_metrics(cm)
             matrix += cm
             emit('stage', stage=f'已评测 {domain}', completed=len(domains), total=len(selected))
@@ -617,8 +643,10 @@ def predict(spec):
         raise ValueError('测试特征包含非有限数值')
     emit('stage', stage='运行真实分类器推理')
     compute_started = time.monotonic()
+    head = classifier_for_domain(model, domain, checkpoint.get('inferenceHeads'),
+        int(checkpoint['architecture']['input_dim']), int(checkpoint['architecture']['num_classes']))
     with torch.inference_mode():
-        logits = model(block)[index - offset]
+        logits = head(block)[index - offset]
         if not torch.isfinite(logits).all():
             raise ValueError('分类器输出非有限数值')
         probabilities = torch.softmax(logits, dim=-1)

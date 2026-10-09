@@ -4,7 +4,6 @@ This directory groups the final cross-domain heterogeneous experiments by
 dataset and model:
 
 - `officehome_vit`, `officehome_cnn`, `officehome_mixer`
-- `domainnet_vit`, `domainnet_cnn`, `domainnet_mixer`
 - `mdsent_rnn`, `mdsent_lstm`
 
 The RNN/LSTM groups use the Multi-Domain Sentiment dataset and frozen

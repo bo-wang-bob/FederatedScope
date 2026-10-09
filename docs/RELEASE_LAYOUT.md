@@ -3,7 +3,7 @@
 当前推荐的打包入口。无需 Docker；不附带 Python、Node、虚拟环境或驱动。
 前后端保持同级，不搬动正在运行的安装目录。
 
-本次交付已移除 OfficeHome 原图、特征缓存、旧隐私/后门实验资源与结果；页面不再提供该数据集。军机、上传数据集、共享模型权重及军机隐私/后门资源保留。内部通用配置模板供上传训练复用，不包含 OfficeHome 数据。
+三方测试模型与数据集包括 Office-Home、Digits-3Domain、MDSent。军机、Malimg、上传数据集、共享模型权重、隐私与后门资源和实验记录保持原位，打包时全部保留。DomainNet 已退出平台，打包检查会拒绝残留的专属数据目录或资源登记；其他数据使用的同名通用加载器和缓存不受影响。具体模型组合与相对路径见 `docs/THIRDPARTY_RESOURCES.md`。
 
 ```text
 release/
@@ -15,7 +15,11 @@ release/
 │  ├─ setup.py、run.py
 │  ├─ resources/
 │  │  ├─ datasets/MilitaryAircraft3D/
-│  │  ├─ exp/distributed_feature_cache/  # 军机 ViT 特征
+│  │  ├─ datasets/                      # 同时保留新增三方测试数据目录
+│  │  ├─ thirdparty_resources.json      # 可选三方资源映射，均为资源内相对路径
+│  │  ├─ exp/distributed_feature_cache/  # 原军机及新增三方特征
+│  │  ├─ exp/thirdparty/                # 核验后的新增清单与缓存
+│  │  ├─ pretrained_models/             # 新增骨干模型与文本 tokenizer
 │  │  ├─ caches/military_vit_default/    # 默认增强缓存
 │  │  ├─ models/ViT-B-16.pt
 │  │  ├─ torch/hub/checkpoints/convnext_base-6075fbad.pth

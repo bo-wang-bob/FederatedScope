@@ -31,11 +31,11 @@ class PrivacyTests(unittest.TestCase):
         self.normal.close()
         self.temp.cleanup()
 
-    def test_catalogs_exclude_retired_dataset(self):
+    def test_training_restores_officehome_without_changing_privacy_catalog(self):
         for service in (self.normal, self.privacy):
             groups = service.catalog()['groups']
             self.assertTrue(any(g['id'].startswith('military_') for g in groups))
-            self.assertFalse(any(g['id'].startswith('officehome_') for g in groups))
+            self.assertEqual(any(g['id'].startswith('officehome_') for g in groups), service is self.normal)
 
     def test_private_config_does_not_mutate_normal_factory(self):
         base = ConfigFactory(REPO)

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, List, Sequence
 from .paths import env_path
+from .schemas import DISTRIBUTED_GROUP_METHODS
 
 from federatedscope.standalone_api.runner import (
     EventCallback, MetricCallback, RunnerPreflightError,
@@ -172,7 +173,7 @@ def distributed_catalog(repo_root: Path) -> List[Dict[str, Any]]:
     if not source_root.is_dir():
         return cases
     for group_dir in sorted(path for path in source_root.iterdir()
-                            if path.is_dir()):
+                            if path.is_dir() and path.name in DISTRIBUTED_GROUP_METHODS):
         dataset, model = group_dir.name.split('_', 1)
         client_count = 120 if dataset == 'mdsent' else 60
         methods = []

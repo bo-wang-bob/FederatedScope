@@ -11,6 +11,7 @@ import sys
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 from scripts.prepare_platform_directory import copy_checked, files, sha256, state_snapshot
+from scripts.platform_resource_scope import check_retired_resources
 
 BACKEND_CODE = ('federatedscope', 'scripts', 'deploy', 'docs', 'tests',
                 'run.py', 'setup.py', 'README.md', 'BACKDOOR_RUNBOOK.md', 'LICENSE')
@@ -39,15 +40,12 @@ def inspect(backend, frontend):
         if not (frontend / relative).is_file():
             raise ValueError('missing frontend file (run npm ci && npm run build): ' + relative)
     resources = backend / 'resources'
+    check_retired_resources(resources)
     for relative in REQUIRED_RESOURCES:
         path = resources / relative
         if not path.exists() or not list(files(path)):
             raise ValueError('missing/empty resource: ' + relative)
     resource_files = inventory(resources)
-    retired = [name for name in resource_files
-               if 'officehome' in name.lower().replace('-', '').replace('_', '')]
-    if retired:
-        raise ValueError('retired OfficeHome resources must be removed: ' + retired[0])
     uploads = resources / 'uploaded_datasets'
     if uploads.exists():
         for directory in uploads.iterdir():

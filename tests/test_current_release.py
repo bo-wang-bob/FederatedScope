@@ -8,14 +8,51 @@ from scripts.check_platform_directory import verify_files
 
 
 class CurrentReleaseTests(unittest.TestCase):
-    def test_retired_dataset_is_rejected(self):
+    def test_retired_domainnet_resources_cannot_reenter_a_release(self):
+        from scripts.platform_resource_scope import RETIRED_DOMAINNET_PATHS
+        with tempfile.TemporaryDirectory() as temp:
+            backend, frontend = self.fixture(Path(temp))
+            for relative in RETIRED_DOMAINNET_PATHS:
+                target = backend / 'resources' / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'retired dataset')
+                with self.assertRaisesRegex(ValueError, 'retired DomainNet'):
+                    release.inspect(backend, frontend)
+                target.unlink()
+            registry = backend / 'resources/thirdparty_resources.json'
+            registry.write_text(json.dumps({'domainnet_vit': {'features': 'unused'}}))
+            with self.assertRaisesRegex(ValueError, 'retired DomainNet'):
+                release.inspect(backend, frontend)
+
+    def test_shared_loader_caches_and_remaining_resource_registry_are_kept(self):
+        with tempfile.TemporaryDirectory() as temp:
+            backend, frontend = self.fixture(Path(temp))
+            names = ('datasets/clip_feature_cache/domainnet_aerial_test.npz',
+                     'uploaded_datasets/existing/features/domainnet_uploaded_clip.npz',
+                     'fedmia_local/militaryaircraft3d/datasets/clip_feature_cache/domainnet_recon_test.npz')
+            for name in names:
+                path = backend / 'resources' / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'keep this shared-loader cache')
+            (backend / 'resources/uploaded_datasets/existing/dataset.json').write_text('{"status":"ready"}')
+            (backend / 'resources/thirdparty_resources.json').write_text(json.dumps({'digit3_cnn': {'features': 'exp/thirdparty/features/digit3_cnn'}}))
+            output = Path(temp) / 'release'
+            release.export(backend, frontend, output)
+            for name in names:
+                self.assertEqual((output / 'backend/resources' / name).read_bytes(), b'keep this shared-loader cache')
+
+    def test_added_thirdparty_dataset_is_preserved_in_export(self):
         with tempfile.TemporaryDirectory() as temp:
             backend, frontend = self.fixture(Path(temp))
             old = backend / 'resources/datasets/OfficeHomeDataset_10072016/image.jpg'
             old.parent.mkdir(parents=True)
             old.write_bytes(b'old dataset')
-            with self.assertRaisesRegex(ValueError, 'retired OfficeHome'):
-                release.inspect(backend, frontend)
+            resource_files, _ = release.inspect(backend, frontend)
+            self.assertIn('datasets/OfficeHomeDataset_10072016/image.jpg', resource_files)
+            output = Path(temp) / 'release'
+            release.export(backend, frontend, output)
+            self.assertEqual((output / 'backend/resources/datasets/OfficeHomeDataset_10072016/image.jpg').read_bytes(), b'old dataset')
+            self.assertTrue((output / 'backend/resources/datasets/MilitaryAircraft3D/fixture').is_file())
 
     def fixture(self, root):
         backend, frontend = root / 'backend', root / 'frontend'

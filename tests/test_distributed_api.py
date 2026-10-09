@@ -54,9 +54,10 @@ def distributed_payload(group='officehome_vit', method='heterogeneous_solution')
 class DistributedSchemaTest(unittest.TestCase):
     def test_catalog_exposes_every_checked_in_accuracy_case(self):
         catalog = distributed_catalog(REPO_ROOT)
-        self.assertEqual(len(catalog), 10)
+        self.assertEqual(len(catalog), 7)
         case_count = sum(len(item['methods']) for item in catalog)
-        self.assertEqual(case_count, 52)
+        self.assertEqual(case_count, 34)
+        self.assertFalse(any(item['group'].startswith('domainnet_') for item in catalog))
         self.assertEqual(
             next(item for item in catalog
                  if item['group'] == 'mdsent_lstm')['clientCount'], 120)
@@ -69,6 +70,11 @@ class DistributedSchemaTest(unittest.TestCase):
         self.assertEqual(quick['quickValidation']['rounds'], 1)
         self.assertEqual(quick['quickValidation']['learningRate'], 0.0001)
         self.assertTrue(quick['quickValidation']['cacheOnly'])
+
+    def test_retired_domainnet_groups_are_rejected(self):
+        for group in ('domainnet_cnn', 'domainnet_mixer', 'domainnet_vit'):
+            with self.assertRaises(ValidationError):
+                validate_experiment(distributed_payload(group, 'fedavg'))
 
     def test_distributed_accuracy_payload_is_normalized(self):
         config = validate_experiment(distributed_payload())
@@ -179,15 +185,13 @@ class DistributedRunnerCommandTest(unittest.TestCase):
         runner = DistributedProcessRunner(
             REPO_ROOT, topology=load_lab_topology(), probe_remote=False)
         resources = runner._resource_paths(
-            'domainnet_mixer', validate_experiment(distributed_payload(
-                'domainnet_mixer', 'fedavg')))
+            'officehome_mixer', validate_experiment(distributed_payload(
+                'officehome_mixer', 'fedavg')))
 
         client_paths = resources['client']
-        self.assertTrue(any('domainnet_mixer' in path
+        self.assertTrue(any('officehome_mixer' in path
                             for path in client_paths))
-        self.assertTrue(any('domainnet_manifest.json' in path
-                            for path in client_paths))
-        self.assertFalse(any(path.endswith('/data/DomainNet')
+        self.assertFalse(any(path.endswith('/data/OfficeHomeDataset_10072016')
                              for path in client_paths))
         self.assertFalse(any(path.endswith('mixer_b16_224_complete.pth')
                              for path in client_paths))

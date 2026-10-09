@@ -15,6 +15,7 @@ if str(REPO) not in sys.path:
 
 from federatedscope.contrib.model.ggeur_text_rnn import \
     GGEURTextRNNClassifier
+from federatedscope.standalone_api.platform_inference import classifier_for_domain
 
 
 def load_pretrained_backbone(backbone, device):
@@ -95,7 +96,9 @@ def evaluate_one(case_id, method, seed, device, loaded_backbones):
     with torch.no_grad():
         for domain, features in bundle["features"].items():
             labels = bundle["labels"][domain].long().to(device)
-            logits = model(features.float().to(device))
+            head = classifier_for_domain(model, domain, checkpoint.get('inferenceHeads'),
+                int(checkpoint['architecture']['input_dim']), int(checkpoint['architecture']['num_classes']))
+            logits = head.to(device)(features.float().to(device))
             accuracy = (logits.argmax(dim=1) == labels).float().mean().item()
             domains[str(domain)] = accuracy
     average = sum(domains.values()) / len(domains)

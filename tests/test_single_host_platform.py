@@ -66,7 +66,7 @@ class PlatformTests(unittest.TestCase):
                 self.assertEqual(cfg['ggeur']['baseline_target_samples_per_client'], 13)
                 self.assertIn('sourceSha256', metadata)
                 count += 1
-        self.assertGreater(count, 30)
+        self.assertEqual(count, 29)
 
     def test_officehome_vit_three_methods_use_single_gpu_and_own_defaults(self):
         for method in ('fedavg', 'fedprox', 'heterogeneous_solution'):

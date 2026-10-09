@@ -18,7 +18,7 @@ class SampleCatalog:
         job = self.service.get(testset_id)
         if job['action'] != 'train' or job['status'] != 'completed':
             raise PlatformError('测试集未完成或未登记', 404)
-        if job['request']['group'].split('_')[0] not in {'officehome', 'digit3', 'domainnet', 'military', 'uploaded'}:
+        if job['request']['group'].split('_')[0] not in {'officehome', 'digit3', 'military', 'uploaded'}:
             raise PlatformError('单图体验台当前仅支持图像测试集；文本模型可使用独立评测')
         path = self.service.directory(testset_id) / 'data_manifest.json'
         data = json.loads(path.read_text(encoding='utf-8'))
@@ -61,7 +61,8 @@ class SampleCatalog:
             from .platform_paths import resolve_path
             root = resolve_path(Path(__file__).resolve().parents[2], job['config']['data']['root'])
         else:
-            root = (self.service.configs.datasets / FAMILIES[family][1]).resolve()
+            root = self.service.configs.resource_path(job['request']['group'], 'dataset',
+                self.service.configs.datasets / FAMILIES[family][1]).resolve()
         key = PurePosixPath(sample['key'])
         if key.is_absolute() or not key.parts or any(p in {'.', '..'} or '\\' in p or ':' in p for p in key.parts):
             raise PlatformError('样本路径非法', 403)

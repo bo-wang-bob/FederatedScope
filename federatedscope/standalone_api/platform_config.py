@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import math
 import os
 import re
@@ -19,7 +20,6 @@ METHODS = {'fedavg': 'FedAvg', 'fedprox': 'FedProx', 'fedproto': 'FedProto',
            'fedopt': 'FedOpt', 'moon': 'MOON', 'heterogeneous_solution': '本架构'}
 FAMILIES = {'officehome': ('Office-Home', 'OfficeHomeDataset_10072016', 4),
             'military': ('MilitaryAircraft-3D', 'MilitaryAircraft3D', 3),
-            'domainnet': ('DomainNet', 'DomainNet', 4),
             'digit3': ('Digits-3Domain', 'digit_three_domain', 3),
             'mdsent': ('MDSent', 'sentiment', 4)}
 
@@ -44,6 +44,27 @@ class ConfigFactory:
         self.sources = self.repo / 'scripts/example_configs/ggeur_final_5models'
         self.resources = env_path('FS_PLATFORM_RESOURCES', 'resources', self.repo)
         self.datasets = env_path('FS_PLATFORM_DATASETS', self.resources / 'datasets', self.repo)
+        registry = self.resources / 'thirdparty_resources.json'
+        self.resource_registry = json.loads(registry.read_text(encoding='utf-8')) if registry.is_file() else {}
+        if not isinstance(self.resource_registry, dict):
+            raise PlatformError('三方资源清单必须是对象')
+
+    def resource_path(self, group, field, fallback):
+        entry = self.resource_registry.get(group, {})
+        if not isinstance(entry, dict):
+            raise PlatformError('三方资源配置非法：' + group)
+        value = entry.get(field)
+        if value is None:
+            return fallback
+        if not isinstance(value, str) or not value or Path(value).is_absolute() or ':' in value or '..' in Path(value).parts:
+            raise PlatformError('三方资源必须使用资源目录内的相对路径')
+        target = (self.resources / value).resolve()
+        if self.resources.resolve() not in target.parents:
+            raise PlatformError('三方资源路径越出资源目录')
+        return target
+
+    def dataset_dir(self, group):
+        return self.resource_path(group, 'dataset', self.datasets / FAMILIES[group.split('_')[0]][1])
 
     def source(self, group, method):
         if (not isinstance(group, str) or not isinstance(method, str)
@@ -72,7 +93,7 @@ class ConfigFactory:
     def cache_dir(self, group):
         directory = 'military_aircraft_vit_fixedsplit_v2' if group == 'military_vit' else group
         return env_path('FS_PLATFORM_CACHE_' + group.upper(),
-                        self.resources / 'exp/distributed_feature_cache' / directory,
+                        self.resource_path(group, 'features', self.resources / 'exp/distributed_feature_cache' / directory),
                         self.repo)
 
     def defaults(self, group, method):
@@ -114,9 +135,6 @@ class ConfigFactory:
         entries = []
         for group in self.groups():
             family, backbone = group.split('_', 1)
-            # Keep internal templates for uploaded datasets, not public entries.
-            if family == 'officehome':
-                continue
             cache = self.cache_dir(group)
             files = list(cache.glob('*.npz'))
             methods = []
@@ -215,10 +233,11 @@ class ConfigFactory:
         raw['train']['local_update_steps'] = req['localEpochs']
         raw['train']['optimizer']['lr'] = req['learningRate']
         raw.setdefault('eval', {})['freq'] = req['evaluationFrequency']
-        raw['data']['root'] = str(self.datasets / FAMILIES[family][1])
+        raw['data']['root'] = str(self.dataset_dir(req['group']))
         g = raw['ggeur']
         augmented = req['method'] == 'heterogeneous_solution'
-        for key in ('clip_model_path', 'timm_checkpoint_path', 'bert_model_path'):
+        for key in ('clip_model_path', 'cnn_checkpoint_path', 'timm_checkpoint_path',
+                    'bert_model_path', 'bert_tokenizer_path'):
             if g.get(key):
                 g[key] = str(project_path(g[key], self.resources))
         g.update(hierarchical_training=False, use_feature_cache=True,
@@ -253,8 +272,6 @@ class ConfigFactory:
             g.update(digit3_manifest_base=str(self.datasets / 'digit_three_domain/manifests'),
                      digit3_manifest_path='', digit3_manifest_use_config_root=True,
                      digit3_global_manifest_path=str(self.datasets / 'digit_three_domain/dataset_manifest.json'))
-        if family == 'domainnet':
-            g['domainnet_manifest_path'] = str(self.resources / 'exp/distributed_manifests/domainnet_4domains/domainnet_manifest.json')
         if family == 'military':
             # Reuse the folder-based loader, not the unrelated DomainNet manifest.
             # Paths stay under the separately registered MilitaryAircraft3D root.

@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument(
         "--model",
         default="vit_tiny_patch16_224.augreg_in21k_ft_in1k")
-    parser.add_argument("--backend", choices=("timm", "clip"),
+    parser.add_argument("--backend", choices=("timm", "clip", "cnn"),
                         default="timm")
     parser.add_argument("--clip-pretrained", default="openai")
     parser.add_argument("--checkpoint-path", default="")
@@ -50,11 +50,17 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--fp16", action="store_true")
+    parser.add_argument("--new-directory", action="store_true",
+                        help="Refuse any existing cache directory; never replace older caches")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    if args.new_directory and Path(args.cache_dir).exists():
+        raise ValueError('Cache directory already exists; choose a new destination')
+    from federatedscope.standalone_api.platform_offline import configure_offline_worker
+    configure_offline_worker()
     data_root = Path(args.data_root).resolve()
     manifest_path = Path(args.manifest).resolve() if args.manifest else \
         data_root / "dataset_manifest.json"
@@ -65,7 +71,7 @@ def main():
 
     requested_device = str(args.device).lower()
     if requested_device.startswith("cuda") and not torch.cuda.is_available():
-        requested_device = "cpu"
+        raise RuntimeError('Requested CUDA device is unavailable')
     device = torch.device(requested_device)
     if args.backend == "clip":
         import open_clip
@@ -82,6 +88,19 @@ def main():
         cache_model = (
             f"{args.model}_{args.clip_pretrained}"
             .replace("/", "_").replace("-", "_"))
+    elif args.backend == 'cnn':
+        from federatedscope.contrib.model.ggeur_cnn_extractor import CNNFeatureExtractor
+        if not args.checkpoint_path or not Path(args.checkpoint_path).is_file():
+            raise ValueError('CNN cache preparation requires existing local checkpoint weights')
+        extractor = CNNFeatureExtractor(model_name=args.model, pretrained=False,
+                                        freeze=True, checkpoint_path=args.checkpoint_path).to(device).eval()
+        embedding_dim = extractor.get_feature_dim()
+        transform = transforms.Compose([
+            transforms.Resize((224, 224)), transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        cache_prefix = 'cnn'
+        cache_model = str(args.model).replace('/', '_').replace('-', '_')
     else:
         from federatedscope.contrib.model.ggeur_timm_extractor import (
             TimmFeatureExtractor)
