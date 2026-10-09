@@ -13,14 +13,40 @@ const model = { id:'plane-final',jobId:'plane',name:'军机模型',group:'milita
 const library = {models:[model,{...model,id:'other',group:'officehome_vit'}, {...model,id:'fedopt',method:'fedopt'}],
   testsets:[{...model,id:'plane'},{...model,id:'office',group:'officehome_vit'}]} as Library;
 
-it('defaults to the aircraft demo and permits an explicit full-catalog build', () => {
+it('defaults to the full catalog and keeps every existing dataset and saved artifact', () => {
   vi.stubEnv('VITE_DEMO_SCOPE', undefined);
-  expect(aircraftDemoEnabled()).toBe(true);
+  expect(aircraftDemoEnabled()).toBe(false);
+  expect(presentationCatalog(catalog)).toBe(catalog);
+  expect(presentationLibrary(library,catalog)).toEqual(library);
+  expect(requestInPresentation({group:'officehome_vit',method:'fedavg'},catalog)).toBe(true);
   vi.stubEnv('VITE_DEMO_SCOPE', 'all');
   expect(aircraftDemoEnabled()).toBe(false);
-  expect(presentationCatalog(catalog).groups.map(g=>g.id)).toEqual(['military_vit','military_cnn']);
-  expect(presentationLibrary(library,catalog).models.map(m=>m.id)).toEqual(['plane-final','fedopt']);
-  expect(requestInPresentation({group:'officehome_vit',method:'fedavg'},catalog)).toBe(false);
+  expect(presentationCatalog(catalog).groups.map(g=>g.id)).toEqual(['military_vit','military_cnn','officehome_vit','officehome_cnn']);
+  expect(presentationLibrary(library,catalog).models.map(m=>m.id)).toEqual(['plane-final','other','fedopt']);
+});
+it('adds third-party groups without losing uploaded datasets, methods, histories or the military default', () => {
+  vi.stubEnv('VITE_DEMO_SCOPE', undefined);
+  const ids=['digit3_vit','digit3_cnn','mdsent_rnn','mdsent_lstm','uploaded_existing'];
+  const expanded={...catalog,groups:[...ids.map(id=>({...group,id})),...catalog.groups]};
+  expect(presentationCatalog(expanded).groups).toEqual(expanded.groups);
+  const jobs=expanded.groups.map(g=>({id:g.id,request:{...request,group:g.id}})) as Job[];
+  expect(presentationJobs(jobs,expanded)).toEqual(jobs);
+  expect(initialDraft(expanded).group).toBe('military_vit');
+  saveDraft({...request,group:'uploaded_existing'});
+  expect(initialDraft(expanded).group).toBe('uploaded_existing');
+});
+it('removes retired DomainNet from stale catalogs and artifacts without hiding other datasets', () => {
+  vi.stubEnv('VITE_DEMO_SCOPE', undefined);
+  const retired = ['domainnet_vit','domainnet_cnn','domainnet_mixer'];
+  const expanded = {...catalog,groups:[...catalog.groups,...retired.map(id=>({...group,id,dataset:'DomainNet'}))]};
+  expect(presentationCatalog(expanded).groups).toEqual(catalog.groups);
+  expect(expanded.groups).toHaveLength(catalog.groups.length + 3);
+  const retiredItems = retired.map(id=>({...model,id,group:id}));
+  expect(presentationLibrary({models:[...library.models,...retiredItems],testsets:[...library.testsets,...retiredItems]} as Library,expanded)).toEqual(library);
+  const jobs = [...catalog.groups,...expanded.groups.slice(-3)].map(g=>({id:g.id,request:{...request,group:g.id}})) as Job[];
+  expect(presentationJobs(jobs,expanded).map(job=>job.id)).toEqual(catalog.groups.map(g=>g.id));
+  saveDraft({...request,group:'domainnet_vit'});
+  expect(initialDraft(presentationCatalog(expanded)).group).toBe('military_vit');
 });
 it('keeps military ViT with three methods without mutation', () => {
   const filtered=presentationCatalog(catalog);

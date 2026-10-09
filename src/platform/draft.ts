@@ -37,7 +37,7 @@ export function validateDraft(draft: Draft, catalog: Catalog): Record<string, st
   return errors;
 }
 export function initialDraft(catalog: Catalog, groupId?: string, storageKey = DRAFT_KEY): Draft {
-  const group = catalog.groups.find(g => g.id === groupId) || catalog.groups.find(g => g.cacheFound) || catalog.groups[0];
+  const group = catalog.groups.find(g => g.id === groupId) || catalog.groups.find(g => g.id === 'military_vit' && g.cacheFound) || catalog.groups.find(g => g.cacheFound) || catalog.groups[0];
   const fallback = group?.methods.find(m => m.enabled)?.defaults;
   if (!groupId) {
     try {

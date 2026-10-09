@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Input, InputNumber, Select } from 'antd';
 import { ArrowLeftOutlined, ArrowRightOutlined, CheckOutlined, ExperimentOutlined } from '@ant-design/icons';
-import { api, methodLabel, type Catalog, type Job, type RequestConfig } from './api';
+import { api, backboneLabel, methodLabel, type Catalog, type Job, type RequestConfig } from './api';
 import { initialDraft, requestFromDraft, saveDraft, validateDraft, type Draft } from './draft';
 import type { TrainingLaunch } from './launch';
 import { DatasetUpload } from './datasetUpload';
@@ -101,7 +101,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
       <div key={step} className="wizard-page">
       {step === 0 && <><div className="training-dataset-heading"><h2>数据与算法</h2>{!preview && <DatasetUpload disabled={frozen} onUploaded={setUploadedGroup} />}</div><div className="wizard-fields">
         <div className="wizard-field"><label htmlFor="train-name">实验名称</label><Input id="train-name" value={draft.name} maxLength={120} placeholder="输入实验名称" disabled={frozen} onChange={event => change('name',event.target.value)} /></div>
-        <div className="wizard-field"><label htmlFor="train-group">数据集</label><Select id="train-group" aria-label="数据集" aria-invalid={!!errors.group} value={draft.group} disabled={frozen} onChange={chooseGroup} options={catalog.groups.map(g => ({ value:g.id,label:g.dataset + ' / ' + g.backbone.toUpperCase() + (!g.cacheFound ? ' · 暂不可用' : ''),disabled:!g.cacheFound }))} />{errors.group && <small className="field-error" role="alert">{errors.group}</small>}</div>
+        <div className="wizard-field"><label htmlFor="train-group">数据集</label><Select id="train-group" aria-label="数据集" aria-invalid={!!errors.group} value={draft.group} disabled={frozen} onChange={chooseGroup} showSearch optionFilterProp="label" options={catalog.groups.map(g => ({ value:g.id,label:g.dataset + ' / ' + backboneLabel(g.backbone) + (!g.cacheFound ? ' · 暂不可用' : ''),disabled:!g.cacheFound }))} />{errors.group && <small className="field-error" role="alert">{errors.group}</small>}</div>
         </div><div className="wizard-field"><label>训练算法</label><div className="algorithm-options" role="radiogroup" aria-label="训练算法">{group?.methods.map(method => <button key={method.id} type="button" role="radio" aria-checked={draft.method === method.id} disabled={frozen || !method.enabled} title={method.reason || undefined} className={draft.method === method.id ? 'selected' : ''} onClick={() => chooseMethod(method.id)}><span className="algorithm-glyph">{method.id === 'heterogeneous_solution' ? 'f' : methodLabel(method.id).slice(0,1)}</span><strong>{methodLabel(method.id)}</strong><i>{draft.method === method.id && <CheckOutlined />}</i></button>)}</div>{errors.method && <small className="field-error" role="alert">{errors.method}</small>}</div>
       </>}
       {step === 1 && <><div className="wizard-title"><h2>训练参数</h2></div>
@@ -113,7 +113,7 @@ export function TrainingForm({ catalog, initialGroup, sourceId, running, disconn
         </section>}
       </>}
       {step === 2 && <><div className="wizard-title"><h2>{draft.name || '确认实验配置'}</h2></div>
-        <div className="review-identity"><span className="review-identity-icon"><ExperimentOutlined /></span><div><h3>{methodLabel(draft.method)}</h3><p>{group?.dataset} / {group?.backbone.toUpperCase()}</p></div><span className="review-identity-type">协同训练</span></div>
+        <div className="review-identity"><span className="review-identity-icon"><ExperimentOutlined /></span><div><h3>{methodLabel(draft.method)}</h3><p>{group?.dataset} / {group && backboneLabel(group.backbone)}</p></div><span className="review-identity-type">协同训练</span></div>
         <dl className="review-grid">{[['通信轮数',draft.rounds],['客户端',draft.clientCount],['每轮参与',draft.sampleClients || '全部'],['本地轮数',draft.localEpochs],['学习率',draft.learningRate],['批大小',draft.batchSize],['Dirichlet α',draft.alpha],['划分种子',draft.splitSeed],...(ours ? [['每类目标样本',draft.targetPerClass]] : [])].map(([label,value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       </>}
       </div>

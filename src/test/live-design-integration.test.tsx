@@ -103,7 +103,7 @@ it.each(['fedavg', 'fedprox', 'heterogeneous_solution'])('launches uploaded ViT 
   render(<MemoryRouter initialEntries={['/?view=train']}><PlatformApp /></MemoryRouter>);
   const dataset=await screen.findByRole('combobox',{name:'数据集'});
   fireEvent.mouseDown(dataset);
-  fireEvent.click(await screen.findByText('上传测试集 / VIT'));
+  fireEvent.click(await screen.findByText('上传测试集 / ViT'));
   expect(screen.getAllByRole('radio')).toHaveLength(3);
   fireEvent.click(screen.getByRole('radio',{name:method==='heterogeneous_solution' ? /本架构/ : method==='fedprox' ? /FedProx/ : /FedAvg/}));
   fireEvent.click(screen.getByRole('button',{name:/下一步/}));
